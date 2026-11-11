@@ -1,8 +1,22 @@
-# llmtodo
+<div align="center">
+  <img src="crates/ui/assets/icon/HardHat-1024.png" alt="llmtodo icon" width="128" height="128">
+  <h1>llmtodo</h1>
+  <p><strong>A local, Linear-style task tracker built for LLM agents.</strong></p>
+  <p>Agents work through a CLI that covers every feature.<br>People watch and steer from a fast native macOS app.</p>
+  <p>
+    <a href="#install">Install</a> ·
+    <a href="#features">Features</a> ·
+    <a href="docs/agents/cli-reference.md">CLI reference</a>
+  </p>
+  <br>
+  <img src="docs/images/app.png" alt="The llmtodo app showing demo issues grouped by status">
+</div>
 
-A local, Linear-style task tracker built for LLM agents. Agents work through a CLI that covers every feature. People watch and steer from a fast native macOS app. Both talk to one local API server that stores everything in a SQLite file.
+## Why it exists
 
-![The llmtodo app showing demo issues grouped by status](docs/images/app.png)
+I built llmtodo as my own tool, for the way I work. I run several coding agents at once, and they need a tracker they can read and write without a browser. I mostly read and direct the work. If you work the same way, you may like it too.
+
+The CLI and the app both talk to one local API server, which stores everything in a SQLite file on your Mac.
 
 ## Features
 
