@@ -1,0 +1,108 @@
+#!/bin/sh
+# Opens the app on a throwaway copy of the data, so a preview can never
+# change the real tracker. Waits until the app window closes.
+#
+#   scripts/preview            fresh demo data from scripts/seed-demo (default)
+#   scripts/preview real       a copy of the owner's real tracker
+#   scripts/preview empty      an empty database
+#   scripts/preview <folder>   a copy of another data folder, such as a Linear import
+#
+# Prints PREVIEW_EXIT=<code> and the log paths when the app exits. No server
+# for the preview's folder is left running after that.
+set -u
+cd "$(dirname "$0")/.."
+. scripts/stop-server
+mode=${1:-demo}
+source_dir=""
+case "$mode" in
+  demo | empty) ;;
+  real) source_dir="$HOME/Library/Application Support/llmtodo" ;;
+  *) source_dir="$mode" ;;
+esac
+
+# Tests swap the app and pass a built CLI, so they skip the build.
+if [ -z "${LLMTODO_PREVIEW_APP:-}" ] || [ -z "${LLMTODO_BIN:-}" ]; then
+  cargo build --quiet -p llmtodo-cli -p llmtodo-app || exit 1
+fi
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/llmtodo-preview.XXXXXX")
+
+# The app starts a server of its own when it finds none, so stop whatever holds
+# this folder's lock, not only the server started below.
+server_pid=""
+cleanup() {
+  stop_folder_server "$tmp"
+  [ -z "$server_pid" ] || wait "$server_pid" 2>/dev/null
+  server_pid=""
+}
+trap 'code=$?; trap - EXIT; cleanup; exit "$code"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ "$mode" = demo ]; then
+  scripts/seed-demo "$tmp" >"$tmp.seed.log" 2>&1 || { echo "demo seed failed; see $tmp.seed.log" >&2; exit 1; }
+elif [ -n "$source_dir" ] && [ -f "$source_dir/llmtodo.db" ]; then
+  # An online backup is safe while the real server runs.
+  sqlite3 "$source_dir/llmtodo.db" ".backup '$tmp/llmtodo.db'"
+  [ -d "$source_dir/files" ] && cp -R "$source_dir/files" "$tmp/files"
+fi
+bin=target/debug
+
+LLMTODO_DATA_DIR="$tmp" LLMTODO_PORT=0 LLMTODO_NO_GITHUB=1 "${LLMTODO_BIN:-$bin/llmtodo}" server run >"$tmp/server.out" 2>&1 &
+server_pid=$!
+# server.json must name this server. A file from another server does not count.
+server_ready() { grep -Eq "\"pid\": *$server_pid[^0-9]" "$tmp/server.json" 2>/dev/null; }
+i=0
+until server_ready || [ $i -ge 100 ] || ! kill -0 "$server_pid" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+if ! server_ready; then
+  echo "preview server did not start; see $tmp/server.out" >&2
+  exit 1
+fi
+echo "PREVIEW_DATA=$tmp"
+echo "PREVIEW_SERVER=$(cat "$tmp/server.json" | tr -d '\n ')"
+
+# LLMTODO_PREVIEW_APP swaps the app for another command, for tests.
+# UI settings live in their own folder beside the real data folder, so the
+# owner's layout carries over between previews but a preview never touches
+# the real ui.json.
+real_dir="$HOME/Library/Application Support/llmtodo"
+ui_dir="$HOME/Library/Application Support/llmtodo-preview"
+old_ui_dir="$real_dir/preview-config"
+mkdir -p "$ui_dir"
+if [ ! -f "$ui_dir/ui.json" ]; then
+  if [ -f "$old_ui_dir/ui.json" ]; then
+    cp "$old_ui_dir/ui.json" "$ui_dir/ui.json"
+  elif [ -f "$real_dir/ui.json" ]; then
+    cp "$real_dir/ui.json" "$ui_dir/ui.json"
+  fi
+fi
+# Older previews kept their settings inside the real data folder.
+if [ -d "$old_ui_dir" ]; then
+  rm -f "$old_ui_dir/ui.json" "$old_ui_dir/ui.json.tmp"
+  rmdir "$old_ui_dir" 2>/dev/null
+fi
+export LLMTODO_CONFIG_DIR="$ui_dir" LLMTODO_PROJECT_DIR="$PWD"
+# The app lists the real tracker beside the preview copy, read-only, so the
+# owner can look up a real ticket. The title bar badge says which is open.
+case "$mode" in
+  demo) tracker_name="Demo" ;;
+  empty) tracker_name="Empty" ;;
+  real) tracker_name="Copy of real tracker" ;;
+  *) tracker_name="Copy of $(basename "$mode")" ;;
+esac
+export LLMTODO_TRACKER_NAME="$tracker_name"
+export LLMTODO_DATA_DIR="$tmp" RUST_BACKTRACE=1
+if [ -n "${LLMTODO_PREVIEW_APP:-}" ]; then
+  sh -c "$LLMTODO_PREVIEW_APP" >"$tmp/app.log" 2>&1
+else
+  "$bin/llmtodo-app" >"$tmp/app.log" 2>&1
+fi
+code=$?
+
+cleanup
+if left=$(lock_holders "$tmp"); then
+  echo "PREVIEW_LEFTOVER_SERVER=$left" >&2
+fi
+echo "PREVIEW_EXIT=$code"
+echo "PREVIEW_APP_LOG=$tmp/app.log"
+echo "PREVIEW_SERVER_LOG=$tmp/server.out"
+exit "$code"

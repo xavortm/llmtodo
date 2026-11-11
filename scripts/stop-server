@@ -1,0 +1,27 @@
+# Sourced by scripts/seed-demo and scripts/preview.
+#
+# A server holds <folder>/server.lock for as long as it runs. So the lock names
+# the servers of one folder, and never touches a server for another folder.
+
+# Prints the PIDs that hold the folder's lock. Fails when nothing holds it.
+lock_holders() { /usr/sbin/lsof -t "$1/server.lock" 2>/dev/null; }
+
+# `wait_server_gone <folder> <tenths of a second>`. Fails on a timeout.
+wait_server_gone() {
+  _gone_i=0
+  while lock_holders "$1" >/dev/null; do
+    [ "$_gone_i" -lt "$2" ] || return 1
+    sleep 0.1
+    _gone_i=$((_gone_i + 1))
+  done
+}
+
+# Stops every server of the folder, and waits until each one has exited.
+stop_folder_server() {
+  _stop_pids=$(lock_holders "$1") || return 0
+  kill $_stop_pids 2>/dev/null || true
+  wait_server_gone "$1" 50 && return 0
+  _stop_pids=$(lock_holders "$1") || return 0
+  kill -9 $_stop_pids 2>/dev/null || true
+  wait_server_gone "$1" 20 || true
+}

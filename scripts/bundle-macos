@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Builds target/release/llmtodo.app with the HardHat icon. The bundle holds
+# the app and the CLI from the same commit, and the commit in
+# Contents/Resources/build-commit. scripts/publish installs it.
+# Usage: scripts/bundle-macos && open target/release/llmtodo.app
+#
+# LLMTODO_BUNDLE_SKIP_BUILD=1 reuses the binaries in target/release, for tests.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+commit=$(git rev-parse HEAD)
+if [ -n "$(git status --porcelain)" ]; then
+  commit="$commit-dirty"
+fi
+if [ -z "${LLMTODO_BUNDLE_SKIP_BUILD:-}" ]; then
+  LLMTODO_BUILD_COMMIT="$commit" cargo build --release -p llmtodo-app -p llmtodo-cli
+fi
+app=target/release/llmtodo.app
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp target/release/llmtodo-app "$app/Contents/MacOS/llmtodo-app"
+# The app starts its server with the `llmtodo` next to it, so the server
+# always runs the bundle's own commit.
+cp target/release/llmtodo "$app/Contents/MacOS/llmtodo"
+cp crates/ui/assets/icon/HardHat.icns "$app/Contents/Resources/HardHat.icns"
+printf '%s\n' "$commit" > "$app/Contents/Resources/build-commit"
+version=$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="llmtodo-app"))')
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>llmtodo</string>
+  <key>CFBundleDisplayName</key><string>llmtodo</string>
+  <key>CFBundleIdentifier</key><string>dev.llmtodo.app</string>
+  <key>CFBundleExecutable</key><string>llmtodo-app</string>
+  <key>CFBundleIconFile</key><string>HardHat</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>CFBundleVersion</key><string>${version}</string>
+  <key>LLMTODOBuildCommit</key><string>${commit}</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+echo "$app"

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Publishes this checkout: builds the release app bundle, swaps it into
+# ~/Applications/llmtodo.app in one step, installs the CLI from the same
+# commit and regenerates the agent CLI reference. A running app then shows
+# "Restart to update". This script never stops a running server.
+#
+#   scripts/publish                      ~/Applications and ~/.cargo/bin
+#   scripts/publish <apps> [<cli dir>]   other folders, for tests
+#
+# LLMTODO_BUNDLE_SKIP_BUILD=1 reuses the binaries in target/release, for tests.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+apps=${1:-$HOME/Applications}
+cli_dir=${2:-$HOME/.cargo/bin}
+mkdir -p "$apps" "$cli_dir"
+
+scripts/bundle-macos >/dev/null
+built=target/release/llmtodo.app
+dest="$apps/llmtodo.app"
+
+# Copy next to the destination first, so the swap is a rename on one disk.
+tmp="$apps/.llmtodo.app.publish.$$"
+rm -rf "$tmp"
+cp -R "$built" "$tmp"
+# renamex_np with RENAME_SWAP swaps the two folders in one step, so the
+# bundle is never missing or half written. A first publish just renames.
+if [ -e "$dest" ]; then
+  python3 - "$tmp" "$dest" <<'PY'
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+RENAME_SWAP = 0x2
+if libc.renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), RENAME_SWAP) != 0:
+    raise OSError(ctypes.get_errno(), "renamex_np RENAME_SWAP failed", sys.argv[2])
+PY
+  rm -rf "$tmp"
+else
+  mv "$tmp" "$dest"
+fi
+
+# The CLI, through a temporary file and a rename too.
+cp target/release/llmtodo "$cli_dir/.llmtodo.publish.$$"
+chmod 755 "$cli_dir/.llmtodo.publish.$$"
+mv -f "$cli_dir/.llmtodo.publish.$$" "$cli_dir/llmtodo"
+
+scripts/gen-agent-docs "$cli_dir/llmtodo"
+echo "PUBLISHED_APP=$dest"
+echo "PUBLISHED_CLI=$cli_dir/llmtodo"
+echo "PUBLISHED_COMMIT=$(cat "$dest/Contents/Resources/build-commit")"

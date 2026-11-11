@@ -1,0 +1,14 @@
+[package]
+name = "llmtodo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+schemars = { version = "1.2.3", features = ["uuid1"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+uuid = { version = "1.29.2", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"

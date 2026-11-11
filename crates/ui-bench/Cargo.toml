@@ -1,0 +1,30 @@
+[package]
+name = "llmtodo-ui-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# GPU frame benchmarks for the app's views. `#[gpui::bench]` draws through
+# headless Metal and refuses GPUI's `test-support` feature. `llmtodo-ui`
+# turns that feature on for its own tests, and Cargo unifies features across
+# one package, so the benchmarks live in this package of their own.
+#
+# Run them one package at a time, never next to another benchmark:
+#   cargo bench -p llmtodo-ui-bench
+#
+# `gpui-pre` and `gpui-pre-platform` are the same crates GPUI Kit compiles
+# with, at the same version. They are listed only to turn on
+# `bench-support`, so no second copy of GPUI is built.
+[dependencies]
+llmtodo-ui = { path = "../ui", features = ["bench-support"] }
+llmtodo-core = { path = "../core" }
+gpui-kit = { git = "https://github.com/longbridge/gpui-component", rev = "1029e2c5d34d75fa82ab5f0f067771951a88d993", features = ["tree-sitter-markdown", "tree-sitter-markdown-inline"] }
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["bench-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["bench-support"] }
+# The GPUI bench macros name `criterion` directly. Same version as GPUI.
+criterion = "0.8.2"
+
+[[bench]]
+name = "task_list"
+harness = false

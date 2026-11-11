@@ -1,0 +1,49 @@
+[package]
+name = "llmtodo-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# GPUI Kit is pinned to one git revision. GPUI comes through GPUI Kit, which
+# pins `gpui-pre =0.3.12` from crates.io at that revision. Do not add a
+# separate GPUI dependency: it must stay the exact one GPUI Kit compiles with.
+# Upgrade both together, and move ~/Development/refs/gpui-component with them.
+[features]
+# The demo data, for `llmtodo-ui-bench`. It turns on no `test-support`.
+bench-support = []
+
+[dependencies]
+gpui-kit = { git = "https://github.com/longbridge/gpui-component", rev = "1029e2c5d34d75fa82ab5f0f067771951a88d993", features = ["tree-sitter-markdown", "tree-sitter-markdown-inline"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The API. The client is async on tokio, so `backend.rs` runs it on its own
+# runtime thread and sends results to GPUI over a channel.
+llmtodo-client = { path = "../client" }
+llmtodo-api-types = { path = "../api-types" }
+llmtodo-core = { path = "../core" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3.34"
+jiff = "0.2.42"
+# GPUI's HTTP client, for remote images in the Markdown preview. The same
+# version as the GPUI that GPUI Kit pins, as GPUI Kit's story app uses.
+reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.12" }
+uuid = "1.29.2"
+# The string type the model holds. It is the same type GPUI uses, without
+# GPUI, so the model needs no GPUI import. Keep it on the GPUI version.
+gpui-shared-string = { package = "gpui-pre-shared-string", version = "=0.3.12" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.54.1", features = ["net", "io-util"] }
+# Tests run the real server in-process, as the CLI tests do.
+llmtodo-server = { path = "../server" }
+gpui-kit = { git = "https://github.com/longbridge/gpui-component", rev = "1029e2c5d34d75fa82ab5f0f067771951a88d993", features = ["tree-sitter-markdown", "tree-sitter-markdown-inline", "test-support"] }
+
+# Sets the Dock icon when the app runs outside a .app bundle, as with
+# `cargo run`. Same versions GPUI's macOS backend already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSString"] }

@@ -1,0 +1,1628 @@
+//! The issue list: the filter, sorting, grouping, the selection and the
+//! rows. It reads issues from the shared `IssueStore` and holds only their
+//! IDs, so a snapshot that reorders the store cannot shift a row onto
+//! another issue.
+//!
+//! The list changes its state only when the workspace asks. Clicks, drops
+//! and menu items emit a `ViewEvent`, never through `cx.listener` on the
+//! list. The workspace then updates the list, the
+//! store and the task view in one pass, and no entity is borrowed twice.
+
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Selectable as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{self as ed, InputState},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, ScrollStrategy, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, UniformListScrollHandle, Window, div,
+    prelude::FluentBuilder as _, uniform_list,
+};
+
+use crate::issues::columns::{self, Column, cell_with};
+use crate::issues::filter::Filter;
+use crate::issues::rows::{self, BuiltRows, OwnedRowsInput, RowsInput};
+use crate::model::data::{Assignee, Issue, IssueId, Label, LlmStatus, Status, hide_cutoff};
+use crate::model::scope::Scope;
+use crate::model::store::{Connection, IssueStore};
+use crate::shell::icons::HasIcon as _;
+use crate::shell::tooltip::{Card, with_card};
+use crate::shell::view_events::{IssueAction, ViewEvent, ViewEvents};
+use crate::shell::widgets::{self, DraggedIssue, label_color};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Key,
+    Status,
+    Added,
+    /// Locked, then Analyzing, then the rest.
+    Llm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupBy {
+    None,
+    Status,
+    Label,
+    Assignee,
+}
+
+impl GroupBy {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" | "off" => Some(Self::None),
+            "status" => Some(Self::Status),
+            "label" | "labels" => Some(Self::Label),
+            "assignee" | "owner" => Some(Self::Assignee),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Status => "Status",
+            Self::Label => "Label",
+            Self::Assignee => "Assignee",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::Status,
+            Self::Status => Self::Label,
+            Self::Label => Self::Assignee,
+            Self::Assignee => Self::None,
+        }
+    }
+}
+
+/// One line of the issue list: a group header or an issue.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    Header {
+        title: SharedString,
+        count: usize,
+        label: Option<Label>,
+        /// Set under "group by status", where a drop moves a task here.
+        status: Option<Status>,
+        collapsed: bool,
+    },
+    Issue(IssueId),
+}
+
+/// How a click on a task row acts, from the keys held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowClick {
+    /// Clears the marks, selects the task and opens it.
+    Plain,
+    /// Shift: makes the range from the anchor to this task the marked range.
+    Range,
+    /// Cmd or the row's box: marks this task, or clears its mark.
+    Toggle,
+}
+
+/// The hover group of one task row, for its mark box.
+const ROW_GROUP: &str = "issue-row";
+/// The hover and press group of a mark box's click target.
+const CHECK_GROUP: &str = "issue-row-check";
+
+pub struct IssueList {
+    store: Entity<IssueStore>,
+    events: ViewEvents,
+    /// The workspace's focus, which is the list's focus.
+    focus: FocusHandle,
+    pub filter: Entity<InputState>,
+    /// The filter text, parsed.
+    query: Filter,
+    /// The team or project the sidebar picked.
+    pub scope: Scope,
+    /// Hide closed tasks this many days old. None shows them all.
+    pub hide_closed_after: Option<u32>,
+    /// How many tasks the scope and filter would show but that setting hides.
+    hidden_closed: usize,
+    /// The issues that pass the filter, in sort order.
+    visible: Vec<IssueId>,
+    /// What the list shows: `visible`, split into groups.
+    rows: Vec<Row>,
+    /// Index into `rows`.
+    selected: usize,
+    pub group: GroupBy,
+    /// Sort key, and whether the order is reversed.
+    pub sort: (SortKey, bool),
+    /// Collapsed groups, as `grouping:title`.
+    pub collapsed: HashSet<String>,
+    /// Issues marked with `x` for a bulk action.
+    pub marked: HashSet<IssueId>,
+    /// Where a shift-click range starts: the last task toggled with `x`,
+    /// cmd-click or its box. When None, the next range starts at the
+    /// selected row. It stays put across shift-clicks, so a later shift-click
+    /// can grow or shrink the same range.
+    pub anchor: Option<IssueId>,
+    /// The marks outside the current range. A shift-click replaces the range
+    /// and keeps these.
+    range_base: HashSet<IssueId>,
+    scroll: UniformListScrollHandle,
+    /// The list's own width after the last layout.
+    width: Rc<Cell<Option<Pixels>>>,
+    /// The columns that fit that width, set at each render.
+    columns: Vec<Column>,
+    /// The columns the owner hid from the column heading menu.
+    pub hidden_columns: Vec<Column>,
+    /// `columns::chars_that_fit` for `visible`. The workspace asks on each
+    /// frame, and the answer changes only when `visible` is computed again.
+    title_chars: Cell<Option<usize>>,
+    /// From this many issues, builds run on a background task.
+    background_from: usize,
+    /// The build on a background task, if one is on its way. Dropping it
+    /// cancels the build.
+    build_task: Option<Task<()>>,
+    /// The selection rule for the build on its way.
+    pending_keep: Option<Keep>,
+    /// Counts builds, so only the newest result lands.
+    generation: u64,
+}
+
+/// Where the selection goes once new rows land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// On the first issue row, as after a filter keystroke.
+    First,
+    /// On this issue, or on the first issue row when it left the list.
+    Issue(Option<IssueId>),
+    /// On the issue or header selected when the rows land. With `scroll`
+    /// off, the list keeps its scroll, and a selected issue that left the
+    /// list passes the selection to the row that moves into its place.
+    Current { scroll: bool },
+}
+
+impl Keep {
+    /// The rule for one build that replaces a cancelled build with rule
+    /// `self` and its own rule `next`. A rule that names a place wins over
+    /// keeping the current row, so a live update during a filter keystroke
+    /// still selects the first match.
+    fn then(self, next: Keep) -> Keep {
+        match (self, next) {
+            (Keep::Current { scroll: a }, Keep::Current { scroll: b }) => {
+                Keep::Current { scroll: a || b }
+            }
+            (placed, Keep::Current { .. }) => placed,
+            (_, placed) => placed,
+        }
+    }
+}
+
+impl IssueList {
+    pub fn new(
+        store: Entity<IssueStore>,
+        events: ViewEvents,
+        focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Filter: text, status:todo, label:bug, assignee:me")
+        });
+        Self {
+            store,
+            events,
+            focus,
+            filter,
+            query: Filter::default(),
+            scope: Scope::All,
+            hide_closed_after: None,
+            hidden_closed: 0,
+            visible: Vec::new(),
+            rows: Vec::new(),
+            selected: 0,
+            group: GroupBy::None,
+            sort: (SortKey::Key, false),
+            collapsed: HashSet::new(),
+            marked: HashSet::new(),
+            range_base: HashSet::new(),
+            anchor: None,
+            scroll: UniformListScrollHandle::new(),
+            width: Rc::default(),
+            columns: Column::ALL.to_vec(),
+            hidden_columns: Vec::new(),
+            title_chars: Cell::new(None),
+            background_from: rows::BACKGROUND_FROM,
+            build_task: None,
+            pending_keep: None,
+            generation: 0,
+        }
+    }
+
+    /// How far the list is scrolled. It is zero or less: below zero means
+    /// scrolled down.
+    pub fn scroll_offset(&self) -> Pixels {
+        self.scroll.0.borrow().base_handle.offset().y
+    }
+
+    /// The scroll handle of the list. The benchmarks scroll through it.
+    pub fn scroll_handle(&self) -> &UniformListScrollHandle {
+        &self.scroll
+    }
+
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn visible(&self) -> &[IssueId] {
+        &self.visible
+    }
+
+    /// The issue on the selected row, if it is an issue row.
+    pub fn selected_issue(&self) -> Option<IssueId> {
+        match self.rows.get(self.selected) {
+            Some(Row::Issue(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn row_of(&self, id: IssueId) -> Option<usize> {
+        self.rows.iter().position(|r| *r == Row::Issue(id))
+    }
+
+    /// Filters, sorts and groups the store's issues again, and puts the
+    /// selection on `keep`, or on the first issue.
+    pub fn reload(&mut self, keep: Option<IssueId>, cx: &mut Context<Self>) {
+        self.recompute(Keep::Issue(keep), cx);
+    }
+
+    pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.query = Filter::parse(query);
+        // The first match is always selected, so Enter picks it.
+        self.recompute(Keep::First, cx);
+    }
+
+    /// Builds the rows again and then places the selection by `keep`. With
+    /// fewer than `background_from` issues the build runs here, at once.
+    /// With more, it runs on a background task on a snapshot of the store,
+    /// and the list shows the old rows until the result lands.
+    ///
+    /// A newer call cancels a build still on its way, so a stale result
+    /// never lands. The selection rule of the cancelled call carries over
+    /// when it is the stronger one: see `Keep::then`. The selection is read
+    /// when the result lands, by stable ID, so a move made meanwhile counts.
+    fn recompute(&mut self, keep: Keep, cx: &mut Context<Self>) {
+        self.generation += 1;
+        let keep = match self.pending_keep.take() {
+            Some(pending) => pending.then(keep),
+            None => keep,
+        };
+        let store = self.store.read(cx);
+        let now = jiff::Timestamp::now();
+        let cutoff = self.hide_closed_after.map(|days| hide_cutoff(days, now));
+        let query = self.query.resolve(&store.catalog);
+        let statuses = store.catalog.all_statuses();
+        if store.len() < self.background_from {
+            self.build_task = None;
+            let input = RowsInput {
+                scope: &self.scope,
+                view: store.view.as_ref(),
+                query: &query,
+                cutoff,
+                now,
+                sort: self.sort,
+                group: self.group,
+                collapsed: &self.collapsed,
+                statuses: &statuses,
+                labels: &store.catalog.labels,
+            };
+            let built = rows::build(&input, store.iter());
+            self.apply(built, keep, cx);
+            return;
+        }
+        let input = OwnedRowsInput {
+            scope: self.scope.clone(),
+            view: store.view.clone(),
+            query,
+            cutoff,
+            now,
+            sort: self.sort,
+            group: self.group,
+            collapsed: self.collapsed.clone(),
+            statuses,
+            labels: store.catalog.labels.clone(),
+        };
+        let issues = store.snapshot();
+        let generation = self.generation;
+        self.pending_keep = Some(keep);
+        self.build_task = Some(cx.spawn(async move |this, cx| {
+            let built = cx
+                .background_spawn(async move {
+                    rows::build(&input.borrow(), issues.iter().map(|issue| &**issue))
+                })
+                .await;
+            this.update(cx, |list, cx| {
+                if list.generation != generation {
+                    return;
+                }
+                list.build_task = None;
+                let keep = list
+                    .pending_keep
+                    .take()
+                    .unwrap_or(Keep::Current { scroll: false });
+                list.apply(built, keep, cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Puts in a finished build and places the selection.
+    fn apply(&mut self, built: BuiltRows, keep: Keep, cx: &mut Context<Self>) {
+        let held = self.rows.get(self.selected).cloned();
+        let old_row = self.selected;
+        self.visible = built.visible;
+        self.hidden_closed = built.hidden_closed;
+        self.rows = built.rows;
+        self.title_chars.set(None);
+        let kept_row = |list: &Self, cx: &App| match &held {
+            Some(Row::Issue(id)) => list.row_of(*id).or_else(|| list.header_of_issue(*id, cx)),
+            Some(Row::Header { title, .. }) => list.header_row(title),
+            None => None,
+        };
+        match keep {
+            Keep::First => self.select_first(cx),
+            Keep::Issue(id) => match id.and_then(|id| self.row_of(id)) {
+                Some(row) => self.select(row, cx),
+                None => self.select_first(cx),
+            },
+            // The list keeps its scroll, so a status change that moves the
+            // issue to another group does not scroll the list after it.
+            Keep::Current { scroll: false } => {
+                let row = kept_row(self, cx);
+                if !self.rows.is_empty() {
+                    self.selected = row.unwrap_or(old_row).min(self.rows.len() - 1);
+                }
+                cx.notify();
+            }
+            Keep::Current { scroll: true } => match kept_row(self, cx) {
+                Some(row) => self.select(row, cx),
+                None => self.select_first(cx),
+            },
+        }
+    }
+
+    /// Whether a build runs on a background task and its result has not
+    /// landed yet.
+    #[cfg(test)]
+    pub fn building(&self) -> bool {
+        self.build_task.is_some()
+    }
+
+    /// Sets the size from which builds run on a background task.
+    #[cfg(test)]
+    pub fn set_background_from(&mut self, count: usize) {
+        self.background_from = count;
+    }
+
+    /// How many tasks the "Hide old closed tasks" setting hides here.
+    pub fn hidden_closed(&self) -> usize {
+        self.hidden_closed
+    }
+
+    /// How many issues pass the filter.
+    #[cfg(test)]
+    pub fn visible_count(&self) -> usize {
+        self.visible.len()
+    }
+
+    /// Whether the rows depend on the LLM status, through the filter or
+    /// the sort.
+    pub fn reads_llm_status(&self) -> bool {
+        self.query.llm.is_some() || self.sort.0 == SortKey::Llm
+    }
+
+    /// Whether a change from `old` to `new` can change the rows. Filters,
+    /// scopes, sorting and grouping read only the fields compared here, so
+    /// a new description or cost needs no refilter. A claim or a mark counts
+    /// only while the list reads the LLM status. With "Hide old closed
+    /// tasks" on, a refilter also hides tasks that just got too old, so
+    /// every change keeps doing one.
+    pub fn needs_refilter(&self, old: &Issue, new: &Issue) -> bool {
+        let now = jiff::Timestamp::now();
+        self.hide_closed_after.is_some()
+            || (self.reads_llm_status() && old.llm_rank(now) != new.llm_rank(now))
+            || old.deleted != new.deleted
+            || old.key != new.key
+            || old.title != new.title
+            || old.team != new.team
+            || old.project != new.project
+            || old.status != new.status
+            || old.labels != new.labels
+            || old.assignee != new.assignee
+            || old.added != new.added
+    }
+
+    /// Filters again after one issue changed: drops issues that went to the
+    /// Trash and picks up new ones. The selection stays on its issue, and
+    /// the list keeps its scroll, so a status change that moves the issue
+    /// to another group does not scroll the list after it. When the issue
+    /// left the list, the row that moves up into its place takes the
+    /// selection.
+    pub fn refilter(&mut self, cx: &mut Context<Self>) {
+        self.recompute(Keep::Current { scroll: false }, cx);
+    }
+
+    /// The key that names a group in `collapsed`, such as `status:Done`.
+    pub fn group_key(&self, title: &str) -> String {
+        rows::group_key(self.group, title)
+    }
+
+    /// Re-sorts or re-groups and keeps the selected row selected: the same
+    /// issue, or the same group header. When the issue's group is now
+    /// collapsed, its header takes the selection.
+    pub fn refresh_keeping_selection(&mut self, cx: &mut Context<Self>) {
+        self.recompute(Keep::Current { scroll: true }, cx);
+    }
+
+    fn header_row(&self, title: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(r, Row::Header { title: t, .. } if t == title))
+    }
+
+    /// The header of the collapsed group that holds `id`, if any.
+    fn header_of_issue(&self, id: IssueId, cx: &App) -> Option<usize> {
+        let i = self.store.read(cx).get(id)?;
+        let title: SharedString = match self.group {
+            GroupBy::None => return None,
+            GroupBy::Status => i.status.name.clone(),
+            GroupBy::Label => i
+                .labels
+                .first()
+                .map_or("No label".into(), |l| l.name.clone()),
+            GroupBy::Assignee => i
+                .assignee
+                .as_ref()
+                .map_or("Unassigned".into(), Assignee::name),
+        };
+        self.header_row(&title)
+    }
+
+    /// The header row of the group that row `row` belongs to.
+    fn group_header_above(&self, row: usize) -> Option<usize> {
+        (0..=row.min(self.rows.len().saturating_sub(1)))
+            .rev()
+            .find(|&ix| matches!(self.rows[ix], Row::Header { .. }))
+    }
+
+    /// Sorts by `key`. The same key again reverses the order.
+    pub fn sort_by(&mut self, key: SortKey, cx: &mut Context<Self>) {
+        self.sort = if self.sort.0 == key {
+            (key, !self.sort.1)
+        } else {
+            (key, false)
+        };
+        self.refresh_keeping_selection(cx);
+    }
+
+    pub fn group_by(&mut self, group: GroupBy, cx: &mut Context<Self>) {
+        self.group = group;
+        self.refresh_keeping_selection(cx);
+    }
+
+    /// Opens or closes the group with header `title`.
+    pub fn set_group_collapsed(&mut self, title: &str, collapsed: bool, cx: &mut Context<Self>) {
+        let key = self.group_key(title);
+        if collapsed {
+            self.collapsed.insert(key);
+        } else {
+            self.collapsed.remove(&key);
+        }
+        // Keep the header selected while its group opens or closes.
+        if let Some(row) = self.header_row(title) {
+            self.selected = row;
+        }
+        self.refresh_keeping_selection(cx);
+    }
+
+    /// The group of the selected row: its header title and whether it is
+    /// collapsed.
+    pub fn current_group(&self) -> Option<(SharedString, bool)> {
+        let row = self.group_header_above(self.selected)?;
+        match &self.rows[row] {
+            Row::Header {
+                title, collapsed, ..
+            } => Some((title.clone(), *collapsed)),
+            Row::Issue(_) => None,
+        }
+    }
+
+    /// The header on the selected row, if the selection is on one.
+    pub fn selected_header(&self) -> Option<(SharedString, bool)> {
+        match self.rows.get(self.selected) {
+            Some(Row::Header {
+                title, collapsed, ..
+            }) => Some((title.clone(), *collapsed)),
+            _ => None,
+        }
+    }
+
+    pub fn close_all_groups(&mut self, cx: &mut Context<Self>) {
+        let titles: Vec<_> = self
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Header { title, .. } => Some(title.clone()),
+                Row::Issue(_) => None,
+            })
+            .collect();
+        for title in titles {
+            self.collapsed.insert(self.group_key(&title));
+        }
+        self.selected = 0;
+        self.refresh_keeping_selection(cx);
+    }
+
+    pub fn open_all_groups(&mut self, cx: &mut Context<Self>) {
+        let prefix = format!("{}:", self.group.label().to_lowercase());
+        self.collapsed.retain(|k| !k.starts_with(&prefix));
+        self.refresh_keeping_selection(cx);
+    }
+
+    /// Whether any group in the list is open.
+    fn any_group_open(&self) -> bool {
+        self.rows.iter().any(|r| {
+            matches!(
+                r,
+                Row::Header {
+                    collapsed: false,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// Selects the first issue row, or the first row when every group is
+    /// closed. Filtering uses this, so Enter picks the first match.
+    pub fn select_first(&mut self, cx: &mut Context<Self>) {
+        let row = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Issue(_)))
+            .unwrap_or(0);
+        self.select(row, cx);
+    }
+
+    /// Selects `row`. Group headers can be selected too, so the keyboard can
+    /// open and close groups.
+    pub fn select(&mut self, row: usize, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let row = row.min(self.rows.len() - 1);
+        self.selected = row;
+        // Show the group header above the first issue too.
+        let scroll_to = if row == 1 && matches!(self.rows[0], Row::Header { .. }) {
+            0
+        } else {
+            row
+        };
+        self.scroll
+            .scroll_to_item(scroll_to, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// The width at which this list shows every column and fits most of
+    /// its titles. The task view beside it grows only past this width.
+    pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
+        let chars = self.title_chars(cx);
+        columns::comfortable_width_for(chars, rem_size, &self.hidden_columns)
+    }
+
+    /// The title length that most titles on the list fit in, from
+    /// `columns::chars_that_fit`.
+    pub(crate) fn title_chars(&self, cx: &App) -> usize {
+        self.title_chars.get().unwrap_or_else(|| {
+            let store = self.store.read(cx);
+            let chars = columns::chars_that_fit(
+                self.visible
+                    .iter()
+                    .filter_map(|id| store.get(*id))
+                    .map(|issue| issue.title.chars().count()),
+            );
+            self.title_chars.set(Some(chars));
+            chars
+        })
+    }
+
+    /// Marks `id`, or clears its mark, and makes it the range anchor.
+    pub fn toggle_marked(&mut self, id: IssueId) {
+        if !self.marked.remove(&id) {
+            self.marked.insert(id);
+        }
+        self.anchor = Some(id);
+        self.range_base = self.marked.clone();
+    }
+
+    /// Clears every mark and the range anchor.
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+        self.range_base.clear();
+        self.anchor = None;
+    }
+
+    /// Makes the range from the anchor to `id` the marked range, both ends
+    /// included. The anchor stays, so a nearer shift-click shrinks the range
+    /// and one past the anchor flips it. Marks made outside the range stay.
+    /// Without an anchor in the list, the range starts at the selected row.
+    /// Group headers in the range are skipped.
+    pub fn mark_range(&mut self, id: IssueId) {
+        let Some(to) = self.row_of(id) else {
+            return;
+        };
+        let anchored = self.anchor.and_then(|a| self.row_of(a));
+        if anchored.is_none() {
+            self.anchor = Some(self.selected_issue().unwrap_or(id));
+            self.range_base = self.marked.clone();
+        }
+        let from = anchored.unwrap_or(self.selected.min(self.rows.len().saturating_sub(1)));
+        let (lo, hi) = (from.min(to), from.max(to));
+        self.marked = self.range_base.clone();
+        for row in &self.rows[lo..=hi] {
+            if let Row::Issue(id) = row {
+                self.marked.insert(*id);
+            }
+        }
+    }
+
+    pub fn move_down(&mut self, cx: &mut Context<Self>) {
+        if self.selected + 1 < self.rows.len() {
+            self.select(self.selected + 1, cx);
+        }
+    }
+
+    pub fn move_up(&mut self, cx: &mut Context<Self>) {
+        if self.selected > 0 {
+            self.select(self.selected - 1, cx);
+        }
+    }
+
+    /// What the list says when it shows no rows.
+    fn empty_text(&self, cx: &App) -> Option<SharedString> {
+        if !self.rows.is_empty() {
+            return None;
+        }
+        let store = self.store.read(cx);
+        Some(match (&store.connection, &self.scope) {
+            (Connection::Connecting, _) if store.is_empty() => "Loading issues…".into(),
+            (Connection::Offline(reason), _) if store.is_empty() => {
+                format!("Cannot reach the llmtodo server: {reason}").into()
+            }
+            (_, Scope::Trash) if self.query.is_empty() => "The Trash is empty".into(),
+            (_, Scope::View(name)) if store.view.as_ref().is_none_or(|v| v.name != *name) => {
+                format!("Loading {name}…").into()
+            }
+            _ if store.iter().all(|i| i.deleted) => "No issues yet".into(),
+            _ if self.query.is_empty() => {
+                format!("No issues in {}", self.scope.name(&store.catalog)).into()
+            }
+            _ => "No issue matches the filter".into(),
+        })
+    }
+
+    /// Collapse all, or expand all when every group is closed, like the
+    /// button in VS Code's explorer. Only shown while the list is grouped.
+    /// Whether the list is wide enough to show `column`.
+    fn shows(&self, column: Column) -> bool {
+        self.columns.contains(&column)
+    }
+
+    /// Hides `column`, or shows it again. The title always shows.
+    pub fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
+        if column == Column::Title {
+            return;
+        }
+        match self.hidden_columns.iter().position(|c| *c == column) {
+            Some(ix) => {
+                self.hidden_columns.remove(ix);
+            }
+            None => self.hidden_columns.push(column),
+        }
+        cx.notify();
+    }
+
+    fn collapse_all_button(&self) -> Option<AnyElement> {
+        if self.group == GroupBy::None {
+            return None;
+        }
+        let open = self.any_group_open();
+        let events = self.events.clone();
+        let card = Card::text(if open {
+            "Collapse all groups (zM)"
+        } else {
+            "Expand all groups (zR)"
+        });
+        Some(with_card(
+            "collapse-all-tip",
+            Button::new("collapse-all")
+                .ghost()
+                .xsmall()
+                .icon(if open {
+                    IconName::ChevronsDownUp
+                } else {
+                    IconName::ChevronsUpDown
+                })
+                .on_click(move |_, window, cx| {
+                    events.emit(
+                        if open {
+                            ViewEvent::CloseAllGroups
+                        } else {
+                            ViewEvent::OpenAllGroups
+                        },
+                        window,
+                        cx,
+                    );
+                }),
+            card,
+        ))
+    }
+
+    /// The badge in the LLM status column: `Locked` while an agent holds a
+    /// claim, `Analyzing` while one reads or fills in the task. It grows in
+    /// when the state starts and shrinks away when it ends. A spring drives
+    /// both ways, so a quick change mid-animation reverses smoothly.
+    fn render_llm_badge(
+        issue: &Issue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let now = jiff::Timestamp::now();
+        let state = issue.llm_status(now);
+        let spring = cx.theme().motion_tokens().spring_control;
+        // Keyed by ID, so a team move does not restart the animation.
+        let id: SharedString = issue.id.to_string().into();
+        let target = if state.is_some() { 1.0_f32 } else { 0.0 };
+        let progress: f32 =
+            gpui_kit::base::spring((id.clone(), "llm"), target, spring, window, cx).clamp(0., 1.);
+        if progress <= 0.001 {
+            return None;
+        }
+        let theme = cx.theme();
+        // The workspace clock redraws the list each minute, so the age
+        // counts up and an expired mark goes away.
+        let (icon, age, card, bg, fg, kind) = match &state {
+            // The state just ended and the badge shrinks away. It keeps a
+            // neutral fill and no content for those few frames.
+            None => (
+                None,
+                String::new(),
+                crate::shell::tooltip::Card::default(),
+                theme.muted,
+                theme.muted_foreground,
+                "ending",
+            ),
+            Some(LlmStatus::Locked(claim)) => {
+                let (bg, fg) = crate::shell::theme::locked_badge(theme);
+                (
+                    Some(IconName::Lock),
+                    claim.age(now),
+                    crate::shell::tooltip::Card::claim(claim, now),
+                    bg,
+                    fg,
+                    "locked",
+                )
+            }
+            // Analyzing stays monochrome: only Locked has the owner's color.
+            Some(LlmStatus::Analyzing(mark)) => (
+                Some(IconName::Eye),
+                mark.age(now),
+                crate::shell::tooltip::Card::analyzing(mark, now),
+                theme.muted,
+                theme.muted_foreground,
+                "analyzing",
+            ),
+        };
+        let age: SharedString = age.into();
+        Some(
+            div()
+                .id(SharedString::from(format!("llm-{kind}-{id}")))
+                .test_support()
+                .h_5()
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                // The full badge is `w_20`, 5 rem, the column's width.
+                .w(gpui_kit::rems(5. * progress))
+                .opacity(progress)
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .w_20()
+                        .h_5()
+                        .gap_1()
+                        .px_1p5()
+                        .rounded(theme.radius)
+                        .text_xs()
+                        .bg(bg)
+                        .text_color(fg)
+                        .children(icon.map(|icon| Icon::new(icon).xsmall()))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("llm-age-{id}")))
+                                .test_support()
+                                .child(age),
+                        ),
+                )
+                .tooltip(card.builder())
+                .into_any_element(),
+        )
+    }
+
+    /// A group header. A click or Enter opens and closes the group. Under
+    /// "group by status", dropping a task here moves it to this status.
+    #[allow(clippy::too_many_arguments)]
+    fn render_header_row(
+        &self,
+        row: usize,
+        title: SharedString,
+        count: usize,
+        label: Option<Label>,
+        status: Option<Status>,
+        collapsed: bool,
+        list_focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = label.map(|l| label_color(l.color, cx));
+        let theme = cx.theme();
+        let selected = row == self.selected;
+        let rest = theme.muted.opacity(0.5);
+        let hover = theme.muted;
+        let pressed = crate::shell::theme::row_pressed(theme);
+        let selected_hover = crate::shell::theme::selection_hover(theme);
+        let drop = theme.foreground.opacity(0.16);
+        let selected_bg = crate::shell::theme::selection_bg(theme, list_focused);
+        let toggle_title = title.clone();
+        let events = self.events.clone();
+        let drop_events = self.events.clone();
+        h_flex()
+            .id(("row", row))
+            .test_support()
+            .w_full()
+            .h_7()
+            .px_2()
+            .gap_2()
+            .text_xs()
+            .cursor_pointer()
+            .bg(if selected { selected_bg } else { rest })
+            .hover(move |s| s.bg(if selected { selected_hover } else { hover }))
+            .active(move |s| s.bg(pressed))
+            .child(
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .small()
+                .text_color(theme.muted_foreground),
+            )
+            .when_some(color, |this, color| {
+                this.child(div().size_2().rounded_full().bg(color))
+            })
+            .when_some(status.clone(), |this, status| {
+                this.child(
+                    Icon::new(status.icon())
+                        .small()
+                        .text_color(if status.is_done() {
+                            theme.success
+                        } else {
+                            theme.muted_foreground
+                        }),
+                )
+            })
+            .child(div().text_color(theme.foreground).child(title))
+            .child(
+                div()
+                    .text_color(theme.muted_foreground)
+                    .child(count.to_string()),
+            )
+            .on_click(move |_, window, cx| {
+                events.emit(
+                    ViewEvent::ClickHeader {
+                        row,
+                        title: toggle_title.to_string(),
+                        collapsed,
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .when_some(
+                status.filter(|_| self.group == GroupBy::Status),
+                |this, status| {
+                    this.drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
+                        .on_drop(move |dragged: &DraggedIssue, window, cx| {
+                            drop_events.emit(
+                                ViewEvent::OnIssue(
+                                    dragged.issue,
+                                    IssueAction::SetStatus(status.clone()),
+                                ),
+                                window,
+                                cx,
+                            );
+                        })
+                },
+            )
+            .into_any_element()
+    }
+
+    fn render_row(
+        &self,
+        row: usize,
+        list_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match &self.rows[row] {
+            Row::Issue(id) => *id,
+            Row::Header {
+                title,
+                count,
+                label,
+                status,
+                collapsed,
+            } => {
+                return self.render_header_row(
+                    row,
+                    title.clone(),
+                    *count,
+                    label.clone(),
+                    status.clone(),
+                    *collapsed,
+                    list_focused,
+                    cx,
+                );
+            }
+        };
+        self.render_issue_row(row, id, list_focused, window, cx)
+    }
+
+    /// The box that marks a task. It shows on the hovered row, and on every
+    /// row while any task is marked. A click toggles the mark and leaves the
+    /// open task alone; shift-click marks a range.
+    fn mark_box(
+        &self,
+        row: usize,
+        id: IssueId,
+        marked: bool,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let (fg, page, muted) = (theme.foreground, theme.background, theme.muted_foreground);
+        let always = !self.marked.is_empty();
+        let events = self.events.clone();
+        let square = div()
+            .id(("row-check-box", row))
+            .size_3p5()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .map(|this| {
+                if marked {
+                    this.bg(fg)
+                        .group_hover(CHECK_GROUP, move |s| s.bg(fg.opacity(0.8)))
+                        .group_active(CHECK_GROUP, move |s| s.bg(fg.opacity(0.6)))
+                        .child(Icon::new(IconName::Check).xsmall().text_color(page))
+                } else {
+                    this.border_1()
+                        .border_color(muted)
+                        .group_hover(CHECK_GROUP, move |s| {
+                            s.border_color(fg).bg(fg.opacity(0.12))
+                        })
+                        .group_active(CHECK_GROUP, move |s| {
+                            s.border_color(fg).bg(fg.opacity(0.28))
+                        })
+                }
+            });
+        let target = h_flex()
+            .id(SharedString::from(format!("row-check-{row}")))
+            .test_support()
+            .group(CHECK_GROUP)
+            .size_full()
+            .justify_center()
+            .cursor_pointer()
+            .when(!always, |this| {
+                this.opacity(0.).group_hover(ROW_GROUP, |s| s.opacity(1.))
+            })
+            .on_click(move |event, window, cx| {
+                cx.stop_propagation();
+                let click = if event.modifiers().shift {
+                    RowClick::Range
+                } else {
+                    RowClick::Toggle
+                };
+                events.emit(ViewEvent::ClickRow { id, click }, window, cx);
+            })
+            .child(square);
+        // On the outside, so the box still sees the press but the row does
+        // not: the row neither shows as pressed nor starts a drag.
+        div()
+            .size_full()
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
+            .child(target)
+    }
+
+    /// One task's row.
+    fn render_issue_row(
+        &self,
+        row: usize,
+        id: IssueId,
+        list_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(issue) = self.store.read(cx).get(id).cloned() else {
+            return div().id(("row", row)).h_7().into_any_element();
+        };
+        let selected = row == self.selected;
+        let closed = issue.status.is_closed();
+        let tags: Vec<_> = widgets::tags(&issue, cx).collect();
+        let llm = Self::render_llm_badge(&issue, window, cx);
+        let claimed = issue.claim.is_some();
+        let marked = self.marked.contains(&issue.id);
+        let theme = cx.theme();
+        let hover = theme.list_hover;
+        let pressed = crate::shell::theme::row_pressed(theme);
+        let selected_hover = crate::shell::theme::selection_hover(theme);
+        // A selection in a list without focus is drawn fainter.
+        let selected_bg = crate::shell::theme::selection_bg(theme, list_focused);
+        // A claimed row is tinted with the lock hue, strongly enough to
+        // differ from the gray group headers. This is the owner's one
+        // exception to the monochrome rows besides tags.
+        let locked = crate::shell::theme::locked_row(theme);
+        let muted = if claimed {
+            locked.text
+        } else {
+            theme.muted_foreground
+        };
+        let pressed = if claimed { locked.pressed } else { pressed };
+        let key = widgets::issue_key(
+            ("row-key", row).into(),
+            &issue,
+            self.events.clone(),
+            muted,
+            cx,
+        )
+        .into_any_element();
+        let deps = widgets::dependency_badge(&issue, muted, cx);
+        // Every marked row is highlighted, also when the list has no focus.
+        // The cursor row stays visible inside a run of marked rows.
+        let marked_bg = theme.list_active;
+        let cursor_on_marked = theme.foreground.opacity(0.13);
+        let cursor_on_marked_hover = theme.foreground.opacity(0.16);
+        let filled = selected || marked;
+        // A marked row uses the marked fill, even when an agent holds it.
+        let tinted = claimed && !marked;
+        let hover = match (selected && marked, filled) {
+            (true, _) => cursor_on_marked_hover,
+            _ if tinted && selected => locked.selected_hover,
+            _ if tinted => locked.hover,
+            (false, true) => selected_hover,
+            (false, false) => hover,
+        };
+        let (locked_rest, locked_selected) = (locked.rest, locked.selected);
+        let check = self.mark_box(row, id, marked, cx);
+        let click_events = self.events.clone();
+        columns::row_frame()
+            .id(("row", row))
+            .test_support()
+            .group(ROW_GROUP)
+            .relative()
+            .text_sm()
+            .cursor_pointer()
+            .when(marked, |this| this.bg(marked_bg))
+            .when(selected, |this| this.bg(selected_bg))
+            .when(selected && marked, |this| this.bg(cursor_on_marked))
+            .when(tinted, |this| {
+                this.bg(if selected {
+                    locked_selected
+                } else {
+                    locked_rest
+                })
+            })
+            .hover(move |s| s.bg(hover))
+            .active(move |s| s.bg(pressed))
+            .when(self.shows(Column::Check), |this| {
+                this.child(cell_with(Column::Check, check))
+            })
+            .when(self.shows(Column::Llm), |this| {
+                this.child(cell_with(Column::Llm, div().children(llm)))
+            })
+            .when(self.shows(Column::Status), |this| {
+                this.child(cell_with(Column::Status, status_cell(&issue, muted, cx)))
+            })
+            .when(self.shows(Column::Key), |this| {
+                this.child(cell_with(Column::Key, key))
+            })
+            .child(cell_with(
+                Column::Title,
+                div()
+                    .w_full()
+                    .truncate()
+                    .when(closed, |this| this.text_color(muted))
+                    .child(issue.title.clone()),
+            ))
+            // As many tags as fit, then "+N" for the rest. The last tag
+            // shown is cut off if it must be.
+            .when(self.shows(Column::Labels), |this| {
+                let name_chars: Vec<usize> = issue
+                    .labels
+                    .iter()
+                    .map(|label| label.name.chars().count())
+                    .collect();
+                let fit = columns::labels_that_fit(&name_chars);
+                let rest = tags.len() - fit;
+                this.child(cell_with(
+                    Column::Labels,
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .children(tags.into_iter().take(fit).enumerate().map(|(ix, tag)| {
+                            if ix + 1 == fit {
+                                tag.min_w_0().truncate()
+                            } else {
+                                tag.flex_none()
+                            }
+                        }))
+                        .when(rest > 0, |this| {
+                            this.child(
+                                div()
+                                    .id("labels-more")
+                                    .test_support()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(format!("+{rest}")),
+                            )
+                        }),
+                ))
+            })
+            .when(self.shows(Column::Deps), |this| {
+                this.child(cell_with(Column::Deps, div().children(deps)))
+            })
+            .when(self.shows(Column::Waiting), |this| {
+                this.child(cell_with(
+                    Column::Waiting,
+                    h_flex()
+                        .w_full()
+                        .justify_center()
+                        .children(widgets::waiting_on(
+                            SharedString::from(format!("waiting-{}", issue.id)).into(),
+                            issue.waiting_on,
+                            cx,
+                        )),
+                ))
+            })
+            .when(self.shows(Column::Assignee), |this| {
+                this.child(cell_with(Column::Assignee, assignee_cell(&issue, muted)))
+            })
+            .when(self.shows(Column::Cost), |this| {
+                this.child(cell_with(
+                    Column::Cost,
+                    right_mono_text(muted, cx)
+                        .children(issue.cost.map(crate::model::data::format_cost)),
+                ))
+            })
+            .when(self.shows(Column::Time), |this| {
+                this.child(cell_with(
+                    Column::Time,
+                    right_mono_text(muted, cx).children(
+                        issue
+                            .active_seconds
+                            .map(llmtodo_client::types::format_active_time),
+                    ),
+                ))
+            })
+            .when(self.shows(Column::Added), |this| {
+                this.child(cell_with(
+                    Column::Added,
+                    right_mono_text(muted, cx).child(issue.added.short()),
+                ))
+            })
+            // A click selects the task and opens it to the side. Focus stays
+            // in the list, so j / k keep working.
+            // Shift-click marks a range; cmd-click marks one task.
+            .on_click(move |event, window, cx| {
+                let click = row_click(event.modifiers(), cx);
+                click_events.emit(ViewEvent::ClickRow { id, click }, window, cx);
+            })
+            // Under "group by status", drag a task onto another group, or
+            // onto any task in it, to change its status.
+            .when(self.group == GroupBy::Status, |this| {
+                self.with_status_drag(this, &issue, cx)
+            })
+            .context_menu(crate::shell::issue_menu::issue_menu(
+                self.store.clone(),
+                self.events.clone(),
+                issue.id,
+            ))
+            .into_any_element()
+    }
+
+    /// A canvas that records the list's width after layout.
+    fn measure_width(
+        &self,
+        rem_size: gpui_kit::Pixels,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        // Records the list's width after layout. When the new width fits
+        // other columns, the list draws again with them.
+        let width = self.width.clone();
+        let entity = cx.entity_id();
+        let hidden = self.hidden_columns.clone();
+        let chars = self.title_chars(cx);
+        gpui_kit::canvas(
+            move |bounds, _, cx| {
+                let old = width.replace(Some(bounds.size.width));
+                if columns::visible(old, rem_size, &hidden, chars)
+                    != columns::visible(Some(bounds.size.width), rem_size, &hidden, chars)
+                {
+                    cx.notify(entity);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// The filter field, the grouping menu and the button that folds groups.
+    fn render_filter_bar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let collapse_all = self.collapse_all_button();
+        let border = cx.theme().border;
+        let (down_events, up_events) = (self.events.clone(), self.events.clone());
+        let group_events = self.events.clone();
+        let new_events = self.events.clone();
+        let list = cx.entity();
+        h_flex()
+            .key_context("Filter")
+            // The filter is a single line, so Up and Down move the
+            // list selection instead of the caret.
+            .capture_action(move |_: &ed::MoveDown, window, cx| {
+                cx.stop_propagation();
+                down_events.emit(ViewEvent::MoveDown, window, cx);
+            })
+            .capture_action(move |_: &ed::MoveUp, window, cx| {
+                cx.stop_propagation();
+                up_events.emit(ViewEvent::MoveUp, window, cx);
+            })
+            .id("filter-bar")
+            .test_support()
+            // The task view's header lines up with this bar.
+            .h(crate::shell::widgets::top_bar_height(window))
+            .flex_none()
+            .items_center()
+            .px_2()
+            .gap_2()
+            .border_b_1()
+            .border_color(border)
+            .child(with_card(
+                "add-ticket-tip",
+                Button::new("add-ticket")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .label("Add ticket")
+                    .on_click(move |_, window, cx| {
+                        new_events.emit(ViewEvent::NewIssue, window, cx);
+                    }),
+                Card::text("Add a ticket (c)"),
+            ))
+            .child(
+                crate::shell::widgets::text_input(&self.filter)
+                    .prefix(Icon::new(IconName::Search).small()),
+            )
+            .child(with_card(
+                "group-tip",
+                Button::new("group")
+                    .ghost()
+                    .small()
+                    .icon(IconName::LayoutList)
+                    .label(format!("Group: {}", self.group.label()))
+                    .selected(self.group != GroupBy::None)
+                    .dropdown_menu(move |menu, _, cx| {
+                        let current = list.read(cx).group;
+                        [
+                            GroupBy::None,
+                            GroupBy::Status,
+                            GroupBy::Label,
+                            GroupBy::Assignee,
+                        ]
+                        .into_iter()
+                        .fold(menu, |menu, group| {
+                            let events = group_events.clone();
+                            menu.item(
+                                PopupMenuItem::new(group.label())
+                                    .checked(group == current)
+                                    .on_click(move |_, window, cx| {
+                                        events.emit(ViewEvent::GroupBy(group), window, cx);
+                                    }),
+                            )
+                        })
+                    }),
+                Card::text("Change grouping (:group)"),
+            ))
+            // Next to the grouping it acts on. In the column header
+            // it would push the cells out of line with the rows.
+            .when_some(collapse_all, |this, button| this.child(button))
+    }
+
+    /// The column titles. The sortable ones are buttons.
+    fn render_column_header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let border = theme.border;
+        let sort_header = |id: &'static str, label: &'static str, name: &str, key: SortKey| {
+            let active = self.sort.0 == key;
+            let events = self.events.clone();
+            let button = Button::new(id)
+                .ghost()
+                .xsmall()
+                .label(label)
+                .when(active, |b| {
+                    b.icon(if self.sort.1 {
+                        IconName::ArrowDown
+                    } else {
+                        IconName::ArrowUp
+                    })
+                })
+                .selected(active)
+                .on_click(move |_, window, cx| {
+                    events.emit(ViewEvent::SortBy(key), window, cx);
+                });
+            with_card(
+                format!("{id}-tip"),
+                button,
+                Card::text(format!("Sort by {name}")),
+            )
+        };
+        let muted = theme.muted_foreground;
+        let label = move |text: &'static str| div().px_1().text_color(muted).child(text);
+        // The same frame and cells as an issue row. The bottom line sits on
+        // a wrapper.
+        let cells = columns::row_frame()
+            .h_full()
+            .text_xs()
+            .when(self.shows(Column::Check), |this| {
+                this.child(cell_with(Column::Check, div()))
+            })
+            .when(self.shows(Column::Llm), |this| {
+                this.child(cell_with(
+                    Column::Llm,
+                    sort_header("sort-llm", "LLM", "LLM status", SortKey::Llm),
+                ))
+            })
+            .when(self.shows(Column::Status), |this| {
+                this.child(cell_with(
+                    Column::Status,
+                    sort_header("sort-status", "Status", "status", SortKey::Status),
+                ))
+            })
+            .when(self.shows(Column::Key), |this| {
+                this.child(cell_with(
+                    Column::Key,
+                    sort_header("sort-key", "Key", "key", SortKey::Key),
+                ))
+            })
+            .child(cell_with(Column::Title, label("Title")))
+            .when(self.shows(Column::Labels), |this| {
+                this.child(cell_with(Column::Labels, label("Labels")))
+            })
+            .when(self.shows(Column::Deps), |this| {
+                this.child(cell_with(Column::Deps, div()))
+            })
+            .when(self.shows(Column::Waiting), |this| {
+                this.child(cell_with(Column::Waiting, div()))
+            })
+            .when(self.shows(Column::Assignee), |this| {
+                this.child(cell_with(Column::Assignee, div()))
+            })
+            .when(self.shows(Column::Cost), |this| {
+                this.child(cell_with(
+                    Column::Cost,
+                    h_flex().w_full().justify_end().child(label("Cost")),
+                ))
+            })
+            .when(self.shows(Column::Time), |this| {
+                this.child(cell_with(
+                    Column::Time,
+                    h_flex().w_full().justify_end().child(label("Time")),
+                ))
+            })
+            .when(self.shows(Column::Added), |this| {
+                this.child(cell_with(
+                    Column::Added,
+                    h_flex().w_full().justify_end().child(sort_header(
+                        "sort-added",
+                        "Added",
+                        "added",
+                        SortKey::Added,
+                    )),
+                ))
+            });
+        let list = cx.weak_entity();
+        div()
+            .id("column-header")
+            .test_support()
+            .flex_none()
+            .h_7()
+            .border_b_1()
+            .border_color(border)
+            .child(cells)
+            // A checklist of the columns. It reads the list each time it
+            // opens, so the checks are always current.
+            .context_menu(move |menu, _, cx| {
+                let hidden = list
+                    .upgrade()
+                    .map(|list| list.read(cx).hidden_columns.clone())
+                    .unwrap_or_default();
+                Column::ALL.into_iter().fold(menu, |menu, column| {
+                    menu.menu_with_check_and_disabled(
+                        column.label(),
+                        !hidden.contains(&column),
+                        Box::new(columns::ToggleColumn(column)),
+                        column == Column::Title,
+                    )
+                })
+            })
+    }
+
+    /// Lets a row be dragged onto another group, or onto a task in it, to
+    /// change its status.
+    fn with_status_drag<E: gpui_kit::StatefulInteractiveElement>(
+        &self,
+        this: E,
+        issue: &Issue,
+        cx: &App,
+    ) -> E {
+        let theme = cx.theme();
+        let dragged = DraggedIssue {
+            issue: issue.id,
+            key: issue.key.clone(),
+            title: issue.title.clone(),
+        };
+        let status = issue.status.clone();
+        let drop = theme.foreground.opacity(0.16);
+        let events = self.events.clone();
+        let store = self.store.clone();
+        this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
+            .on_drop(move |dragged: &DraggedIssue, window, cx| {
+                let same = store
+                    .read(cx)
+                    .get(dragged.issue)
+                    .is_some_and(|i| i.status == status);
+                if same {
+                    return;
+                }
+                events.emit(
+                    ViewEvent::OnIssue(dragged.issue, IssueAction::SetStatus(status.clone())),
+                    window,
+                    cx,
+                );
+            })
+    }
+}
+
+impl Render for IssueList {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rem_size = window.rem_size();
+        let chars = self.title_chars(cx);
+        self.columns = columns::visible(self.width.get(), rem_size, &self.hidden_columns, chars);
+        let measure = self.measure_width(rem_size, cx);
+        let filter_bar = self.render_filter_bar(window, cx);
+        let header = self.render_column_header(cx);
+        v_flex()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .h_full()
+            .child(measure)
+            .child(filter_bar)
+            .child(header)
+            .when_some(self.empty_text(cx), |this, text| {
+                this.child(
+                    div()
+                        .p_4()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text),
+                )
+            })
+            .child(
+                uniform_list(
+                    "issues",
+                    self.rows.len(),
+                    cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                        let list_focused = this.focus.is_focused(window);
+                        range
+                            .map(|row| this.render_row(row, list_focused, window, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.scroll)
+                .flex_1(),
+            )
+    }
+}
+
+/// The status cell of a row.
+fn status_cell(issue: &Issue, muted: gpui_kit::Hsla, cx: &App) -> impl IntoElement + use<> {
+    let theme = cx.theme();
+    let done = issue.status.is_done();
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1p5()
+        .text_xs()
+        .text_color(muted)
+        .child(Icon::new(issue.status.icon()).small().text_color(if done {
+            theme.success
+        } else {
+            muted
+        }))
+        .child(div().truncate().child(issue.status.name.clone()))
+}
+
+/// The assignee cell of a row: an agent's icon or a person's name.
+fn assignee_cell(issue: &Issue, muted: gpui_kit::Hsla) -> impl IntoElement + use<> {
+    h_flex()
+        .w_full()
+        .justify_center()
+        .text_xs()
+        .text_color(muted)
+        .map(|this| match &issue.assignee {
+            Some(Assignee::Agent(agent)) => {
+                this.child(Icon::new(agent.icon()).small().text_color(muted))
+            }
+            Some(Assignee::Person(name)) => this.child(name.clone()),
+            None => this,
+        })
+}
+
+/// Small right-aligned monospace text, for the cost and date columns.
+fn right_mono_text(muted: gpui_kit::Hsla, cx: &App) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .text_right()
+        .text_xs()
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_color(muted)
+}
+
+/// What a click on a row does, from the keys held during the click.
+fn row_click(modifiers: gpui_kit::Modifiers, cx: &App) -> RowClick {
+    if modifiers.shift {
+        RowClick::Range
+    } else if modifiers.secondary(cx) {
+        RowClick::Toggle
+    } else {
+        RowClick::Plain
+    }
+}

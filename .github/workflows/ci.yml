@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Agents push to main minutes apart, and a build takes longer than that. So a
+# push to main never cancels a running build, or no build would finish. GitHub
+# keeps only the newest waiting run per group, so the queue stays at one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # The app builds against GPUI's macOS backend, and v1 is macOS only.
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # After the toolchain step, because the cache key uses the rustc version.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # GPUI's benchmarks refuse its test-support feature. Cargo turns a
+      # feature on for every crate in one package, so the check reads the
+      # bench package's whole feature graph.
+      - name: Benchmarks without test-support
+        run: |
+          if cargo tree -p llmtodo-ui-bench -e normal,build,dev,features --locked | grep -F 'feature "test-support"'; then
+            echo "llmtodo-ui-bench pulls in a test-support feature" >&2
+            exit 1
+          fi
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+        env:
+          LLMTODO_DATA_DIR: ${{ runner.temp }}/llmtodo-data

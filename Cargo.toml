@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# Optimize every dependency in dev builds. Unoptimized GPUI, taffy and text
+# shaping drop frames while scrolling. Our own crates stay at opt-level 0, so
+# incremental builds stay fast. GPUI Kit's own workspace does the same.
+#
+# No debug info for dependencies. A clean build of the server took 11% less
+# CPU and 27% less disk. Panics still name every function. Our own crates
+# keep full debug info.
+[profile.dev.package."*"]
+opt-level = 3
+debug = false

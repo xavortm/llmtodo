@@ -1,0 +1,286 @@
+#!/bin/sh
+# Builds a demo data folder that shows every feature and UI state of the app.
+# Previews open it, so the owner can check the UI without touching real data.
+#
+#   scripts/seed-demo <folder>     build into <folder>, which is wiped first
+#
+# It only wipes a folder that is empty or that an earlier seed made.
+#
+# Needs a built `llmtodo` binary: target/debug/llmtodo, or LLMTODO_BIN.
+set -eu
+cd "$(dirname "$0")/.."
+. scripts/stop-server
+dir=${1:?usage: scripts/seed-demo <folder>}
+bin=${LLMTODO_BIN:-$PWD/target/debug/llmtodo}
+repo=$PWD
+# The seed writes this file, so a later run knows the folder is safe to wipe.
+marker=.llmtodo-demo
+refuse() { echo "refusing to seed $dir: $1" >&2; exit 1; }
+if [ -e "$dir" ] || [ -L "$dir" ]; then
+  # Resolve slashes, `.`, `..` and symlinks before any check.
+  resolved=$(cd "$dir" 2>/dev/null && pwd -P) || refuse "it is not a folder"
+  real="$HOME/Library/Application Support/llmtodo"
+  if [ -d "$real" ] && [ "$resolved" = "$(cd "$real" && pwd -P)" ]; then
+    refuse "it is the real data folder"
+  fi
+  # A custom data folder from config.toml holds llmtodo.db but no marker.
+  if [ -n "$(ls -A "$resolved")" ] && [ ! -f "$resolved/$marker" ]; then
+    refuse "it is not empty and seed-demo did not make it"
+  fi
+  dir=$resolved
+  # A server left on an earlier seed would keep running on deleted files.
+  [ ! -f "$dir/$marker" ] || stop_folder_server "$dir"
+fi
+rm -rf "$dir"
+mkdir -p "$dir"
+dir=$(cd "$dir" && pwd -P)
+: >"$dir/$marker"
+# Commands run from the data folder, so this repo's .llmtodo.toml does not
+# apply. Two small git repos stand in for agent worktrees.
+for wt in wt-list-view wt-sync wt-docs; do
+  git init -q -b "agent/$wt" "$dir/$wt"
+  git -C "$dir/$wt" -c user.name=demo -c user.email=demo@example.com commit -q --allow-empty -m "start $wt"
+done
+# An `origin` remote, so the git panel links each commit hash. One uses the
+# SSH form and one the HTTPS form.
+git -C "$dir/wt-list-view" remote add origin git@github.com:example/demo-app.git
+git -C "$dir/wt-sync" remote add origin https://github.com/example/demo-sync.git
+cd "$dir"
+
+export LLMTODO_DATA_DIR="$dir" LLMTODO_PORT=0 LLMTODO_NO_GITHUB=1 LLMTODO_NO_USAGE=1
+unset LLMTODO_SESSION HERDR_PANE_ID CLAUDE_CODE_SESSION_ID AI_AGENT CLAUDECODE CLAUDE_EFFORT LLMTODO_MODEL 2>/dev/null || true
+
+# The first CLI call below starts a server for this folder. Stop it on every
+# exit, a failed seed included. `server stop` returns before the server has
+# exited, so wait: scripts/preview starts its own server on this folder next.
+stop_seed_server() {
+  set +e
+  LLMTODO_ACTOR=human "$bin" server stop >/dev/null 2>&1
+  wait_server_gone "$dir" 50 || stop_folder_server "$dir"
+}
+trap 'seed_code=$?; trap - EXIT; stop_seed_server; exit "$seed_code"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Run as the owner, or as an agent with `as_agent <actor> <session> <pane>`.
+owner() { LLMTODO_ACTOR=human "$bin" --json --no-input -y "$@" >/dev/null; }
+key() { LLMTODO_ACTOR=human "$bin" --json --no-input "$@" --fields key | sed -E 's/.*"key":"([^"]+)".*/\1/'; }
+# `fill <key>` gives an issue the next long description from
+# scripts/demo-content, so previews show real lengths.
+content_ix=0
+fill() {
+  content_ix=$((content_ix + 1))
+  f=$(printf '%s/scripts/demo-content/%02d.md' "$repo" "$content_ix")
+  [ -f "$f" ] || { content_ix=0; return 0; }
+  owner issue update "$1" --description-file "$f" --force
+}
+as_agent() {
+  actor=$1 session=$2 pane=$3 wt=$4; shift 4
+  (cd "$dir/$wt" && LLMTODO_ACTOR="$actor" LLMTODO_SESSION="$session" HERDR_PANE_ID="$pane" "$bin" --json --no-input -y "$@" >/dev/null)
+}
+
+owner team create DEMO "Demo"
+owner status create DEMO "User review" --type started --color "#5e6ad2" --review
+owner settings set --default-team DEMO --workspace-name "llmtodo demo"
+owner project create "Demo App" --slug demo-app --team DEMO -d "A sample project with every kind of content."
+owner project create "Website" --slug website --team DEMO --state planned
+owner milestone create "Beta" --project demo-app --target-date 2026-12-15 -d "First public beta."
+owner milestone create "1.0" --project demo-app --target-date 2027-02-01
+
+owner label create Area --group-label --color "#6e7681"
+owner label create frontend --group Area --color "#58a6ff"
+owner label create backend --group Area --color "#3fb950"
+owner label create design --group Area --color "#d2a8ff"
+owner label create bug --color "#f85149" -d "Something is broken"
+owner label create feature --color "#1f6feb"
+owner label create docs --color "#2ea043"
+owner label create ux --color "#db61a2"
+owner label create infra --color "#d29922"
+owner label create needs-triage --color "#e3b341"
+
+# An image stored in the file store, served at /v1/files/<hash>.
+img=$repo/crates/ui/assets/icon/HardHat-1024.png
+hash=$(shasum -a 256 "$img" | cut -d' ' -f1)
+mkdir -p "$dir/files"
+cp "$img" "$dir/files/$hash"
+size=$(wc -c <"$img" | tr -d ' ')
+owner team list
+sqlite3 "$dir/llmtodo.db" "INSERT OR IGNORE INTO files (hash, mime, size, created_at) VALUES ('$hash', 'image/png', $size, strftime('%Y-%m-%dT%H:%M:%fZ','now'));"
+
+map=$(key issue create -t "Beta launch map" -p high --project demo-app --milestone Beta -d "$(cat <<'EOF'
+The map for the beta. Sub-issues are the work; the frontier lists what is free to pick.
+
+## Goal
+
+Ship a beta that ten testers use daily.
+
+## Scope
+
+- Sign in with a magic link
+- A list and a detail view
+- Sync between two laptops
+
++++ Agent notes
+Created by the demo seed. Agents add notes here instead of comments.
++++
+EOF
+)")
+
+rich=$(key issue create -t "Markdown showcase: every element the preview renders" -p urgent --project demo-app --parent "$map" -l docs -l ux -d "$(cat <<EOF
+This ticket shows every Markdown element, so the preview can be checked in one place.
+
+## Text
+
+Plain text with **bold**, *italic*, ~~strikethrough~~ and \`inline code\`. A line
+break inside a paragraph stays one paragraph.
+
+## Links
+
+- An external link: [llmtodo on GitHub](https://github.com/xavortm/llmtodo)
+- A bare URL: https://zed.dev
+- An issue key, which opens the issue in the app: $map
+- A link with a title: [Linear](https://linear.app "Linear's site")
+
+## Images
+
+A stored image, served by the local server:
+
+![HardHat icon](/v1/files/$hash)
+
+A remote image:
+
+![Placeholder](https://placehold.co/320x120/png?text=remote+image)
+
+## Lists
+
+1. First step
+2. Second step
+   - A nested point
+   - Another one
+3. Third step
+
+- [x] A finished task
+- [ ] An open task
+
+## Table
+
+| Status | Type | Icon |
+|---|---|---|
+| Backlog | backlog | dashed circle |
+| In Progress | started | dot |
+| Done | completed | check |
+
+## Code
+
+\`\`\`rust
+fn main() {
+    println!("hello from the demo");
+}
+\`\`\`
+
+## Quote
+
+> The description is the record. Comments are rare.
+
+---
+
++++ Agent notes
+Notes an agent wrote while working. This section folds in the editor and
+becomes a tab in the task view.
++++
+
++++ Plan
+1. Check every element above in the preview.
+2. File a ticket for anything that renders wrong.
++++
+EOF
+)")
+
+# LLM-85: every Markdown element that once ran past the task view's right
+# edge. Narrow the task view to check that it all wraps.
+key issue create -t "Long text wraps in the task view" -p high --project demo-app --parent "$map" -l ux --description-file "$repo/scripts/demo-content/wrap.md" >/dev/null
+
+# One issue in every status, with every priority.
+backlog=$(key issue create -t "Dark and light theme toggle in settings" -s Backlog -p low --project demo-app -l ux -l frontend)
+todo=$(key issue create -t "Magic link sign-in" -s Todo -p high --project demo-app --parent "$map" -l backend -w agent --for kind=agent)
+progress=$(key issue create -t "List view with keyboard navigation" -s "In Progress" -p medium --project demo-app --parent "$map" -l frontend)
+# In Review is a review status too, so it needs a review section (LLM-151).
+review=$(key issue create -t "Sync push and pull between laptops" -s "In Review" -p high --project demo-app --parent "$map" -l backend -l infra \
+  --description "$(printf '+++ Review\n### Steps to reproduce\n1. Run llmtodo sync push.\n2. Run llmtodo sync pull on the other laptop.\n\n### What to check\n- The other laptop shows the same tickets.\n+++\n')")
+done_=$(key issue create -t "Project scaffold and CI" -s Done -p none --project demo-app -l infra)
+# A ticket for the owner to review, with its steps and checks (LLM-138).
+user_review=$(key issue create -t "Inbox buttons invert on hover" -p medium --project demo-app --parent "$map" -l ux)
+owner issue review set "$user_review" --step "Open the inbox." --step "Hover an answer button." \
+  --check "The button turns black and its text turns white." --check "The letter square stays readable."
+owner issue update "$user_review" --status "User review"
+canceled=$(key issue create -t "Electron prototype" -s Canceled --project demo-app -l frontend)
+dup=$(key issue create -t "Sign in with an email link" --project demo-app -l backend)
+owner issue relation add "$dup" duplicate "$todo"
+key issue create -t "A very long title that keeps going to check how the list truncates text when the window is narrow and the column has no room left" --project demo-app -l needs-triage >/dev/null
+blocked=$(key issue create -t "Beta invite emails" --project demo-app --parent "$map" -l backend --blocked-by "$todo")
+owner issue relation add "$progress" related "$rich"
+# A chain of dependencies: the app shows depth 2 on the last task and 1 on the
+# middle one, and the first one is free to start.
+schema_task=$(key issue create -t "Database schema for invites" --project demo-app --parent "$map" -l backend)
+api_task=$(key issue create -t "Invite API" --project demo-app --parent "$map" -l backend --blocked-by "$schema_task")
+key issue create -t "Invite screen" --project demo-app --parent "$map" -l frontend --blocked-by "$api_task" >/dev/null
+# Long text on most issues. The backlog issue keeps an empty description,
+# to show the empty state.
+for k in "$todo" "$progress" "$review" "$done_" "$canceled" "$dup" "$blocked"; do fill "$k"; done
+
+# Assignees and claims by agents, with worktrees and herdr panes. A claim
+# needs both estimates.
+owner issue update "$progress" --estimate-minutes 90 --estimate-cost 4.5
+owner issue update "$review" --estimate-minutes 45 --estimate-cost 1.25
+as_agent agent:claude-code/opus-5.5/high demo-session-1 w1:p2 wt-list-view issue claim "$progress"
+# A small fake transcript gives this task active time in the list.
+mkdir -p "$dir/home/.claude/projects/demo"
+printf '%s\n' '{"type":"assistant","timestamp":"2026-11-11T07:00:00Z"}' '{"type":"assistant","timestamp":"2026-11-11T07:08:30Z"}' >"$dir/home/.claude/projects/demo/demo-session-1.jsonl"
+(
+  export HOME="$dir/home" CLAUDE_CODE_SESSION_ID=demo-session-1 LLMTODO_NO_USAGE=
+  as_agent agent:claude-code/opus-5.5/high demo-session-1 w1:p2 wt-list-view issue update "$progress" --upsert-section "Agent notes" --body "Claimed by the demo seed. Working on j/k and gg/G."
+)
+as_agent agent:ollama/qwen3-coder demo-session-2 w1:p3 wt-sync issue claim "$review"
+as_agent agent:ollama/qwen3-coder demo-session-2 w1:p3 wt-sync session note "Plan: /tmp/demo-plan.md" --issue "$review"
+# An agent analyzes the rich ticket without a claim. The mark lasts 15
+# minutes after the seed runs.
+as_agent agent:claude-code/opus-5.5/high demo-session-3 w1:p4 wt-docs issue analyze "$rich"
+owner issue update "$backlog" --assignee owner
+owner issue update "$blocked" -w owner
+# Owner questions: one choice and one free-text question, asked by agents,
+# so the inbox shows both kinds. `issue ask` sets waiting_on owner.
+as_agent agent:claude-code/opus-5.5/high demo-session-1 w1:p2 wt-list-view issue ask "$blocked" "Which mail provider sends the invites?" --context "Both have a free tier that covers the beta." -o "a=Postmark" -o "b=Amazon SES" -o "c=Resend"
+as_agent agent:claude-code/opus-5.5/high demo-session-1 w1:p2 wt-list-view issue ask "$blocked" "What subject line should the invite use?"
+as_agent agent:ollama/qwen3-coder demo-session-2 w1:p3 wt-sync issue ask "$review" "Keep the old sync format for one release?" -o "Yes, read both" -o "No, migrate at once"
+owner issue update "$rich" -w agent
+owner issue update "$backlog" -w owner
+
+# Attachments, comments, history.
+owner issue attach "$review" https://github.com/xavortm/llmtodo/pull/1 --title "Sync handoff"
+owner issue attach "$review" https://github.com/xavortm/llmtodo/commit/abc1234 --title "feat(sync): push and pull"
+owner issue attach "$done_" "$repo/scripts/seed-demo" --title "Seed script"
+owner issue comment add "$review" --body "Looks good. One question: what happens when both laptops push?"
+as_agent agent:ollama/qwen3-coder demo-session-2 w1:p3 wt-sync issue comment add "$review" --body "The second push is refused with exit code 6, because the remote generation is newer. See the sync test."
+owner issue update "$map" --section "Goal" --body $'\nShip a beta that ten testers use every day.\n'
+
+# A trashed issue, a second team, a document, and filler for scrolling.
+trash=$(key issue create -t "Old idea we dropped" --project demo-app)
+owner issue delete "$trash"
+owner team create WEB "Website"
+key issue create -t "Landing page copy" --team WEB --project website -l docs >/dev/null
+# Saved views for the sidebar.
+owner view create "Open backend work" --label backend --open >/dev/null
+owner view create "Needs triage" --label needs-triage >/dev/null
+owner doc create "Release checklist" --project demo-app --body $'## Before the beta\n\n- [ ] Seed the demo data\n- [ ] Run the preview\n\nSee [the map]('"$map"').\n'
+i=1
+for t in "Settings screen" "Keyboard shortcut help" "Empty states" "Error toasts" "Offline banner" "Search highlighting" "Drag to reorder" "Bulk select with x" "Command palette history" "Copy issue link" "Status bar sync indicator" "Window size memory"; do
+  case $((i % 4)) in 0) p=urgent ;; 1) p=high ;; 2) p=medium ;; *) p=low ;; esac
+  case $((i % 3)) in 0) l=frontend ;; 1) l=ux ;; *) l=design ;; esac
+  k=$(key issue create -t "$t" -p "$p" --project demo-app -l "$l")
+  # Every fourth filler issue stays empty.
+  [ $((i % 4)) -eq 0 ] || fill "$k"
+  i=$((i + 1))
+done
+
+echo "demo data ready in $dir"
+echo "rich Markdown ticket: $rich, map: $map, claimed: $progress and $review, blocked: $blocked, trash: $trash"
