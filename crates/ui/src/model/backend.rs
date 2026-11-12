@@ -255,6 +255,10 @@ pub struct Target {
     /// Read only: the client refuses every write, and the app never starts
     /// a server here, because a start can migrate the database.
     pub read_only: bool,
+    /// Tests: each live refresh waits this long first, to stand in for a
+    /// slow one.
+    #[cfg(test)]
+    pub slow_flush: Duration,
 }
 
 impl Target {
@@ -278,6 +282,8 @@ impl Target {
             data_dir,
             spawn: beside.or_else(on_path),
             read_only: false,
+            #[cfg(test)]
+            slow_flush: Duration::ZERO,
         }
     }
 }
@@ -415,7 +421,13 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
     let mut backoff = Backoff::default();
     loop {
         state.connected = false;
-        match session(&target, &mut requests, &events, &mut state).await {
+        let ended = session(&target, &mut requests, &events, &mut state).await;
+        // A flush that the session left running is cut. Its work goes back,
+        // so the next connect does it.
+        if let Some(work) = state.flushing.take() {
+            state.pending.merge(work);
+        }
+        match ended {
             Ok(()) => return,
             Err(reason) => {
                 if events.is_closed() {
@@ -502,6 +514,18 @@ struct State {
     /// The reason the app was last told the server is offline, until a
     /// session connects.
     offline_reason: Option<String>,
+    /// A copy of the work the running flush took from `pending`, until it
+    /// finishes.
+    flushing: Option<Pending>,
+}
+
+/// A flush running on its own task. Dropping it stops the task.
+struct FlushTask(tokio::task::JoinHandle<Result<(), String>>);
+
+impl Drop for FlushTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl State {
@@ -593,17 +617,22 @@ async fn session(
     flush(&client, &mut state.pending, state.open, events).await?;
     state.last_seq = Some(hello_seq);
 
+    // Refreshes run on their own task, so the owner's writes never wait
+    // behind them. One runs at a time.
+    let mut flushing: Option<FlushTask> = None;
+    // When the work in `pending` is due. It is set when the first event
+    // arrives and never moved, so a steady stream of events still flushes.
+    let mut due: Option<tokio::time::Instant> = None;
     loop {
-        let settle = tokio::time::sleep(SETTLE);
-        tokio::pin!(settle);
+        if state.pending.is_empty() {
+            due = None;
+        } else if due.is_none() {
+            due = Some(tokio::time::Instant::now() + SETTLE);
+        }
+        let settle = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now));
         tokio::select! {
-            signal = live.next() => match signal? {
-                live::Signal::Event(event) => {
-                    state.last_seq = Some(event.seq);
-                    state.pending.add(&event);
-                }
-                live::Signal::Reload => state.pending.reload = true,
-            },
+            // The owner's requests come first.
+            biased;
             r = requests.recv() => match r {
                 None => return Ok(()),
                 Some(Request::Reload) => snapshot(&client, events).await?,
@@ -660,22 +689,12 @@ async fn session(
                         }),
                     }
                 }
-                Some(Request::History { key }) => match tokio::try_join!(
-                    client.issue_history(&key),
-                    client.issue(&key)
-                ) {
-                    Ok((history, detail)) => {
-                        let detail = with_commits(detail).await;
-                        send(events, Event::History {
-                            key,
-                            history: Box::new(history),
-                            sessions: detail.sessions,
-                        });
-                    }
-                    Err(ClientError::Unreachable(e)) => return Err(e),
-                    // A trashed or moved issue: the next open asks again.
-                    Err(_) => {}
-                },
+                Some(Request::History { key }) => {
+                    let (client, events) = (client.clone(), events.clone());
+                    // Its own task, like a flush. A lost connection ends
+                    // the session through the live socket.
+                    tokio::spawn(async move { history(&client, key, &events).await });
+                }
                 Some(Request::Create(c)) => match client.create_issue(&c).await {
                     Ok(detail) => {
                         let (id, key) = (detail.issue.id, detail.issue.key.to_string());
@@ -718,10 +737,57 @@ async fn session(
                     send(events, event);
                 }
             },
-            _ = &mut settle, if !state.pending.is_empty() => {
-                flush(&client, &mut state.pending, state.open, events).await?;
+            done = async { (&mut flushing.as_mut().expect("a running flush").0).await },
+                if flushing.is_some() =>
+            {
+                flushing = None;
+                match done {
+                    // A failed flush leaves its work in `state.flushing`,
+                    // and the next connect does it.
+                    Ok(Ok(())) => state.flushing = None,
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => return Err(format!("refresh task: {e}")),
+                }
+            }
+            signal = live.next() => match signal? {
+                live::Signal::Event(event) => {
+                    state.last_seq = Some(event.seq);
+                    state.pending.add(&event);
+                }
+                live::Signal::Reload => state.pending.reload = true,
+            },
+            _ = settle, if due.is_some() && flushing.is_none() => {
+                due = None;
+                let mut work = std::mem::take(&mut state.pending);
+                state.flushing = Some(work.clone());
+                let (client, events, open) = (client.clone(), events.clone(), state.open);
+                #[cfg(test)]
+                let slow = target.slow_flush;
+                flushing = Some(FlushTask(tokio::spawn(async move {
+                    #[cfg(test)]
+                    tokio::time::sleep(slow).await;
+                    flush(&client, &mut work, open, &events).await
+                })));
             }
         }
+    }
+}
+
+/// Sends an issue's field changes, description revisions and agent
+/// sessions. A trashed or moved issue sends nothing: the next open asks
+/// again.
+async fn history(client: &Client, key: String, events: &Events) {
+    if let Ok((history, detail)) = tokio::try_join!(client.issue_history(&key), client.issue(&key))
+    {
+        let detail = with_commits(detail).await;
+        send(
+            events,
+            Event::History {
+                key,
+                history: Box::new(history),
+                sessions: detail.sessions,
+            },
+        );
     }
 }
 
@@ -758,7 +824,7 @@ const CHANGES_DEPENDENTS: &[ActivityField] = &[
 
 /// Issues touched by events that arrived close together.
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Pending {
     keys: BTreeSet<String>,
     /// Issues whose change can move the depth of the tasks that wait for
@@ -795,6 +861,14 @@ impl Pending {
 
     fn is_empty(&self) -> bool {
         self.keys.is_empty() && self.dependents_of.is_empty() && !self.catalog && !self.reload
+    }
+
+    /// Adds the work in `other`.
+    fn merge(&mut self, other: Pending) {
+        self.keys.extend(other.keys);
+        self.dependents_of.extend(other.dependents_of);
+        self.catalog |= other.catalog;
+        self.reload |= other.reload;
     }
 }
 
@@ -1244,6 +1318,7 @@ mod tests {
             data_dir: PathBuf::from("/nowhere"),
             spawn: Some(PathBuf::from("/bin/llmtodo")),
             read_only: false,
+            slow_flush: Duration::ZERO,
         };
         let mut state = State::default();
         assert!(state.spawn(&target).is_some());
@@ -1260,6 +1335,7 @@ mod tests {
             data_dir: PathBuf::from("/nowhere"),
             spawn: Some(PathBuf::from("/bin/llmtodo")),
             read_only: true,
+            slow_flush: Duration::ZERO,
         };
         assert!(State::default().spawn(&target).is_none());
     }
