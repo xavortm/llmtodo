@@ -52,7 +52,11 @@ impl Workspace {
             } => self.answer_question(issue, number, answer, window, cx),
             ViewEvent::UndoAnswer => self.undo_answer(cx),
             ViewEvent::AnswerReview { issue, verdict } => {
-                self.answer_review(issue, verdict, window, cx)
+                let batch = verdict == llmtodo_api_types::ReviewVerdict::Approved
+                    && self.approve_marked(issue, cx);
+                if !batch {
+                    self.answer_review(issue, verdict, window, cx);
+                }
             }
             ViewEvent::EditDocument => self.edit_document(window, cx),
             ViewEvent::LeaveDocEditor => self.leave_doc_editor(window, cx),

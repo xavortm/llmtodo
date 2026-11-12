@@ -94,11 +94,12 @@ pub struct TaskView {
     /// The editor holds the owner's text from a refused save, and the
     /// server's version shows beside it.
     pub conflict: bool,
-    /// The review answer on its way to the server. The panel's buttons
-    /// wait for it.
-    pub review_sending: Option<(IssueId, llmtodo_api_types::ReviewVerdict)>,
-    /// Why the server refused the last review answer, for the panel.
-    pub review_error: Option<(IssueId, SharedString)>,
+    /// The review answers on their way to the server, one per task. The
+    /// panel's buttons wait for the open task's answer.
+    pub review_sending: HashMap<IssueId, llmtodo_api_types::ReviewVerdict>,
+    /// Why the server refused each task's last review answer, for the
+    /// panel.
+    pub review_error: HashMap<IssueId, SharedString>,
 }
 
 impl TaskView {
@@ -135,8 +136,8 @@ impl TaskView {
             git_expanded: false,
             focus_by_mouse: false,
             conflict: false,
-            review_sending: None,
-            review_error: None,
+            review_sending: HashMap::new(),
+            review_error: HashMap::new(),
             activity: None,
             sessions: None,
             session_costs: None,
@@ -500,15 +501,8 @@ impl TaskView {
             let state = crate::task::review::PanelState {
                 answers: store.reviews(issue.id),
                 feedback: self.answers.read(cx).feedback(issue.id),
-                sending: self
-                    .review_sending
-                    .filter(|(id, _)| *id == issue.id)
-                    .map(|(_, v)| v),
-                error: self
-                    .review_error
-                    .as_ref()
-                    .filter(|(id, _)| *id == issue.id)
-                    .map(|(_, e)| e.clone()),
+                sending: self.review_sending.get(&issue.id).copied(),
+                error: self.review_error.get(&issue.id).cloned(),
                 fill: review_height.is_some(),
             };
             crate::task::review::panel(issue, state, self.events.clone(), cx).map(|panel| {

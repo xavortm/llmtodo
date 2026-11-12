@@ -536,7 +536,7 @@ impl Workspace {
 }
 
 /// How many tasks, in words.
-fn tasks(n: usize) -> String {
+pub(super) fn tasks(n: usize) -> String {
     if n == 1 {
         "1 task".to_string()
     } else {

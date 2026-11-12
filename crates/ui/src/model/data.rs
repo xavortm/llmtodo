@@ -436,6 +436,15 @@ pub fn hide_cutoff(days: u32, now: jiff::Timestamp) -> jiff::Timestamp {
     now.checked_sub(age).unwrap_or(now)
 }
 
+/// LLM-166: why a batch Approve skips a task, in the order its message
+/// lists them. `already sending` is the workspace's own reason.
+pub const NOT_APPROVABLE: [&str; 4] = [
+    "not in review",
+    "already approved",
+    "already sending",
+    "in the Trash",
+];
+
 impl Issue {
     /// The LLM status at `now`. A claim wins over an Analyzing mark.
     pub fn llm_status(&self, now: jiff::Timestamp) -> Option<LlmStatus> {
@@ -457,6 +466,21 @@ impl Issue {
             LLM_RANK_ANALYZING
         } else {
             LLM_RANK_NONE
+        }
+    }
+
+    /// LLM-166: why Approve does not apply to the task, or `None` when it
+    /// does. An approved ticket that waits on an agent to merge its PR has
+    /// its answer already.
+    pub fn why_not_approvable(&self) -> Option<&'static str> {
+        if self.deleted {
+            Some(NOT_APPROVABLE[3])
+        } else if !self.status.review {
+            Some(NOT_APPROVABLE[0])
+        } else if self.waiting_on == Some(WaitingOn::Agent) {
+            Some(NOT_APPROVABLE[1])
+        } else {
+            None
         }
     }
 

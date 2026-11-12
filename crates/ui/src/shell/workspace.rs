@@ -69,6 +69,7 @@ mod commands;
 mod events;
 mod keys;
 mod render;
+mod review_batch;
 mod update;
 mod view_events;
 
@@ -216,6 +217,8 @@ pub struct Workspace {
     /// The answer fields of owner questions, shared by the inbox
     /// and the task view.
     answers: Entity<AnswerInputs>,
+    /// The Approve answers that one menu click sent for the marked tasks.
+    review_batch: Option<review_batch::ReviewBatch>,
     /// The owner's text from a document save the server refused. The
     /// editor opens with it again, and `:w!` overwrites.
     doc_draft: Option<(llmtodo_core::DocumentId, String)>,
@@ -519,6 +522,7 @@ impl Workspace {
             restore_task: None,
             last_open: None,
             answers,
+            review_batch: None,
             doc_draft: None,
             doc_stale: false,
             claims,
@@ -2428,7 +2432,7 @@ impl Workspace {
         let Some(key) = self.store.read(cx).get(issue).map(|i| i.key.clone()) else {
             return;
         };
-        if self.task.read(cx).review_sending.is_some() {
+        if self.task.read(cx).review_sending.contains_key(&issue) {
             self.show_message("Wait: the last review answer is still sending".into(), cx);
             return;
         }
@@ -2445,8 +2449,8 @@ impl Workspace {
             return;
         }
         self.task.update(cx, |task, cx| {
-            task.review_sending = Some((issue, verdict));
-            task.review_error = None;
+            task.review_sending.insert(issue, verdict);
+            task.review_error.remove(&issue);
             cx.notify();
         });
         self.message = match verdict {
@@ -2467,10 +2471,18 @@ impl Workspace {
     /// ticket went.
     fn review_done(&mut self, key: &str, cx: &mut Context<Self>) {
         use llmtodo_api_types::ReviewVerdict;
-        let sent = self.task.update(cx, |task, _| task.review_sending.take());
-        let Some((issue, verdict)) = sent else {
+        let Some(issue) = self.store.read(cx).by_key(key).map(|i| i.id) else {
             return;
         };
+        let sent = self
+            .task
+            .update(cx, |task, _| task.review_sending.remove(&issue));
+        let Some(verdict) = sent else {
+            return;
+        };
+        if self.batch_answered(issue, key, None, cx) {
+            return;
+        }
         self.answers
             .update(cx, |a, _| a.clear_feedback_later(issue));
         let status = self.store.read(cx).get(issue).map(|i| i.status.clone());
@@ -2522,13 +2534,21 @@ impl Workspace {
 
     /// The server refused the review answer. The panel shows why.
     fn review_failed(&mut self, key: &str, message: String, cx: &mut Context<Self>) {
-        let sent = self.task.update(cx, |task, _| task.review_sending.take());
+        let issue = self.store.read(cx).by_key(key).map(|i| i.id);
+        let sent = issue.filter(|issue| {
+            self.task
+                .update(cx, |task, _| task.review_sending.remove(issue))
+                .is_some()
+        });
         let text: SharedString = format!("Could not send the review of {key}: {message}").into();
-        if let Some((issue, _)) = sent {
+        if let Some(issue) = sent {
             self.task.update(cx, |task, cx| {
-                task.review_error = Some((issue, text.clone()));
+                task.review_error.insert(issue, text.clone());
                 cx.notify();
             });
+            if self.batch_answered(issue, key, Some(message), cx) {
+                return;
+            }
         }
         self.message = text;
         cx.notify();

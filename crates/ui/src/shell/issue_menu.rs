@@ -39,10 +39,9 @@ pub fn issue_menu(
         let statuses = store.read(cx).catalog.team_statuses(&issue.team).to_vec();
         let labels = store.read(cx).catalog.labels.clone();
         // A ticket in a review status gets Approve at the top, for quick
-        // access. An approved ticket that waits on an agent to merge its PR
-        // has its answer already.
-        let approvable =
-            issue.status.review && !deleted && issue.waiting_on != Some(WaitingOn::Agent);
+        // access. With several tasks marked, it approves every marked one
+        // that takes it.
+        let approvable = issue.why_not_approvable().is_none();
         let approve_events = events.clone();
         let menu = if approvable {
             menu.item(

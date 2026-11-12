@@ -525,3 +525,204 @@ fn the_task_menu_puts_approve_first_on_a_review_ticket(cx: &mut TestAppContext) 
     cx.run_until_parked();
     assert!(sent(&mut requests).is_empty());
 }
+
+/// LLM-166: puts each of `keys` in User review, waiting on the owner.
+fn to_review(view: &Entity<Workspace>, keys: &[&str], cx: &mut TestAppContext) {
+    view.update(cx, |this, cx| {
+        for key in keys {
+            let id = this.store().read(cx).by_key(key).unwrap().id;
+            this.store().update(cx, |store, _| {
+                store.modify(id, |i| {
+                    i.status = Status::new("User review", StatusType::Started, 9).with_review(true);
+                    i.waiting_on = Some(WaitingOn::Owner);
+                    i.claim = None;
+                });
+            });
+        }
+    });
+}
+
+/// Marks each of `keys`, as a cmd-click does.
+fn mark(handle: AnyWindowHandle, view: &Entity<Workspace>, keys: &[&str], cx: &mut TestAppContext) {
+    for key in keys {
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let id = this.issue_by_key(key, cx).id;
+                this.click_row(id, crate::issues::list::RowClick::Toggle, window, cx);
+            })
+        })
+        .unwrap();
+    }
+    cx.run_until_parked();
+}
+
+/// Picks Approve in the menu of `key`, as a right-click does.
+fn approve_from_menu(
+    handle: AnyWindowHandle,
+    view: &Entity<Workspace>,
+    key: &str,
+    cx: &mut TestAppContext,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let issue = this.issue_by_key(key, cx).id;
+            let event = crate::shell::view_events::ViewEvent::AnswerReview {
+                issue,
+                verdict: ReviewVerdict::Approved,
+            };
+            this.on_view_event(event, window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The server answers the review write of `key`: `None` takes it,
+/// `Some(message)` refuses it.
+fn answer(view: &Entity<Workspace>, key: &str, refusal: Option<&str>, cx: &mut TestAppContext) {
+    let event = match refusal {
+        None => Event::WriteDone {
+            key: key.into(),
+            kind: WriteKind::Review,
+            version: 0,
+        },
+        Some(message) => Event::WriteFailed {
+            key: key.into(),
+            kind: WriteKind::Review,
+            message: message.into(),
+            stale: false,
+        },
+    };
+    view.update(cx, |this, cx| this.apply_event(event, cx));
+    cx.run_until_parked();
+}
+
+fn sent_keys(requests: &mut UnboundedReceiver<Request>) -> Vec<String> {
+    sent(requests).into_iter().map(|(key, ..)| key).collect()
+}
+
+fn sending(view: &Entity<Workspace>, key: &str, cx: &mut TestAppContext) -> bool {
+    cx.read(|cx| {
+        let this = view.read(cx);
+        let id = this.issue_by_key(key, cx).id;
+        this.task().read(cx).review_sending.contains_key(&id)
+    })
+}
+
+#[gpui_kit::test]
+fn approve_in_the_menu_sends_every_marked_review_task(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-104", "LLM-106", "LLM-108"], cx);
+    mark(handle, &view, &["LLM-104", "LLM-105", "LLM-106"], cx);
+    // The right-click menu of a marked row sends Approve for it.
+    let row = cx.read(|cx| {
+        let this = view.read(cx);
+        let id = this.issue_by_key("LLM-105", cx).id;
+        this.rows(cx)
+            .iter()
+            .position(|r| matches!(r, crate::shell::workspace::Row::Issue(ix) if *ix == id))
+            .unwrap()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("row", row), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("popup-menu").click(0, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sent_keys(&mut requests), ["LLM-104", "LLM-105", "LLM-106"]);
+    assert_eq!(message(&view, cx), "Approving 3 tasks");
+    // The open task's panel shows its answer on the way.
+    assert!(sending(&view, "LLM-105", cx));
+
+    answer(&view, "LLM-104", None, cx);
+    answer(&view, "LLM-105", None, cx);
+    assert_eq!(message(&view, cx), "Approving 3 tasks");
+    assert!(!sending(&view, "LLM-105", cx));
+    answer(&view, "LLM-106", None, cx);
+    assert_eq!(message(&view, cx), "Approved 3 tasks");
+    // The next review ticket outside the batch opens.
+    let open = cx.read(|cx| view.read(cx).task().read(cx).detail().map(|d| d.issue));
+    let next = cx.read(|cx| view.read(cx).issue_by_key("LLM-108", cx).id);
+    assert_eq!(open, Some(next));
+}
+
+#[gpui_kit::test]
+fn a_batch_skips_tasks_that_cannot_be_approved(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-104", "LLM-106", "LLM-107"], cx);
+    view.update(cx, |this, cx| {
+        let waits = this.store().read(cx).by_key("LLM-104").unwrap().id;
+        let trashed = this.store().read(cx).by_key("LLM-107").unwrap().id;
+        this.store().update(cx, |store, _| {
+            store.modify(waits, |i| i.waiting_on = Some(WaitingOn::Agent));
+            store.modify(trashed, |i| i.deleted = true);
+        });
+    });
+    mark(
+        handle,
+        &view,
+        &["LLM-101", "LLM-104", "LLM-105", "LLM-106", "LLM-107"],
+        cx,
+    );
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-105", "LLM-106"]);
+    let skipped = "Skipped 3 tasks: 1 not in review, 1 already approved, 1 in the Trash";
+    assert_eq!(message(&view, cx), format!("Approving 2 tasks. {skipped}"));
+    answer(&view, "LLM-105", None, cx);
+    answer(&view, "LLM-106", None, cx);
+    assert_eq!(message(&view, cx), format!("Approved 2 tasks. {skipped}"));
+}
+
+#[gpui_kit::test]
+fn a_failed_answer_in_a_batch_leaves_the_others(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-104", "LLM-106"], cx);
+    mark(handle, &view, &["LLM-104", "LLM-105", "LLM-106"], cx);
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-104", "LLM-105", "LLM-106"]);
+    answer(&view, "LLM-104", None, cx);
+    answer(&view, "LLM-105", Some("the server is down"), cx);
+    answer(&view, "LLM-106", None, cx);
+    assert_eq!(
+        message(&view, cx),
+        "Approved 2 tasks. Could not approve LLM-105: the server is down"
+    );
+    // LLM-105 is still in review, so it stays open and shows the error.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find("review-error");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn approve_on_a_task_outside_the_marks_approves_it_alone(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-104", "LLM-106"], cx);
+    mark(handle, &view, &["LLM-104", "LLM-106"], cx);
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-105"]);
+    assert_eq!(message(&view, cx), "Approving LLM-105");
+    answer(&view, "LLM-105", None, cx);
+    assert_eq!(
+        message(&view, cx),
+        "Approved LLM-105. An agent will merge its PR and close it"
+    );
+
+    // One mark is not a batch either.
+    mark(handle, &view, &["LLM-104"], cx);
+    approve_from_menu(handle, &view, "LLM-106", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-106"]);
+    assert_eq!(message(&view, cx), "Approving LLM-106");
+}
