@@ -220,6 +220,7 @@ fn open_task(view: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<IssueI
 fn done_on_a_review_ticket_opens_the_next_one(cx: &mut TestAppContext) {
     let (handle, view) = open(cx);
     scroll_to_review(handle, &view, cx);
+    run(handle, &view, "open llm-65", cx);
     let before = offset(&view, cx);
 
     run(handle, &view, "status Done", cx);
@@ -309,4 +310,40 @@ fn done_on_marked_review_tickets_skips_all_of_them(cx: &mut TestAppContext) {
     assert_eq!(issue(&view, "LLM-61", cx).status.name, "Done");
     assert_eq!(issue(&view, "LLM-62", cx).status.name, "Done");
     assert_eq!(selected(&view, cx), Some(issue(&view, "LLM-63", cx).id));
+    assert_eq!(open_task(&view, cx), None, "LLM-168: no panel was open");
+}
+
+// LLM-168: a status change opens the next review ticket only when a task
+// panel is open. With no panel, only the selection moves.
+
+#[gpui_kit::test]
+fn done_with_no_panel_moves_only_the_selection(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    scroll_to_review(handle, &view, cx);
+    assert_eq!(open_task(&view, cx), None);
+
+    run(handle, &view, "status Done", cx);
+
+    assert_eq!(selected(&view, cx), Some(issue(&view, "LLM-61", cx).id));
+    assert_eq!(open_task(&view, cx), None, "no task panel opens");
+}
+
+#[gpui_kit::test]
+fn done_on_marked_review_tickets_with_a_panel_opens_the_next_one(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    scroll_to_review(handle, &view, cx);
+    run(handle, &view, "open llm-65", cx);
+    let (a, b) = (issue(&view, "LLM-61", cx).id, issue(&view, "LLM-62", cx).id);
+    view.update(cx, |this, cx| {
+        this.list().update(cx, |list, _| {
+            list.toggle_marked(a);
+            list.toggle_marked(b);
+        });
+    });
+
+    run(handle, &view, "status Done", cx);
+
+    let next = issue(&view, "LLM-63", cx).id;
+    assert_eq!(selected(&view, cx), Some(next));
+    assert_eq!(open_task(&view, cx), Some(next));
 }

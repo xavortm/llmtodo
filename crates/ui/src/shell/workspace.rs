@@ -222,6 +222,10 @@ pub struct Workspace {
     answers: Entity<AnswerInputs>,
     /// The Approve answers that one menu click sent for the marked tasks.
     review_batch: Option<review_batch::ReviewBatch>,
+    /// LLM-168: the single Approve answers sent while a task panel was
+    /// open. Only these open the next review ticket when the server takes
+    /// them.
+    approved_with_panel: std::collections::HashSet<IssueId>,
     /// The owner's text from a document save the server refused. The
     /// editor opens with it again, and `:w!` overwrites.
     doc_draft: Option<(llmtodo_core::DocumentId, String)>,
@@ -527,6 +531,7 @@ impl Workspace {
             last_open: None,
             answers,
             review_batch: None,
+            approved_with_panel: Default::default(),
             doc_draft: None,
             doc_stale: false,
             claims,
@@ -2464,6 +2469,11 @@ impl Workspace {
             self.show_message("No server, so the review answer was not sent".into(), cx);
             return;
         }
+        if verdict == ReviewVerdict::Approved && self.panel_open(cx) {
+            self.approved_with_panel.insert(issue);
+        } else {
+            self.approved_with_panel.remove(&issue);
+        }
         self.task.update(cx, |task, cx| {
             task.review_sending.insert(issue, verdict);
             task.review_error.remove(&issue);
@@ -2496,6 +2506,7 @@ impl Workspace {
         let Some(verdict) = sent else {
             return;
         };
+        let with_panel = self.approved_with_panel.remove(&issue);
         if self.batch_answered(issue, key, None, cx) {
             return;
         }
@@ -2516,17 +2527,29 @@ impl Workspace {
         }
         .into();
         if verdict == ReviewVerdict::Approved {
-            self.open_next_review(&[issue], cx);
+            self.open_next_review(&[issue], with_panel, cx);
         }
         cx.notify();
     }
 
+    /// Whether a task panel is open, in preview or in the editor.
+    pub(crate) fn panel_open(&self, cx: &App) -> bool {
+        self.task.read(cx).detail().is_some()
+    }
+
     /// LLM-155: after the owner approves a review ticket or sets it to
     /// Done, selects the first row in the list that is still in a review
-    /// status, and opens it. `done` names the tickets that just left
-    /// review. The list scrolls only when that row is out of view. With no
-    /// review ticket left, nothing changes.
-    pub(crate) fn open_next_review(&mut self, done: &[IssueId], cx: &mut Context<Self>) {
+    /// status. `done` names the tickets that just left review. The list
+    /// scrolls only when that row is out of view. With no review ticket
+    /// left, nothing changes. LLM-168: the task panel shows the row only
+    /// when `open` is set, which says a panel was open when the owner
+    /// acted.
+    pub(crate) fn open_next_review(
+        &mut self,
+        done: &[IssueId],
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
         let next = {
             let store = self.store.read(cx);
             self.list
@@ -2544,13 +2567,18 @@ impl Workspace {
         };
         let Some((row, id)) = next else { return };
         self.list_do(cx, |list, cx| list.select(row, cx));
-        self.task.update(cx, |task, cx| task.show(id, cx));
-        self.fetch_open_details(cx);
+        if open {
+            self.task.update(cx, |task, cx| task.show(id, cx));
+            self.fetch_open_details(cx);
+        }
     }
 
     /// The server refused the review answer. The panel shows why.
     fn review_failed(&mut self, key: &str, message: String, cx: &mut Context<Self>) {
         let issue = self.store.read(cx).by_key(key).map(|i| i.id);
+        if let Some(issue) = issue {
+            self.approved_with_panel.remove(&issue);
+        }
         let sent = issue.filter(|issue| {
             self.task
                 .update(cx, |task, _| task.review_sending.remove(issue))
@@ -3730,8 +3758,9 @@ impl Workspace {
     /// Sets the status of one task. A review ticket set to Done opens the
     /// next ticket to review, as Approve does.
     pub fn set_status(&mut self, id: IssueId, status: Status, cx: &mut Context<Self>) {
+        let open = self.panel_open(cx);
         if self.set_status_only(id, status, cx) {
-            self.open_next_review(&[id], cx);
+            self.open_next_review(&[id], open, cx);
         }
     }
 

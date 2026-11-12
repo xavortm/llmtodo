@@ -726,3 +726,87 @@ fn approve_on_a_task_outside_the_marks_approves_it_alone(cx: &mut TestAppContext
     assert_eq!(sent_keys(&mut requests), ["LLM-106"]);
     assert_eq!(message(&view, cx), "Approving LLM-106");
 }
+
+// LLM-168: Approve opens the next review ticket only when a task panel was
+// open at the moment of the Approve. With no panel, only the selection
+// moves.
+
+fn selected(view: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<IssueId> {
+    cx.read(|cx| view.read(cx).list().read(cx).selected_issue())
+}
+
+fn open_task(view: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<IssueId> {
+    cx.read(|cx| view.read(cx).task().read(cx).detail().map(|d| d.issue))
+}
+
+fn id_of(view: &Entity<Workspace>, key: &str, cx: &mut TestAppContext) -> IssueId {
+    cx.read(|cx| view.read(cx).issue_by_key(key, cx).id)
+}
+
+fn close_panel(view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    view.update(cx, |this, cx| {
+        this.task().update(cx, |task, cx| task.close(cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(open_task(view, cx), None);
+}
+
+#[gpui_kit::test]
+fn approve_in_the_panel_opens_the_next_review_ticket(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-106"], cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("review-approve", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sent_keys(&mut requests), ["LLM-105"]);
+    answer(&view, "LLM-105", None, cx);
+    let next = id_of(&view, "LLM-106", cx);
+    assert_eq!(selected(&view, cx), Some(next));
+    assert_eq!(open_task(&view, cx), Some(next));
+}
+
+#[gpui_kit::test]
+fn approve_in_the_menu_with_a_panel_open_opens_the_next_one(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-106"], cx);
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-105"]);
+    answer(&view, "LLM-105", None, cx);
+    let next = id_of(&view, "LLM-106", cx);
+    assert_eq!(open_task(&view, cx), Some(next));
+}
+
+#[gpui_kit::test]
+fn approve_with_no_panel_moves_only_the_selection(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-106"], cx);
+    close_panel(&view, cx);
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-105"]);
+    answer(&view, "LLM-105", None, cx);
+    assert_eq!(selected(&view, cx), Some(id_of(&view, "LLM-106", cx)));
+    assert_eq!(open_task(&view, cx), None, "no task panel opens");
+}
+
+#[gpui_kit::test]
+fn a_batch_with_no_panel_moves_only_the_selection(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    to_review(&view, &["LLM-104", "LLM-106", "LLM-108"], cx);
+    mark(handle, &view, &["LLM-104", "LLM-105", "LLM-106"], cx);
+    close_panel(&view, cx);
+    approve_from_menu(handle, &view, "LLM-105", cx);
+    assert_eq!(sent_keys(&mut requests), ["LLM-104", "LLM-105", "LLM-106"]);
+    for key in ["LLM-104", "LLM-105", "LLM-106"] {
+        answer(&view, key, None, cx);
+    }
+    assert_eq!(message(&view, cx), "Approved 3 tasks");
+    assert_eq!(selected(&view, cx), Some(id_of(&view, "LLM-108", cx)));
+    assert_eq!(open_task(&view, cx), None, "no task panel opens");
+}

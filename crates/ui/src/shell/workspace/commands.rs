@@ -483,6 +483,7 @@ impl Workspace {
         let mut missing = 0;
         let mut name = String::new();
         let mut approved = Vec::new();
+        let open = self.panel_open(cx);
         for id in ids {
             let team = self
                 .store
@@ -505,7 +506,7 @@ impl Workspace {
             return Err(format!("Unknown status: {arg}"));
         }
         if !approved.is_empty() {
-            self.open_next_review(ids, cx);
+            self.open_next_review(ids, open, cx);
         }
         let mut out = format!("{} now {name}", tasks(done));
         if missing > 0 {

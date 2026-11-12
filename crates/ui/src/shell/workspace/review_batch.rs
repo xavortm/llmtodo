@@ -14,6 +14,9 @@ pub(super) struct ReviewBatch {
     failed: Vec<(SharedString, String)>,
     /// The end of the message: the tasks the batch left out, and why.
     skipped: String,
+    /// LLM-168: a task panel was open at the click, so the next review
+    /// ticket opens in it.
+    with_panel: bool,
 }
 
 impl Workspace {
@@ -79,6 +82,7 @@ impl Workspace {
             approved: Vec::new(),
             failed: Vec::new(),
             skipped,
+            with_panel: self.panel_open(cx),
         });
         cx.notify();
         true
@@ -116,7 +120,7 @@ impl Workspace {
         {
             self.message = batch_message(&batch).into();
             if !batch.approved.is_empty() {
-                self.open_next_review(&batch.approved, cx);
+                self.open_next_review(&batch.approved, batch.with_panel, cx);
             }
         }
         cx.notify();
