@@ -154,7 +154,8 @@ impl Workspace {
     /// The server saved a view: list it and show it.
     fn on_view_saved(&mut self, name: String, cx: &mut Context<Self>) {
         let name: SharedString = name.into();
-        self.store.update(cx, |store, _| {
+        self.store.update(cx, |store, cx| {
+            cx.notify();
             let views = &mut store.catalog.views;
             if !views.iter().any(|v| v.key == name) {
                 views.push(crate::model::data::Place {
@@ -172,7 +173,8 @@ impl Workspace {
     /// The server deleted a view. The list leaves it when it was open.
     fn on_view_deleted(&mut self, name: String, cx: &mut Context<Self>) {
         let name: SharedString = name.into();
-        self.store.update(cx, |store, _| {
+        self.store.update(cx, |store, cx| {
+            cx.notify();
             store.catalog.views.retain(|v| v.key != name);
         });
         self.rebuild_commands(cx);
@@ -365,7 +367,8 @@ impl Workspace {
             }
         }
         let pipeline = &self.pipeline;
-        self.store.update(cx, |store, _| {
+        self.store.update(cx, |store, cx| {
+            cx.notify();
             store.set_open_questions(list, |id| pipeline.has_writes(id));
         });
     }

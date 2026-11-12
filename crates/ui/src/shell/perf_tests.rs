@@ -208,6 +208,22 @@ fn measure(count: usize, cx: &mut TestAppContext) {
         },
     );
     landed("filter keystroke, result landed", count, handle, &view, cx);
+    // The cat: one new frame under the open sidebar, with the task open.
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| this.apply_filter("", cx));
+        window.press("cmd-b", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    report("frame, sidebar open", count, handle, cx, |_, window, cx| {
+        window.render_frame(cx);
+    });
+    let mascot = cx.read(|cx| view.read(cx).mascot().clone());
+    report("mascot frame", count, handle, cx, move |_, window, cx| {
+        mascot.update(cx, |mascot, cx| mascot.tick(cx));
+        window.render_frame(cx);
+    });
     cx.update(|cx| cx.quit());
 }
 

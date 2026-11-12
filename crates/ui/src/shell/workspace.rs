@@ -56,6 +56,7 @@ use crate::settings::view::SettingsView;
 use crate::settings::{MAX_HIDE_DAYS, SettingsStore, UiSettings};
 use crate::shell::app_menus;
 use crate::shell::layout::Layout;
+use crate::shell::mascot::Mascot;
 use crate::shell::palette::{Palette, PaletteEvent};
 use crate::shell::sidebar::{self, Sidebar};
 use crate::shell::view_events::ViewEvents;
@@ -191,6 +192,8 @@ pub struct Workspace {
     focus: FocusHandle,
     store: Entity<IssueStore>,
     sidebar: Entity<Sidebar>,
+    /// The cat under the sidebar. It shows and ticks only with the sidebar.
+    mascot: Entity<Mascot>,
     list: Entity<IssueList>,
     task: Entity<TaskView>,
     palette: Entity<Palette>,
@@ -367,6 +370,7 @@ impl Workspace {
         let task =
             cx.new(|cx| TaskView::new(issues.clone(), events.clone(), answers.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(issues.clone(), events.clone(), cx));
+        let mascot = cx.new(|cx| Mascot::new(issues.clone(), cx));
         let palette = cx.new(|cx| Palette::new(focus.clone(), window, cx));
         let create = cx.new(|cx| CreateForm::new(focus.clone(), window, cx));
         let doc_view = cx.new(|cx| DocView::new(issues.clone(), events.clone(), window, cx));
@@ -499,6 +503,7 @@ impl Workspace {
             focus,
             store: issues,
             sidebar,
+            mascot,
             list,
             task,
             palette,
@@ -719,7 +724,8 @@ impl Workspace {
         self.views = ViewHistory::default();
         self.view_refresh = None;
         self.task.update(cx, |task, cx| task.close(cx));
-        self.store.update(cx, |store, _| {
+        self.store.update(cx, |store, cx| {
+            cx.notify();
             store.tracker = ix;
             store.view = None;
             store.server_url = None;
@@ -769,7 +775,8 @@ impl Workspace {
     /// After a snapshot: note the open tracker's teams, and open the key
     /// that sent the app here.
     fn loaded_tracker(&mut self, cx: &mut Context<Self>) {
-        self.store.update(cx, |store, _| {
+        self.store.update(cx, |store, cx| {
+            cx.notify();
             let teams = store
                 .catalog
                 .team_names
@@ -1009,8 +1016,10 @@ impl Workspace {
         if !catalog.teams.is_empty() && !scope.exists(catalog) {
             self.message = format!("{} is gone. Showing all issues", scope.name(catalog)).into();
             self.list.update(cx, |list, _| list.scope = Scope::All);
-            self.sidebar
-                .update(cx, |sidebar, _| sidebar.active = Scope::All);
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.active = Scope::All;
+                cx.notify();
+            });
             self.persist(cx);
         }
         self.refresh_view(cx);
@@ -1279,6 +1288,7 @@ impl Workspace {
         self.layout.split_sizes = (settings.split_side, settings.split_stacked);
         self.window_frame = settings.window;
         self.layout.sidebar_open = settings.sidebar_open;
+        self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
         self.hide_closed_days = settings.hide_closed_days.clamp(1, MAX_HIDE_DAYS);
         self.open_last_view = settings.open_last_view;
@@ -1296,8 +1306,10 @@ impl Workspace {
             .iter()
             .filter_map(|name| Column::hideable_from_setting(name))
             .collect();
-        self.sidebar
-            .update(cx, |sidebar, _| sidebar.active = scope.clone());
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.active = scope.clone();
+            cx.notify();
+        });
         let open_tabs = settings
             .open_tabs
             .iter()
@@ -1945,7 +1957,10 @@ impl Workspace {
         let keep = matches!(&scope, Scope::View(n)
             if self.store.read(cx).view.as_ref().is_some_and(|v| v.name == *n));
         if !keep {
-            self.store.update(cx, |store, _| store.view = None);
+            self.store.update(cx, |store, cx| {
+                store.view = None;
+                cx.notify();
+            });
         }
         self.close_task_outside(&scope, cx);
         if let Scope::View(view) = &scope {
@@ -2008,6 +2023,7 @@ impl Workspace {
     /// window overrides the auto-hide until the window widens.
     fn set_sidebar_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.layout.set_sidebar_open(open);
+        self.sync_mascot(cx);
         self.leave_hidden_sidebar(window, cx);
         cx.notify();
         self.persist(cx);
@@ -2020,8 +2036,21 @@ impl Workspace {
         if !self.layout.set_narrow(is_narrow(window)) {
             return;
         }
+        self.sync_mascot(cx);
         self.leave_hidden_sidebar(window, cx);
         cx.notify();
+    }
+
+    /// Runs the cat's timer only while the sidebar is on screen.
+    fn sync_mascot(&mut self, cx: &mut Context<Self>) {
+        let shown = self.sidebar_shown();
+        self.mascot
+            .update(cx, |mascot, cx| mascot.set_shown(shown, cx));
+    }
+
+    #[cfg(test)]
+    pub fn mascot(&self) -> &Entity<Mascot> {
+        &self.mascot
     }
 
     /// Moves focus from a sidebar that is no longer on screen to the list.

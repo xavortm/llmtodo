@@ -171,6 +171,29 @@ impl Workspace {
 
     /// The project name on the left, its folder on the right. A click on
     /// the folder copies it. Restart to update sits left of the folder.
+    /// The sidebar column: the scope rows, and the cat below them. The cat
+    /// is a sibling of the sidebar view, not a child, and the sidebar is
+    /// cached. So a new cat frame does not draw the rows again, and they
+    /// count every issue. The sidebar notifies itself when its data changes.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        v_flex()
+            .w_56()
+            .flex_none()
+            .h_full()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div().flex_1().min_h_0().child(
+                    self.sidebar
+                        .clone()
+                        .cached(gpui_kit::StyleRefinement::default().size_full()),
+                ),
+            )
+            .child(div().flex_none().px_1().pb_1().child(self.mascot.clone()))
+    }
+
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update = self.render_update_button(cx);
         let theme = cx.theme();
@@ -598,7 +621,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .when(self.sidebar_shown(), |this| {
-                        this.child(self.sidebar.clone())
+                        this.child(self.render_sidebar(cx))
                     })
                     .map(|this| {
                         if self.settings_shown(cx) {

@@ -2,13 +2,16 @@
 // side, 32x32 each, plus timeline.json with the frame order and durations.
 // Usage: node design/mascot/export.mjs <out-dir> [scale] [--bg]
 // --bg fills the theme background, for reviewing the art.
+//
+// node design/mascot/export.mjs --app writes the one data file the app reads,
+// crates/ui/assets/mascot/mascot.json, and nothing else. See README.md.
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
 const Mascot = createRequire(import.meta.url)("./sprites.js");
-const args = process.argv.slice(2).filter((a) => a !== "--bg");
+const args = process.argv.slice(2).filter((a) => a !== "--bg" && a !== "--app");
 const withBg = process.argv.includes("--bg");
 const outDir = args[0] ?? "design/mascot/out";
 const scale = Number(args[1] ?? 1);
@@ -51,6 +54,46 @@ function png(width, height, rgba) {
 }
 
 const S = Mascot.SIZE;
+
+// The same rule as lineKind in sprites.js: a "K" next to transparency or the
+// frame edge is the outer outline "O", every other "K" is an inner line "I".
+function splitLines(frame) {
+  return frame.map((row, y) =>
+    row
+      .map((c, x) => {
+        if (c !== "K") return c;
+        const outer = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
+          const n = frame[y + dy]?.[x + dx];
+          return n === undefined || n === ".";
+        });
+        return outer ? "O" : "I";
+      })
+      .join("")
+  );
+}
+
+if (process.argv.includes("--app")) {
+  const animations = {};
+  for (const [name, { frames, timeline }] of Object.entries(Mascot.ANIMS))
+    animations[name] = { frames: frames.map(splitLines), timeline };
+  // The watch step where the happy eyes start: tick 68 of 120ms each. The
+  // app jumps there on a click, so the click shows at once.
+  let at = 0;
+  const watchHappy = Mascot.ANIMS.watch.timeline.findIndex((step) => {
+    const hit = at === 68 * 120;
+    at += step.ms;
+    return hit;
+  });
+  if (watchHappy < 0) throw new Error("no watch step starts at tick 68");
+  const palettes = {};
+  for (const [theme, { bg, ...colours }] of Object.entries(Mascot.PALETTES)) palettes[theme] = colours;
+  const out = "crates/ui/assets/mascot/mascot.json";
+  mkdirSync("crates/ui/assets/mascot", { recursive: true });
+  const data = { generated: "node design/mascot/export.mjs --app", size: S, palettes, cues: { watchHappy }, animations };
+  writeFileSync(out, JSON.stringify(data, null, 1) + "\n");
+  console.log(`wrote ${out}`);
+  process.exit(0);
+}
 const timelines = {};
 for (const [theme, pal] of Object.entries(Mascot.PALETTES)) {
   mkdirSync(join(outDir, theme), { recursive: true });

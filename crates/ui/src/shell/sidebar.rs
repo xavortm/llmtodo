@@ -14,8 +14,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     App, Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::model::data::Catalog;
@@ -103,11 +103,16 @@ pub struct Sidebar {
     /// The row the owner last picked. A project can show under several
     /// teams, so the scope alone does not say which row is active.
     cursor: usize,
+    _store: Subscription,
 }
 
 impl Sidebar {
     pub fn new(store: Entity<IssueStore>, events: ViewEvents, cx: &mut Context<Self>) -> Self {
+        // The workspace draws the sidebar as a cached view, so it redraws
+        // only when it is notified. Everything it shows comes from the store.
+        let subscription = cx.observe(&store, |_, _, cx| cx.notify());
         Self {
+            _store: subscription,
             store,
             events,
             focus: cx.focus_handle(),
@@ -194,16 +199,11 @@ impl Render for Sidebar {
             .id("sidebar")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
-            .w_56()
-            .flex_none()
-            .h_full()
+            .size_full()
             .p_1()
             .gap_px()
             .overflow_y_scroll()
-            .bg(theme.sidebar)
-            .text_color(theme.sidebar_foreground)
-            .border_r_1()
-            .border_color(theme.sidebar_border);
+            .text_color(theme.sidebar_foreground);
         // The trackers, when the app knows more than one. A click opens
         // one. They are not scopes, so j / k never switch the data.
         let (trackers, open) = {
