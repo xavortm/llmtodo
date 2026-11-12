@@ -100,32 +100,6 @@
       ".KSSSSSSSSSSSSK.",
       "..KKKKKKKKKKKK..",
     ],
-    tailSideA: [
-      ".KK...",
-      "KWWK..",
-      "KWK...",
-      "KWK...",
-      "KWK...",
-      "KWK...",
-      "KWWK..",
-      ".KWWK.",
-      "..KWWK",
-      "...KWW",
-    ],
-    tailSideB: [
-      "......",
-      "..KK..",
-      ".KWWK.",
-      "KWK...",
-      "KWK...",
-      "KWK...",
-      "KWWK..",
-      ".KWWK.",
-      "..KWWK",
-      "...KWW",
-    ],
-    legNear: ["KWK", "KWK", "KWK", "KWK", "KKK"],
-    legFar: ["KSK", "KSK", "KSK", "KSK", "KKK"],
     // Curled up, side view. B is the breath in.
     bodySleepA: [
       ".....KKKKKKKK.....",
@@ -228,22 +202,96 @@
     ]);
   }
 
-  // Walk: each leg runs the same 8-step cycle. It swings forward lifted,
-  // then pushes back on the ground. Diagonal legs move together.
-  const LEG_DX = [-2, -1, 0, 1, 2, 1, 0, -1];
-  const LEG_LIFT = [0, 1, 1, 1, 0, 0, 0, 0];
-  const leg = (g, x, phase) => ({ g, x: x + LEG_DX[phase % 8], y: 25 - LEG_LIFT[phase % 8] });
+  // Walk ------------------------------------------------------------------
+  // Legs and the tail are drawn as fill shapes; outline() then wraps them
+  // in a 1px line. Each leg pose lists one [start column, width] fill span
+  // per row, top to bottom. Row 0 joins the body. A null row is empty, so
+  // the paw is lifted.
+  //
+  // Each leg runs an 8-frame cycle: 4 frames on the ground, then 4 in the
+  // air. On the ground the paw moves back 1px per frame. The cat moves
+  // forward 1px per frame, so a planted paw stays still on the floor.
+  const FRONT_LEG = [
+    [[2, 2], [2, 2], [2, 2], [3, 2], [3, 2], [4, 1], [4, 2]], // 0 paw lands ahead
+    [[2, 2], [2, 2], [2, 2], [3, 2], [3, 1], [3, 1], [3, 2]], // 1
+    [[2, 2], [2, 2], [2, 2], [2, 2], [2, 1], [2, 1], [2, 2]], // 2 under the shoulder
+    [[2, 2], [2, 2], [2, 2], [1, 2], [1, 1], [1, 1], [1, 2]], // 3 pushes off
+    [[2, 2], [2, 2], [2, 2], [3, 1], [2, 1], [1, 2], null], //   4 wrist curls, paw lifts
+    [[2, 2], [2, 2], [2, 2], [3, 1], [3, 1], [2, 2], null], //   5 swings under
+    [[2, 2], [2, 2], [2, 2], [3, 2], [4, 1], [3, 2], null], //   6
+    [[2, 2], [3, 2], [3, 2], [4, 1], [4, 2], [5, 2], null], //   7 reaches forward
+  ];
+  const HIND_LEG = [
+    [[2, 3], [2, 3], [2, 3], [3, 2], [3, 1], [4, 1], [4, 2]], // 0 paw lands ahead
+    [[2, 3], [2, 3], [2, 3], [2, 2], [2, 1], [3, 1], [3, 2]], // 1
+    [[2, 3], [2, 3], [2, 3], [2, 2], [1, 1], [2, 1], [2, 2]], // 2 hock bends back
+    [[2, 3], [2, 3], [2, 3], [1, 2], [0, 1], [0, 1], [0, 2]], // 3 pushes off
+    [[2, 3], [2, 3], [2, 3], [2, 2], [1, 1], [0, 2], null], //   4 paw flicks back
+    [[2, 3], [2, 3], [2, 3], [2, 2], [2, 1], [2, 2], null], //   5 tucked
+    [[2, 3], [2, 3], [2, 3], [3, 2], [3, 1], [3, 2], null], //   6
+    [[2, 3], [2, 3], [2, 3], [3, 2], [4, 1], [4, 2], null], //   7 reaches forward
+  ];
 
+  // Wraps fill cells in a 1px outline and returns a full-frame layer.
+  // With capTop false, the top row gets no line above it, so a leg can
+  // join the body without a seam.
+  function outline(cells, fill, { capTop = true } = {}) {
+    const g = Array.from({ length: SIZE }, () => Array(SIZE).fill("."));
+    let top = SIZE;
+    for (const [x, y] of cells) {
+      if (x >= 0 && x < SIZE && y >= 0 && y < SIZE) g[y][x] = fill;
+      top = Math.min(top, y);
+    }
+    const out = g.map((r) => [...r]);
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++) {
+        if (g[y][x] !== "." || (!capTop && y < top)) continue;
+        const near = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
+          const c = g[y + dy]?.[x + dx];
+          return c !== undefined && c !== ".";
+        });
+        if (near) out[y][x] = "K";
+      }
+    return out;
+  }
+
+  function leg(poses, phase, x, fill) {
+    const cells = [];
+    poses[((phase % 8) + 8) % 8].forEach((span, r) => {
+      if (!span) return;
+      for (let c = 0; c < span[1]; c++) cells.push([x + span[0] + c, 22 + r]);
+    });
+    return { g: outline(cells, fill, { capTop: false }), x: 0, y: 0 };
+  }
+
+  // The tail rises from the back. A wave runs from the base to the tip,
+  // so the tip swings most. The base stays thick, the tip curls forward.
+  const TAIL_PATH = [[7, 18], [6, 17], [5, 16], [4, 15], [4, 14], [4, 13], [4, 12], [4, 11], [4, 10], [5, 9], [6, 9]];
+  function walkTail(f) {
+    const cells = [];
+    let prevX = null;
+    TAIL_PATH.forEach(([x, y], i) => {
+      const amp = Math.max(0, i - 3) * 0.3;
+      let nx = x + Math.round(amp * Math.sin((2 * Math.PI * f) / 8 - i * 0.35));
+      if (prevX !== null) nx = Math.max(prevX - 1, Math.min(prevX + 1, nx));
+      if (i === TAIL_PATH.length - 1) nx = prevX + 1; // the tip always hooks forward
+      prevX = nx;
+      cells.push([nx, y]);
+      if (i >= 1 && i <= 3) cells.push([nx + 1, y]);
+    });
+    return { g: outline(cells, "W"), x: 0, y: 0 };
+  }
+
+  // Lateral gait: near hind, near front, far hind, far front, 2 frames apart.
   function walk(f) {
-    const bob = f % 4 === 2 ? -1 : 0;
     return compose([
-      { g: (f >> 1) % 2 ? "tailSideB" : "tailSideA", x: 2, y: 11 + bob },
-      leg("legFar", 10, f + 4),
-      leg("legFar", 18, f),
-      leg("legNear", 8, f),
-      leg("legNear", 16, f + 4),
-      { g: "bodySide", x: 6, y: 19 + bob },
-      { g: head({ eyes: "right" }), x: 15, y: 12 + bob },
+      walkTail(f),
+      leg(HIND_LEG, f - 4, 8, "S"),
+      leg(FRONT_LEG, f - 6, 16, "S"),
+      { g: "bodySide", x: 6, y: 16 },
+      leg(HIND_LEG, f, 5, "W"),
+      leg(FRONT_LEG, f - 2, 13, "W"),
+      { g: head({ eyes: "right" }), x: 15, y: 9 },
     ]);
   }
 
