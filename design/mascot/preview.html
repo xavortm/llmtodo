@@ -75,7 +75,7 @@
 
 <script src="sprites.js"></script>
 <script>
-const { SIZE, ANIMS, PALETTES, VARIANTS, rgba } = Mascot;
+const { SIZE, ANIMS, PALETTES, VARIANTS, RULES, rgba } = Mascot;
 // The variant each theme uses on this page.
 const active = { light: "soft", dark: "pure" };
 const $ = (id) => document.getElementById(id);
@@ -132,7 +132,7 @@ const STAGE_W = 160;
 let catX = 64, mode = "auto", autoState = null, stepped = 0;
 const cat = player(() => stepped++);
 
-const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"], ["startle", "Startle (loop)"], ["lieDown", "Lie down (loop)"], ["wake", "Sleep, startle, watch"], ["click", "Try it: click the cat"]];
+const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"], ["startle", "Startle (loop)"], ["lieDown", "Lie down (loop)"], ["wake", "Sleep, startle, watch"], ["click", "Try it: click the cat"], ["work", "Try it: click the working cat"]];
 for (const [id, label] of MODES) {
   const b = document.createElement("button");
   b.textContent = label;
@@ -145,6 +145,7 @@ function setMode(m) {
   autoState = null;
   document.querySelectorAll("#modes button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mode === m));
   if (m === "wake") { wake = null; return; }
+  if (m === "work") { job = { state: "laptop", since: 0, last: 0, until: 0, target: null }; catX = 0; cat.set("laptop"); return; }
   if (m === "click") { tap = { state: "sleep", until: 0, drowsy: 0 }; cat.set("sleep"); return; }
   if (m !== "auto") cat.set(m);
 }
@@ -158,20 +159,22 @@ const WAKE = [["sleep", 2600], ["startle", ANIMS.startle.timeline.reduce((n, s) 
 let tap = null;
 const total = (name) => ANIMS[name].timeline.reduce((n, s) => n + s.ms, 0);
 function tapTo(state, now) {
-  const ms = { jolt: 1000, jump: total("jump"), startle: total("startle"), watch: 4000, lieDown: total("lieDown") }[state] || 0;
+  const ms = { jolt: RULES.joltMs, jump: total("jump"), startle: total("startle"), watch: 4000, lieDown: total("lieDown") }[state] || 0;
   tap.state = state;
+  tap.since = now;
   tap.until = now + ms;
   cat.set(state === "sleep" ? "sleep" : state);
 }
 stage.addEventListener("click", () => {
+  if (mode === "work") return workClick(performance.now());
   if (mode !== "click") return;
   const now = performance.now();
   if (tap.state === "sleep") tapTo(now < tap.drowsy ? "startle" : "jolt", now);
-  else if (tap.state === "jolt") tapTo("jump", now);
+  else if (tap.state === "jolt" && now - tap.since >= RULES.joltLockMs) tapTo("jump", now);
 });
 function tapTick(now) {
   if (tap.state === "sleep" || now < tap.until) return;
-  if (tap.state === "jolt") { tapTo("sleep", now); tap.drowsy = now + 3000; }
+  if (tap.state === "jolt") { tapTo("sleep", now); tap.drowsy = now + RULES.drowsyMs; }
   else if (tap.state === "jump" || tap.state === "startle") tapTo("watch", now);
   else if (tap.state === "watch") tapTo("lieDown", now);
   else if (tap.state === "lieDown") tapTo("sleep", now);
@@ -179,8 +182,51 @@ function tapTick(now) {
 function tapStatus(now) {
   if (mode !== "click") return "";
   if (tap.state === "sleep") return now < tap.drowsy ? `Dozing: a click in the next ${((tap.drowsy - now) / 1000).toFixed(1)} s startles it at once` : "Asleep: click the cat";
-  if (tap.state === "jolt") return `Jolted awake: click again within ${((tap.until - now) / 1000).toFixed(1)} s to make it jump`;
+  if (tap.state === "jolt") return now - tap.since < RULES.joltLockMs ? "Jolted awake: clicks do nothing for a moment" : `Jolted awake: click within ${((tap.until - now) / 1000).toFixed(1)} s to make it jump`;
   return { jump: "Jumping", startle: "Startled", watch: "Sitting and watching", lieDown: "Lying down" }[tap.state];
+}
+// "work": a working cat. A click makes it puzzled, a later click angry,
+// and a later one startles it, so it walks to the other side. Each step
+// holds for a while first: clicks in that time keep it bothered but do
+// not move it on. With no click for a while, it types again.
+let job = null;
+const LOCK = { puzzled: RULES.puzzledLockMs, angry: RULES.angryLockMs };
+function workClick(now) {
+  if (job.state === "laptop") {
+    Object.assign(job, { state: "puzzled", since: now, last: now });
+    cat.set("puzzled");
+    return;
+  }
+  if (job.state !== "puzzled" && job.state !== "angry") return;
+  job.last = now;
+  if (now - job.since < LOCK[job.state]) return;
+  if (job.state === "puzzled") {
+    Object.assign(job, { state: "angry", since: now });
+    cat.set("angry");
+  } else {
+    Object.assign(job, { state: "workStartle", since: now, until: now + total("workStartle") });
+    cat.set("workStartle");
+  }
+}
+function workTick(now) {
+  const max = STAGE_W - SIZE;
+  if ((job.state === "puzzled" || job.state === "angry") && now - job.last > RULES.calmMs) {
+    job.state = "laptop"; cat.set("laptop");
+  } else if (job.state === "workStartle" && now >= job.until) {
+    job.target = catX < max / 2 ? max : 0;
+    job.state = "walk";
+    cat.set(job.target > catX ? "walkRight" : "walkLeft");
+  } else if (job.state === "walk" && (cat.name === "walkRight" ? catX >= job.target : catX <= job.target)) {
+    catX = job.target; job.state = "laptop"; cat.set("laptop");
+  }
+}
+function workStatus() {
+  const now = performance.now();
+  const held = LOCK[job.state] && now - job.since < LOCK[job.state];
+  const calm = ((RULES.calmMs - (now - job.last)) / 1000).toFixed(1);
+  if (job.state === "puzzled") return held ? "Puzzled: clicks do nothing for a moment" : `Puzzled: click to annoy it, or wait ${calm} s`;
+  if (job.state === "angry") return held ? "Angry: clicks keep it angry, but do nothing more for a moment" : `Angry: click to startle it, or wait ${calm} s`;
+  return { laptop: "Working: click the cat", workStartle: "Startled", walk: "Moving to the other side" }[job.state];
 }
 function wakeTick(dt) {
   if (!wake) { wake = { i: 0, left: WAKE[0][1] }; cat.set(WAKE[0][0]); return; }
@@ -220,7 +266,8 @@ function loop(now) {
   if (mode === "auto" && (!autoState || (autoState.until && now > autoState.until))) pickAuto();
   if (mode === "wake") wakeTick(dt);
   if (mode === "click") tapTick(now);
-  $("tapStatus").textContent = tapStatus(now);
+  if (mode === "work") workTick(now);
+  $("tapStatus").textContent = mode === "work" ? workStatus() : tapStatus(now);
   stepped = 0;
   cat.tick(dt);
   // Walking moves 1 sprite pixel per frame.
@@ -229,8 +276,8 @@ function loop(now) {
     catX += (cat.name === "walkRight" ? 1 : -1) * stepped;
     const max = STAGE_W - SIZE;
     if (mode === "auto" && autoState.target != null && Math.abs(catX - autoState.target) <= 1) pickAuto();
-    if (catX > max) { catX = max; mode === "auto" ? pickAuto() : setMode("walkLeft"); }
-    if (catX < 0) { catX = 0; mode === "auto" ? pickAuto() : setMode("walkRight"); }
+    if (mode !== "work" && catX > max) { catX = max; mode === "auto" ? pickAuto() : setMode("walkLeft"); }
+    if (mode !== "work" && catX < 0) { catX = 0; mode === "auto" ? pickAuto() : setMode("walkRight"); }
   }
   render();
   for (const [c, s] of sizeCanvases) drawScaled(c, cat.frame, s);

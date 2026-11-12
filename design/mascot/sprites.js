@@ -32,6 +32,7 @@
       C: "#ffffff", // laptop logo
       Z: "#7d84a0", // sleep z
       H: "#d3d7e2", // ground shadow under a jump
+      A: "#e5484d", // anger mark
     },
     // White cat on a dark background. The outline is white too, so the cat
     // is a clean white shape. Grey inner lines keep the face and legs clear.
@@ -53,6 +54,7 @@
       C: "#bfe8ff",
       Z: "#9aa6c7",
       H: "#2c2e3b",
+      A: "#ff6b6b",
     },
   };
 
@@ -176,6 +178,10 @@
     tailSleep: [".KKKKKKKKKKKKKK", "KWWWWWWWWWWWWWW", ".KKKKKKKKKKKKKK"],
     zBig: ["ZZZZ", "..Z.", ".Z..", "ZZZZ"],
     zSmall: ["ZZZ", "..Z", ".Z.", "ZZZ"],
+    question: [".ZZ.", "Z..Z", "...Z", "..Z.", "....", "..Z."],
+    // The anime anger mark: four bent corners, like a popping vein.
+    angerBig: [".A.A.", "AA.AA", ".....", "AA.AA", ".A.A."],
+    angerSmall: ["A.A", "...", "A.A"],
     paw: [".KK.", "KWWK", "KWWK"],
     // Laptop seen from behind the lid.
     laptop: [
@@ -432,6 +438,57 @@
     [hop({ puff: false, eyes: "open" }), 200],
   ];
 
+  // Bothered at work ---------------------------------------------------------
+  // A click on the working cat makes it stop typing and look at you, with
+  // a "?" above its head. More clicks make it angry: glaring eyes, brows
+  // and an anger mark that pulses. Even more clicks startle it: it jumps up,
+  // then walks to the other side to work there.
+
+  // Glaring eyes with brows that slant down to the middle.
+  function angryHead() {
+    const g = head({ eyes: "open" });
+    for (const [x, y] of [[2, 4], [3, 4], [4, 5], [10, 4], [9, 4], [8, 5]]) g[y][x] = "K";
+    return g;
+  }
+
+  // The laptop pose, paws down, with a head and extra layers on top.
+  function atLaptop(headGrid, extra = [], tail = 0) {
+    return compose([
+      { g: WIGGLE[tail % 8], x: 21, y: 23 },
+      { g: "bodySit", x: 8, y: 18 },
+      { g: headGrid, x: 9, y: 9 },
+      { g: "paw", x: 10, y: 20 },
+      { g: "paw", x: 17, y: 20 },
+      { g: "laptop", x: 8, y: 22 },
+      ...extra,
+    ]);
+  }
+
+  // Looks up at you. The "?" bobs, and the cat blinks once.
+  const PUZZLED = [
+    [atLaptop(head({ eyes: "open" }), [{ g: "question", x: 14, y: 2 }]), 320],
+    [atLaptop(head({ eyes: "open" }), [{ g: "question", x: 14, y: 1 }]), 320],
+    [atLaptop(head({ eyes: "open" }), [{ g: "question", x: 14, y: 2 }]), 320],
+    [atLaptop(head({ eyes: "blink" }), [{ g: "question", x: 14, y: 1 }]), 120],
+    [atLaptop(head({ eyes: "open" }), [{ g: "question", x: 14, y: 1 }]), 320],
+  ];
+
+  // Glares at you. The mark pulses and the tail lashes.
+  const ANGRY = Array.from({ length: 8 }, (_, t) => [
+    atLaptop(
+      angryHead(),
+      [t % 2 === 0 ? { g: "angerBig", x: 20, y: 7 } : { g: "angerSmall", x: 21, y: 8 }],
+      [2, 6][t % 2] // the tail swings hard from side to side
+    ),
+    180,
+  ]);
+
+  // Jolts at the laptop, then the same jump as the startle from sleep.
+  const WORK_STARTLE = [
+    [atLaptop(head({ eyes: "wide" }), [shock(9, 15)]), 220],
+    ...STARTLE.slice(1),
+  ];
+
   // Lie down ---------------------------------------------------------------
   // The sitting cat gets sleepy, sinks down, curls up, and lowers its head
   // into the sleep pose. It plays once, from watch into sleep.
@@ -461,6 +518,24 @@
       { g: head({ eyes: "sleep" }), x: 16, y: 17 },
     ]), 240],
   ];
+
+  // Click rules, in ms. Each reaction holds for a while before another
+  // click can move it on. Clicks while it holds do nothing, so ten fast
+  // clicks act like one. Only time moves the cat to the next reaction.
+  const RULES = {
+    // Asleep: a click jolts it awake for joltMs. A click after the first
+    // joltLockMs of it makes it jump. With none, it dozes off, and a click
+    // in the next drowsyMs startles it at once.
+    joltMs: 1200,
+    joltLockMs: 400,
+    drowsyMs: 3000,
+    // At work: a click makes it puzzled. A click after puzzledLockMs makes
+    // it angry. A click after angryLockMs of anger startles it, and it
+    // moves to the other side. With no click for calmMs, it types again.
+    puzzledLockMs: 1000,
+    angryLockMs: 1500,
+    calmMs: 2000,
+  };
 
   // Animations ------------------------------------------------------------
   // Each animation keeps its unique frames once, plus a timeline of
@@ -519,14 +594,20 @@
     walkRight: anim(walkFrames.map((g) => [g, 90])),
     walkLeft: anim(walkFrames.map((g) => [flip(g), 90])),
     // The startle plays once, from sleep into watch. It does not loop.
-    // A first click on the sleeping cat shows "jolt" for 1 s. A second
-    // click in that time plays "jump". A click within 3 s after the cat
-    // dozed off again plays the whole "startle" at once.
+    // A first click on the sleeping cat shows "jolt". A later click while
+    // it shows plays "jump". A click soon after the cat dozed off again
+    // plays the whole "startle" at once. RULES has the times.
     startle: anim(STARTLE),
-    jolt: anim([[STARTLE[0][0], 1000]]),
+    jolt: anim([[STARTLE[0][0], RULES.joltMs]]),
     jump: anim(STARTLE.slice(1)),
     // Plays once, from watch into sleep.
     lieDown: anim(LIE_DOWN),
+    // At work: "puzzled" after one click, "angry" after more. Both loop
+    // until the clicks stop. "workStartle" plays once, then the cat walks
+    // to the other side.
+    puzzled: anim(PUZZLED),
+    angry: anim(ANGRY),
+    workStartle: anim(WORK_STARTLE),
   };
 
   function hexToRgba(hex) {
@@ -558,5 +639,5 @@
     return out;
   }
 
-  return { SIZE, PALETTES, VARIANTS, PARTS, ANIMS, rgba };
+  return { SIZE, PALETTES, VARIANTS, PARTS, ANIMS, RULES, rgba };
 });
