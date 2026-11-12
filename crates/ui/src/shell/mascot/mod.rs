@@ -24,9 +24,9 @@ use std::time::Duration;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
-    Bounds, ClickEvent, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    Bounds, ClickEvent, Context, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Task, Window,
-    canvas, div, point, prelude::FluentBuilder as _, px, rems, size,
+    canvas, div, point, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::model::store::IssueStore;
@@ -39,6 +39,9 @@ const PIXEL_REMS: f32 = 0.125;
 
 /// The gap between the cat and the sidebar's edges, in sprite pixels.
 const INSET: i32 = 2;
+
+/// The cat's size while the mouse button is down on it.
+const PRESSED_SCALE: f32 = 0.98;
 
 pub const CAT_ID: &str = "mascot-cat";
 
@@ -59,6 +62,8 @@ pub struct Mascot {
     ticker: Option<Task<()>>,
     /// The strip's width and one sprite pixel, from the last layout.
     measured: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    /// The mouse button is down on the cat, so it draws a little smaller.
+    pressed: bool,
     _store: gpui_kit::Subscription,
 }
 
@@ -75,6 +80,7 @@ impl Mascot {
             shown: false,
             ticker: None,
             measured: Rc::new(Cell::new(None)),
+            pressed: false,
             _store: subscription,
         }
     }
@@ -92,6 +98,11 @@ impl Mascot {
     }
 
     #[cfg(test)]
+    pub fn pressed(&self) -> bool {
+        self.pressed
+    }
+
+    #[cfg(test)]
     pub fn ticking(&self) -> bool {
         self.ticker.is_some()
     }
@@ -102,6 +113,7 @@ impl Mascot {
             return;
         }
         self.shown = shown;
+        self.pressed = false;
         if shown {
             // Claims may have changed while the cat was off screen.
             self.behaviour
@@ -122,6 +134,13 @@ impl Mascot {
     fn set_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
         if self.behaviour.set_hovered(hovered) {
             self.restart(cx);
+        }
+    }
+
+    fn set_pressed(&mut self, pressed: bool, cx: &mut Context<Self>) {
+        if self.pressed != pressed {
+            self.pressed = pressed;
+            cx.notify();
         }
     }
 
@@ -189,6 +208,7 @@ impl Render for Mascot {
         let measured = self.measured.clone();
         let entity = cx.entity_id();
         let visible = self.behaviour.visible();
+        let drawn = if self.pressed { PRESSED_SCALE } else { 1. };
         div()
             .id("mascot")
             .relative()
@@ -224,6 +244,20 @@ impl Render for Mascot {
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             this.set_hovered(*hovered, cx);
                         }))
+                        // Pressed, the cat shrinks a little. The release can
+                        // land anywhere.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.set_pressed(true, cx)),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.set_pressed(false, cx)),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.set_pressed(false, cx)),
+                        )
                         .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                             this.click(event.click_count(), cx);
                         }))
@@ -231,7 +265,7 @@ impl Render for Mascot {
                             canvas(
                                 |_, _, _| {},
                                 move |bounds, _, window, _| {
-                                    paint_frame(runs, palette, bounds, window)
+                                    paint_frame(runs, palette, bounds, drawn, window)
                                 },
                             )
                             .size_full(),
@@ -241,25 +275,58 @@ impl Render for Mascot {
     }
 }
 
-/// Paints one frame, one quad per run. Each sprite pixel covers a whole
-/// number of device pixels, so the edges stay sharp at any zoom. The frame
-/// sits on the bottom edge of `bounds`.
-fn paint_frame(runs: &[Run], palette: &[u32], bounds: Bounds<Pixels>, window: &mut Window) {
+/// Paints one frame, one quad per run, `size` times its full size. The
+/// frame stands on the bottom edge of `bounds`, centred, so a smaller cat
+/// keeps its feet on the ground.
+///
+/// At full size each sprite pixel covers a whole number of device pixels,
+/// so the edges are sharp at any zoom. A smaller cat cannot keep that.
+/// Each run's edges then snap to the nearest device pixel on their own:
+/// the edges stay sharp and runs that touch share an edge, so no gaps or
+/// blurred seams show. A few sprite pixels come out one device pixel
+/// narrower instead.
+fn paint_frame(
+    runs: &[Run],
+    palette: &[u32],
+    bounds: Bounds<Pixels>,
+    size: f32,
+    window: &mut Window,
+) {
     let scale = window.scale_factor();
-    let unit = (f32::from(window.rem_size() * PIXEL_REMS) * scale)
-        .round()
-        .max(1.)
-        / scale;
-    let snap = |v: Pixels| (f32::from(v) * scale).round() / scale;
-    let left = snap(bounds.origin.x);
-    let top = snap(bounds.origin.y + bounds.size.height) - unit * f32::from(sprites().size);
-    for run in runs {
+    let rem = f32::from(window.rem_size());
+    let origin = (f32::from(bounds.origin.x), f32::from(bounds.bottom()));
+    for (run, [x0, y0, x1, y1]) in runs.iter().zip(quads(runs, rem, scale, origin, size)) {
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
         let colour: Hsla = gpui_kit::rgb(palette[usize::from(run.key)]).into();
-        let origin = point(
-            px(left + unit * f32::from(run.x)),
-            px(top + unit * f32::from(run.y)),
+        let quad = Bounds::new(
+            point(px(x0), px(y0)),
+            gpui_kit::size(px(x1 - x0), px(y1 - y0)),
         );
-        let extent = size(px(unit * f32::from(run.len)), px(unit));
-        window.paint_quad(gpui_kit::fill(Bounds::new(origin, extent), colour));
+        window.paint_quad(gpui_kit::fill(quad, colour));
     }
+}
+
+/// Where each run lands, as `[left, top, right, bottom]` in logical pixels.
+/// `origin` is the bottom left corner of the cat's box, `rem` the rem size
+/// and `scale` the device pixels per logical pixel.
+pub fn quads(runs: &[Run], rem: f32, scale: f32, origin: (f32, f32), size: f32) -> Vec<[f32; 4]> {
+    let unit = (rem * PIXEL_REMS * scale).round().max(1.) / scale;
+    let snap = |v: f32| (v * scale).round() / scale;
+    let cell = unit * size;
+    let frame = f32::from(sprites().size);
+    let left = snap(origin.0) + (unit - cell) * frame / 2.;
+    let bottom = snap(origin.1);
+    runs.iter()
+        .map(|run| {
+            let row = frame - f32::from(run.y);
+            [
+                snap(left + cell * f32::from(run.x)),
+                snap(bottom - cell * row),
+                snap(left + cell * f32::from(run.x + run.len)),
+                snap(bottom - cell * (row - 1.)),
+            ]
+        })
+        .collect()
 }

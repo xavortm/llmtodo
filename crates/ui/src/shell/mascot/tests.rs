@@ -11,7 +11,7 @@ use gpui_kit::{
 
 use super::behaviour::{Act, Behaviour, ENTER_DELAY_MS, Facing, ROAM_MS, WATCH_MS};
 use super::sprites::{AnimId, sprites};
-use super::{CAT_ID, Mascot};
+use super::{CAT_ID, Mascot, quads};
 use crate::model::data::{Analyzing, Catalog, Issue};
 use crate::settings::{SettingsStore, UiSettings};
 use crate::shell::workspace::Workspace;
@@ -67,6 +67,50 @@ fn runs_merge_a_row_of_one_colour_and_cover_no_pixel_twice() {
 #[test]
 fn a_bad_file_is_refused() {
     assert!(super::sprites::Sprites::parse("{}").is_err());
+}
+
+#[test]
+fn at_full_size_every_sprite_pixel_is_whole_device_pixels() {
+    let runs = sprites().frame(AnimId::Laptop, 0);
+    // 16 px a rem, 2 device pixels per logical pixel: 4 device pixels.
+    for [x0, y0, x1, y1] in quads(runs, 16., 2., (10., 100.), 1.) {
+        for v in [x0, y0, x1, y1] {
+            assert_eq!((v * 2.).fract(), 0.);
+        }
+        assert_eq!(y1 - y0, 2.);
+    }
+}
+
+#[test]
+fn pressed_the_cat_shrinks_around_its_feet_with_no_gaps() {
+    let runs = sprites().frame(AnimId::Laptop, 0);
+    let full = quads(runs, 16., 2., (10., 100.), 1.);
+    let small = quads(runs, 16., 2., (10., 100.), 0.98);
+    let bottom = |q: &[[f32; 4]]| q.iter().map(|r| r[3]).fold(f32::MIN, f32::max);
+    let span = |q: &[[f32; 4]]| {
+        let l = q.iter().map(|r| r[0]).fold(f32::MAX, f32::min);
+        let r = q.iter().map(|r| r[2]).fold(f32::MIN, f32::max);
+        (l, r)
+    };
+    assert_eq!(bottom(&small), bottom(&full), "the feet stay on the ground");
+    let (fl, fr) = span(&full);
+    let (sl, sr) = span(&small);
+    assert!(sl > fl && sr < fr, "it shrinks from both sides");
+    assert!(((sl - fl) - (fr - sr)).abs() <= 0.5, "around its centre");
+    for (ix, run) in runs.iter().enumerate() {
+        let q = small[ix];
+        // Every edge sits on a device pixel, so nothing blurs.
+        for v in q {
+            assert_eq!((v * 2.).fract(), 0.);
+        }
+        // Runs that touch in a row still touch.
+        if let Some(next) = runs.get(ix + 1)
+            && next.y == run.y
+            && next.x == run.x + run.len
+        {
+            assert_eq!(small[ix + 1][0], q[2]);
+        }
+    }
 }
 
 // The rules ------------------------------------------------------------------
@@ -183,15 +227,45 @@ fn a_double_click_at_work_walks_to_the_other_side_and_works_there() {
 }
 
 #[test]
-fn a_double_click_on_the_way_turns_the_cat_around() {
+fn click_spam_during_a_walk_neither_stops_nor_turns_it() {
     let mut cat = cat(true, 7);
-    cat.click(2, sprites());
-    run_for(&mut cat, 900);
-    assert!(cat.x() > LOW && cat.x() < HIGH);
     assert!(cat.click(2, sprites()));
-    assert_eq!(cat.facing(), Facing::Left);
+    let mut clicks = 0;
+    while cat.act() == Act::Commute {
+        // A burst of clicks every step: singles, doubles and longer runs.
+        for count in 1..=5 {
+            assert!(!cat.click(count, sprites()));
+            clicks += 1;
+        }
+        assert_eq!(cat.facing(), Facing::Right);
+        cat.advance(sprites());
+    }
+    assert!(clicks > 50);
+    assert_eq!(
+        (cat.act(), cat.x()),
+        (Act::Laptop, HIGH),
+        "it reaches the far side"
+    );
+    // Once it works at its spot, a double click starts the next walk.
+    assert!(cat.click(2, sprites()));
+    assert_eq!((cat.act(), cat.facing()), (Act::Commute, Facing::Left));
+}
+
+#[test]
+fn clicks_during_the_walk_home_and_a_roaming_walk_are_ignored() {
+    let mut cat = working_on_the_right(7);
+    cat.set_active(false);
+    for count in 1..=3 {
+        assert!(!cat.click(count, sprites()));
+    }
     run_to_next_act(&mut cat);
-    assert_eq!((cat.act(), cat.x()), (Act::Laptop, LOW));
+    assert_eq!(cat.x(), LOW);
+
+    let mut cat = walking_cat();
+    for count in 1..=3 {
+        assert!(!cat.click(count, sprites()));
+    }
+    assert_eq!(cat.act(), Act::Walk);
 }
 
 #[test]
@@ -705,6 +779,64 @@ fn at_work_hover_does_nothing_and_a_double_click_walks_right(cx: &mut TestAppCon
     wait(cx, 20_000);
     let cat = behaviour(&view, cx);
     assert_eq!(cat.x(), cat.edges().0);
+}
+
+#[gpui_kit::test]
+fn click_spam_during_a_walk_still_reaches_the_far_side(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    change_first(&view, cx, |issue| issue.claim = Some(demo_claim()));
+    let double = || ClickOptions::new().with_count(2);
+    cx.update_window(handle, |_, window, cx| {
+        window.click_with_options(CAT_ID, double(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(act(&view, cx), Act::Commute);
+    // Double clicks on the moving cat, every frame of the walk.
+    for _ in 0..400 {
+        if act(&view, cx) != Act::Commute {
+            break;
+        }
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click_with_options(CAT_ID, double(), cx);
+        })
+        .unwrap();
+        assert_eq!(behaviour(&view, cx).facing(), Facing::Right);
+        wait(cx, 90);
+    }
+    let cat = behaviour(&view, cx);
+    assert_eq!((cat.act(), cat.x()), (Act::Laptop, cat.edges().1));
+}
+
+#[gpui_kit::test]
+fn the_cat_shows_pressed_while_the_button_is_down(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    let cat = mascot(&view, cx);
+    let centre = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(CAT_ID).bounds().center()
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.pointer_down(centre, gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    assert!(cx.read(|cx| cat.read(cx).pressed()));
+    cx.update_window(handle, |_, window, cx| {
+        window.pointer_up(centre, gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    assert!(!cx.read(|cx| cat.read(cx).pressed()));
+
+    // A release away from the cat ends the press too.
+    cx.update_window(handle, |_, window, cx| {
+        window.pointer_down(centre, gpui_kit::MouseButton::Left, cx);
+        window.pointer_up(point(px(700.), px(300.)), gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    assert!(!cx.read(|cx| cat.read(cx).pressed()));
 }
 
 #[gpui_kit::test]

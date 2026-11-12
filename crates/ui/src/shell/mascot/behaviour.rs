@@ -7,6 +7,8 @@
 //! - A hover or a single click changes nothing.
 //! - A double click walks it to the other side of the sidebar, where it
 //!   works again.
+//! - Every click during any walk is ignored, so clicks never stop or turn
+//!   a walk.
 //! - When the work ends away from the left edge, it walks back left. There
 //!   it lies down to sleep, or sits and watches for a while and then
 //!   sleeps, picked at random.
@@ -248,26 +250,24 @@ impl Behaviour {
 
     /// A click, the `count`th in a row. Returns true when the cat changed.
     ///
-    /// At work, a double click walks the cat to the other side and a single
-    /// click does nothing. Otherwise any click makes it sit and look happy.
+    /// During any walk, every click is ignored. At work, a double click
+    /// walks the cat to the other side and a single click does nothing.
+    /// Otherwise any click makes it sit and look happy.
     pub fn click(&mut self, count: usize, sprites: &Sprites) -> bool {
-        if self.entering() {
+        if matches!(self.act, Act::Away | Act::Enter | Act::Commute | Act::Walk) {
             return false;
         }
-        if self.working() {
+        if self.act == Act::Laptop {
             if count != 2 {
                 return false;
             }
-            let side = match self.act {
-                Act::Commute => flip(self.goal),
-                _ if self.x >= self.edges().1 => Facing::Left,
-                _ => Facing::Right,
+            let side = if self.x >= self.edges().1 {
+                Facing::Left
+            } else {
+                Facing::Right
             };
             self.commute(side);
             return true;
-        }
-        if self.act == Act::Commute {
-            return false;
         }
         self.start(Act::Watch);
         self.step = sprites.watch_happy;
