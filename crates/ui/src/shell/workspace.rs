@@ -377,7 +377,7 @@ impl Workspace {
         let issues = cx.new(|_| IssueStore::new());
         let list =
             cx.new(|cx| IssueList::new(issues.clone(), events.clone(), focus.clone(), window, cx));
-        let answers = cx.new(|_| AnswerInputs::new(events.clone()));
+        let answers = cx.new(|cx| AnswerInputs::new(events.clone(), &issues, window, cx));
         let task =
             cx.new(|cx| TaskView::new(issues.clone(), events.clone(), answers.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(issues.clone(), events.clone(), cx));

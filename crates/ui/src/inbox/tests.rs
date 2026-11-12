@@ -881,3 +881,83 @@ fn an_answer_works_without_the_description(cx: &mut TestAppContext) {
     write_done(&view, WriteKind::Answer, cx);
     assert_eq!(inbox_keys(&view, cx), ["LLM-111 Q1", "LLM-103 Q1"]);
 }
+
+/// LLM-175: the fields of answered questions and of tickets that left
+/// review are dropped, unless they hold text.
+#[gpui_kit::test]
+fn answered_and_approved_fields_are_dropped(cx: &mut TestAppContext) {
+    let (handle, view, _requests) = open(cx);
+    let sizes = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).answers().read(cx).sizes());
+
+    // A ticket in review gets a feedback field when its task opens. The
+    // selection starts on LLM-101.
+    let store = cx.read(|cx| view.read(cx).store().clone());
+    let review = cx.read(|cx| {
+        store
+            .read(cx)
+            .catalog
+            .all_statuses()
+            .into_iter()
+            .find(|s| s.review)
+            .expect("the demo has a review status")
+    });
+    let (id, before) = cx.read(|cx| {
+        let i = view.read(cx).issue_by_key("LLM-101", cx);
+        (i.id, i.status.clone())
+    });
+    cx.update_window(handle, |_, window, cx| {
+        store.update(cx, |s, cx| {
+            s.modify(id, |i| i.status = review.clone());
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(sizes(cx).1, 1);
+
+    // Text in the field keeps it after the ticket leaves review.
+    let field = cx.read(|cx| view.read(cx).answers().read(cx).feedback(id).unwrap());
+    cx.update_window(handle, |_, window, cx| {
+        field.update(cx, |f, cx| f.set_value("Looks good", window, cx));
+        store.update(cx, |s, cx| {
+            s.modify(id, |i| i.status = before.clone());
+            cx.notify();
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sizes(cx).1, 1, "unsent text keeps the field");
+
+    // Empty, the next store change drops it.
+    cx.update_window(handle, |_, window, cx| {
+        field.update(cx, |f, cx| f.set_value("", window, cx));
+        store.update(cx, |_, cx| cx.notify());
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(sizes(cx).1, 0, "the approved ticket's field is gone");
+
+    // The inbox makes one field per open question.
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.press("g", cx);
+        window.press("i", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(inbox_keys(&view, cx), ["LLM-111 Q1", "LLM-103 Q1"]);
+    assert_eq!(sizes(cx).0, 2, "one field per open question");
+
+    // `2` answers LLM-103, the second question.
+    cx.update_window(handle, |_, window, cx| {
+        window.press("ctrl-n", cx);
+        window.press("2", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(inbox_keys(&view, cx), ["LLM-111 Q1"]);
+    assert_eq!(sizes(cx).0, 1, "the answered question's field is gone");
+}

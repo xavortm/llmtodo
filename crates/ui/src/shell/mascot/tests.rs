@@ -519,7 +519,10 @@ fn a_click_soon_after_dozing_off_startles_it_at_once() {
     assert_eq!(cat.act(), Act::Sleep);
     assert!(cat.click(1, sprites()));
     assert_eq!((cat.act(), cat.anim()), (Act::Startle, AnimId::Startle));
-    assert!(!cat.click(1, sprites()), "clicks during the startle do nothing");
+    assert!(
+        !cat.click(1, sprites()),
+        "clicks during the startle do nothing"
+    );
     let startled = run_to_next_act(&mut cat);
     assert_eq!(startled, anim_ms(AnimId::Startle));
     assert_eq!((cat.act(), cat.step()), (Act::Watch, 0));
@@ -554,7 +557,11 @@ fn a_jump_or_startle_plays_to_the_end_when_an_agent_starts() {
             past_the_jolt_lock(&mut cat);
         }
         cat.click(1, sprites());
-        let id = if startle { AnimId::Startle } else { AnimId::Jump };
+        let id = if startle {
+            AnimId::Startle
+        } else {
+            AnimId::Jump
+        };
         assert_eq!(cat.anim(), id);
         assert!(!cat.set_active(true));
         let played = run_to_next_act(&mut cat);

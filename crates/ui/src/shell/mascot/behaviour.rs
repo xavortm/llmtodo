@@ -317,7 +317,11 @@ impl Behaviour {
                 true
             }
             Act::Sleep | Act::Nap => {
-                let next = if self.drowsy_ms > 0 { Act::Startle } else { Act::Jolt };
+                let next = if self.drowsy_ms > 0 {
+                    Act::Startle
+                } else {
+                    Act::Jolt
+                };
                 self.start(next);
                 true
             }

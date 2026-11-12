@@ -132,16 +132,59 @@ pub struct AnswerInputs {
     /// Feedback fields to empty on their next draw, after the server took
     /// the answer. Emptying a field needs the window.
     clear_feedback: std::collections::HashSet<IssueId>,
+    /// Drops fields the app no longer shows whenever the store changes.
+    _store: Subscription,
 }
 
 impl AnswerInputs {
-    pub fn new(events: ViewEvents) -> Self {
+    pub fn new(
+        events: ViewEvents,
+        store: &Entity<IssueStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let store = cx.observe_in(store, window, |this, store, window, cx| {
+            this.prune(store.read(cx), window, cx);
+        });
         Self {
             events,
             inputs: HashMap::new(),
             feedback: HashMap::new(),
             clear_feedback: Default::default(),
+            _store: store,
         }
+    }
+
+    /// Drops the answer fields of questions that are no longer open, and
+    /// the feedback fields of tickets that left the review status or the
+    /// store. A field with focus or with unsent text stays, so nothing the
+    /// owner typed is lost. The views make a field again when they need it.
+    pub fn prune(&mut self, store: &IssueStore, window: &Window, cx: &App) {
+        let in_use = |focus: FocusHandle, text: &str| {
+            focus.contains_focused(window, cx) || !text.trim().is_empty()
+        };
+        self.inputs.retain(|&(issue, number), (input, _)| {
+            store
+                .open_questions_of(issue)
+                .iter()
+                .any(|q| q.number == number)
+                || in_use(input.focus_handle(cx), &input.read(cx).value())
+        });
+        self.feedback.retain(|&issue, input| {
+            store
+                .get(issue)
+                .is_some_and(|i| !i.deleted && i.status.review)
+                || in_use(input.focus_handle(cx), &input.read(cx).value())
+        });
+        let feedback = &self.feedback;
+        self.clear_feedback
+            .retain(|issue| feedback.contains_key(issue));
+    }
+
+    /// How many answer fields and feedback fields it holds, for tests.
+    #[cfg(test)]
+    pub fn sizes(&self) -> (usize, usize) {
+        (self.inputs.len(), self.feedback.len())
     }
 
     /// The field for question `number` of `issue`, made on first use. A
