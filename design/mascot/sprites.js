@@ -432,6 +432,36 @@
     [hop({ puff: false, eyes: "open" }), 200],
   ];
 
+  // Lie down ---------------------------------------------------------------
+  // The sitting cat gets sleepy, sinks down, curls up, and lowers its head
+  // into the sleep pose. It plays once, from watch into sleep.
+  const LIE_DOWN = [
+    // Sleepy eyes while still sitting.
+    [compose([
+      { g: WIGGLE[0], x: 21, y: 23 },
+      { g: "bodySit", x: 8, y: 18 },
+      { g: head({ eyes: "blink" }), x: 9, y: 9 },
+    ]), 260],
+    // Hunches down: the head sinks into the body, the tail lies flat.
+    [compose([
+      { g: "tailSleep", x: 13, y: 27 },
+      { g: "bodySit", x: 8, y: 18 },
+      { g: head({ eyes: "blink" }), x: 10, y: 12 },
+    ]), 180],
+    // Curls up, head still raised.
+    [compose([
+      { g: "bodySleepA", x: 3, y: 22 },
+      { g: "tailSleep", x: 1, y: 27 },
+      { g: head({ eyes: "blink" }), x: 14, y: 15 },
+    ]), 200],
+    // The head settles, eyes close.
+    [compose([
+      { g: "bodySleepA", x: 3, y: 22 },
+      { g: "tailSleep", x: 1, y: 27 },
+      { g: head({ eyes: "sleep" }), x: 16, y: 17 },
+    ]), 240],
+  ];
+
   // Animations ------------------------------------------------------------
   // Each animation keeps its unique frames once, plus a timeline of
   // { i: frame index, ms: duration }. The timeline is what a player loops.
@@ -495,6 +525,8 @@
     startle: anim(STARTLE),
     jolt: anim([[STARTLE[0][0], 1000]]),
     jump: anim(STARTLE.slice(1)),
+    // Plays once, from watch into sleep.
+    lieDown: anim(LIE_DOWN),
   };
 
   function hexToRgba(hex) {

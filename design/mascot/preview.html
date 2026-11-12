@@ -132,7 +132,7 @@ const STAGE_W = 160;
 let catX = 64, mode = "auto", autoState = null, stepped = 0;
 const cat = player(() => stepped++);
 
-const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"], ["startle", "Startle (loop)"], ["wake", "Sleep, startle, watch"], ["click", "Try it: click the cat"]];
+const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"], ["startle", "Startle (loop)"], ["lieDown", "Lie down (loop)"], ["wake", "Sleep, startle, watch"], ["click", "Try it: click the cat"]];
 for (const [id, label] of MODES) {
   const b = document.createElement("button");
   b.textContent = label;
@@ -150,7 +150,7 @@ function setMode(m) {
 }
 // "wake": sleeps, plays the startle once, watches, and starts over.
 let wake = null;
-const WAKE = [["sleep", 2600], ["startle", ANIMS.startle.timeline.reduce((n, s) => n + s.ms, 0)], ["watch", 2600]];
+const WAKE = [["sleep", 2600], ["startle", ANIMS.startle.timeline.reduce((n, s) => n + s.ms, 0)], ["watch", 2600], ["lieDown", ANIMS.lieDown.timeline.reduce((n, s) => n + s.ms, 0)]];
 // "click": the real rules. A first click on the sleeping cat jolts it
 // awake for 1 s. A second click in that time makes it jump up and sit.
 // With no second click it dozes off, and a click in the next 3 s makes it
@@ -158,7 +158,7 @@ const WAKE = [["sleep", 2600], ["startle", ANIMS.startle.timeline.reduce((n, s) 
 let tap = null;
 const total = (name) => ANIMS[name].timeline.reduce((n, s) => n + s.ms, 0);
 function tapTo(state, now) {
-  const ms = { jolt: 1000, jump: total("jump"), startle: total("startle"), watch: 4000 }[state] || 0;
+  const ms = { jolt: 1000, jump: total("jump"), startle: total("startle"), watch: 4000, lieDown: total("lieDown") }[state] || 0;
   tap.state = state;
   tap.until = now + ms;
   cat.set(state === "sleep" ? "sleep" : state);
@@ -173,13 +173,14 @@ function tapTick(now) {
   if (tap.state === "sleep" || now < tap.until) return;
   if (tap.state === "jolt") { tapTo("sleep", now); tap.drowsy = now + 3000; }
   else if (tap.state === "jump" || tap.state === "startle") tapTo("watch", now);
-  else if (tap.state === "watch") tapTo("sleep", now);
+  else if (tap.state === "watch") tapTo("lieDown", now);
+  else if (tap.state === "lieDown") tapTo("sleep", now);
 }
 function tapStatus(now) {
   if (mode !== "click") return "";
   if (tap.state === "sleep") return now < tap.drowsy ? `Dozing: a click in the next ${((tap.drowsy - now) / 1000).toFixed(1)} s startles it at once` : "Asleep: click the cat";
   if (tap.state === "jolt") return `Jolted awake: click again within ${((tap.until - now) / 1000).toFixed(1)} s to make it jump`;
-  return { jump: "Jumping", startle: "Startled", watch: "Sitting and watching" }[tap.state];
+  return { jump: "Jumping", startle: "Startled", watch: "Sitting and watching", lieDown: "Lying down" }[tap.state];
 }
 function wakeTick(dt) {
   if (!wake) { wake = { i: 0, left: WAKE[0][1] }; cat.set(WAKE[0][0]); return; }
