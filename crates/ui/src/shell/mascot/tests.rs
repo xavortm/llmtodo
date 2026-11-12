@@ -166,9 +166,9 @@ fn past_the_jolt_lock(cat: &mut Behaviour) {
 
 /// Two clicks wake a sleeping cat: it jolts, jumps and lands to watch.
 fn wake(cat: &mut Behaviour) {
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     past_the_jolt_lock(cat);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!(cat.act(), Act::Jump);
     run_to_next_act(cat);
     assert_eq!(cat.act(), Act::Watch);
@@ -204,10 +204,30 @@ fn walking_cat() -> Behaviour {
 /// A working cat at the right edge, after a double click.
 fn working_on_the_right(seed: u64) -> Behaviour {
     let mut cat = cat(true, seed);
-    assert!(cat.click(2, sprites()));
+    bother_away(&mut cat);
     run_to_next_act(&mut cat);
     assert_eq!((cat.act(), cat.x()), (Act::Laptop, HIGH));
     cat
+}
+
+/// Clicks a working cat from puzzled to angry to startled, each click
+/// after its lock. It ends as the walk to the other side starts.
+fn bother_away(cat: &mut Behaviour) {
+    let rules = sprites().rules;
+    assert!(cat.click(0, sprites()));
+    assert_eq!((cat.act(), cat.anim()), (Act::Puzzled, AnimId::Puzzled));
+    run_for(cat, rules.puzzled_lock_ms);
+    assert!(cat.click(0, sprites()));
+    assert_eq!((cat.act(), cat.anim()), (Act::Angry, AnimId::Angry));
+    run_for(cat, rules.angry_lock_ms);
+    assert!(cat.click(0, sprites()));
+    assert_eq!(
+        (cat.act(), cat.anim()),
+        (Act::WorkStartle, AnimId::WorkStartle)
+    );
+    let startled = run_to_next_act(cat);
+    assert_eq!(startled, anim_ms(AnimId::WorkStartle));
+    assert_eq!(cat.act(), Act::Commute);
 }
 
 #[test]
@@ -230,23 +250,20 @@ fn an_agent_at_work_means_the_laptop_and_none_means_sleep() {
 }
 
 #[test]
-fn at_work_a_hover_or_a_single_click_changes_nothing() {
+fn at_work_a_hover_changes_nothing() {
     let mut cat = cat(true, 7);
     cat.set_hovered(true);
     assert_eq!(cat.act(), Act::Laptop);
     run_for(&mut cat, 10_000);
     assert_eq!(cat.act(), Act::Laptop);
     cat.set_hovered(false);
-    assert!(!cat.click(1, sprites()));
-    assert!(!cat.click(3, sprites()), "only the second click counts");
     assert_eq!((cat.act(), cat.x()), (Act::Laptop, LOW));
 }
 
 #[test]
-fn a_double_click_at_work_walks_to_the_other_side_and_works_there() {
+fn clicks_at_work_bother_the_cat_until_it_works_on_the_other_side() {
     let mut cat = cat(true, 7);
-    assert!(cat.click(2, sprites()));
-    assert_eq!(cat.act(), Act::Commute);
+    bother_away(&mut cat);
     assert_eq!(cat.anim(), AnimId::WalkRight);
     let mut last = cat.x();
     while cat.act() == Act::Commute {
@@ -257,23 +274,132 @@ fn a_double_click_at_work_walks_to_the_other_side_and_works_there() {
     assert_eq!((cat.act(), cat.x()), (Act::Laptop, HIGH));
     // Hover still changes nothing on the right.
     cat.set_hovered(true);
+    assert_eq!(cat.act(), Act::Laptop);
 
-    // A second double click walks it back.
-    assert!(cat.click(2, sprites()));
+    // Bothered again, it walks back.
+    bother_away(&mut cat);
     assert_eq!(cat.anim(), AnimId::WalkLeft);
     run_to_next_act(&mut cat);
     assert_eq!((cat.act(), cat.x()), (Act::Laptop, LOW));
 }
 
 #[test]
+fn fast_clicks_at_work_never_skip_a_step() {
+    let rules = sprites().rules;
+    let mut cat = cat(true, 7);
+    // Ten fast clicks act like one.
+    for _ in 0..10 {
+        cat.click(0, sprites());
+        cat.click(50, sprites());
+        assert_eq!(cat.act(), Act::Puzzled);
+    }
+    // A click at the end of every step inside the lock does nothing.
+    let mut spent = 0;
+    loop {
+        let ms = cat.step_ms(sprites());
+        if spent + ms > rules.puzzled_lock_ms {
+            break;
+        }
+        assert!(!cat.click(ms - 1, sprites()), "{spent}");
+        cat.advance(sprites());
+        spent += ms;
+    }
+    run_for(&mut cat, rules.puzzled_lock_ms - spent);
+    assert!(cat.click(0, sprites()));
+    assert_eq!(cat.act(), Act::Angry);
+    // The anger lock is timed from when the anger started.
+    assert!(!cat.click(0, sprites()));
+    run_for(&mut cat, rules.angry_lock_ms);
+    assert!(cat.click(0, sprites()));
+    assert_eq!(cat.act(), Act::WorkStartle);
+    for _ in 0..5 {
+        assert!(
+            !cat.click(0, sprites()),
+            "clicks during the startle do nothing"
+        );
+    }
+}
+
+#[test]
+fn the_whole_chain_takes_at_least_both_locks() {
+    let rules = sprites().rules;
+    let mut cat = cat(true, 3);
+    let mut spent = 0;
+    // A click on every step, from the first one on.
+    loop {
+        cat.click(0, sprites());
+        if cat.act() == Act::WorkStartle {
+            break;
+        }
+        spent += cat.step_ms(sprites());
+        cat.advance(sprites());
+        assert!(spent < 10_000);
+    }
+    assert!(
+        spent >= rules.puzzled_lock_ms + rules.angry_lock_ms,
+        "{spent}"
+    );
+}
+
+#[test]
+fn with_no_click_a_bothered_cat_calms_down_and_types() {
+    let rules = sprites().rules;
+    for angry in [false, true] {
+        let mut cat = cat(true, 3);
+        cat.click(0, sprites());
+        if angry {
+            run_for(&mut cat, rules.puzzled_lock_ms);
+            cat.click(0, sprites());
+            assert_eq!(cat.act(), Act::Angry);
+        }
+        let calmed = run_to_next_act(&mut cat);
+        assert_eq!(calmed, rules.calm_ms, "timed from the last click");
+        assert_eq!((cat.act(), cat.x()), (Act::Laptop, LOW));
+    }
+    // A click inside the lock still counts as a click for the calm-down.
+    let mut cat = cat(true, 3);
+    cat.click(0, sprites());
+    run_for(&mut cat, 900);
+    cat.click(0, sprites());
+    assert_eq!(cat.act(), Act::Puzzled);
+    let calmed = run_to_next_act(&mut cat);
+    assert!(calmed >= rules.calm_ms, "{calmed}");
+}
+
+#[test]
+fn work_that_ends_while_bothered_does_what_the_laptop_does() {
+    let mut cat = cat(true, 3);
+    cat.click(0, sprites());
+    assert!(cat.set_active(false));
+    assert_eq!(cat.act(), Act::Sleep, "at the left edge it sleeps");
+    let mut cat = working_on_the_right(3);
+    cat.click(0, sprites());
+    assert!(cat.set_active(false));
+    assert_eq!((cat.act(), cat.facing()), (Act::Commute, Facing::Left));
+}
+
+#[test]
+fn work_that_ends_during_the_startle_sends_the_cat_home() {
+    let rules = sprites().rules;
+    let mut cat = working_on_the_right(3);
+    cat.click(0, sprites());
+    run_for(&mut cat, rules.puzzled_lock_ms);
+    cat.click(0, sprites());
+    run_for(&mut cat, rules.angry_lock_ms);
+    cat.click(0, sprites());
+    assert!(!cat.set_active(false), "the startle plays to its end");
+    run_to_next_act(&mut cat);
+    assert_eq!((cat.act(), cat.facing()), (Act::Commute, Facing::Left));
+}
+
+#[test]
 fn click_spam_during_a_walk_neither_stops_nor_turns_it() {
     let mut cat = cat(true, 7);
-    assert!(cat.click(2, sprites()));
+    bother_away(&mut cat);
     let mut clicks = 0;
     while cat.act() == Act::Commute {
-        // A burst of clicks every step: singles, doubles and longer runs.
-        for count in 1..=5 {
-            assert!(!cat.click(count, sprites()));
+        for _ in 1..=5 {
+            assert!(!cat.click(0, sprites()));
             clicks += 1;
         }
         assert_eq!(cat.facing(), Facing::Right);
@@ -285,24 +411,24 @@ fn click_spam_during_a_walk_neither_stops_nor_turns_it() {
         (Act::Laptop, HIGH),
         "it reaches the far side"
     );
-    // Once it works at its spot, a double click starts the next walk.
-    assert!(cat.click(2, sprites()));
-    assert_eq!((cat.act(), cat.facing()), (Act::Commute, Facing::Left));
+    // Once it works at its spot, a click bothers it again.
+    assert!(cat.click(0, sprites()));
+    assert_eq!(cat.act(), Act::Puzzled);
 }
 
 #[test]
 fn clicks_during_the_walk_home_and_a_roaming_walk_are_ignored() {
     let mut cat = working_on_the_right(7);
     cat.set_active(false);
-    for count in 1..=3 {
-        assert!(!cat.click(count, sprites()));
+    for _ in 1..=3 {
+        assert!(!cat.click(0, sprites()));
     }
     run_to_next_act(&mut cat);
     assert_eq!(cat.x(), LOW);
 
     let mut cat = walking_cat();
-    for count in 1..=3 {
-        assert!(!cat.click(count, sprites()));
+    for _ in 1..=3 {
+        assert!(!cat.click(0, sprites()));
     }
     assert_eq!(cat.act(), Act::Walk);
 }
@@ -336,7 +462,7 @@ fn when_work_ends_on_the_right_it_walks_home_then_sleeps_or_sits() {
 #[test]
 fn work_that_ends_on_the_way_right_sends_the_cat_home() {
     let mut cat = cat(true, 7);
-    cat.click(2, sprites());
+    bother_away(&mut cat);
     run_for(&mut cat, 900);
     assert!(cat.set_active(false));
     assert_eq!(cat.facing(), Facing::Left);
@@ -482,7 +608,7 @@ fn a_hover_does_not_wake_a_napping_cat_and_a_click_jolts_it() {
         if cat.act() == Act::Nap {
             cat.set_hovered(true);
             assert_eq!(cat.act(), Act::Nap);
-            assert!(cat.click(1, sprites()));
+            assert!(cat.click(0, sprites()));
             assert_eq!(cat.act(), Act::Jolt);
             return;
         }
@@ -501,17 +627,17 @@ fn a_hover_does_not_wake_a_sleeping_cat() {
 #[test]
 fn a_click_jolts_and_a_click_after_the_lock_jumps_to_watch() {
     let mut cat = cat(false, 1);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!((cat.act(), cat.anim()), (Act::Jolt, AnimId::Jolt));
     // A fast double click: the second click comes in the lock.
-    assert!(!cat.click(2, sprites()));
+    assert!(!cat.click(0, sprites()));
     assert_eq!(cat.act(), Act::Jolt);
     past_the_jolt_lock(&mut cat);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!((cat.act(), cat.anim()), (Act::Jump, AnimId::Jump));
     // Clicks during the jump do nothing.
-    for count in 1..=3 {
-        assert!(!cat.click(count, sprites()));
+    for _ in 1..=3 {
+        assert!(!cat.click(0, sprites()));
     }
     let jumped = run_to_next_act(&mut cat);
     assert_eq!(jumped, anim_ms(AnimId::Jump));
@@ -525,7 +651,7 @@ fn a_click_jolts_and_a_click_after_the_lock_jumps_to_watch() {
 #[test]
 fn with_no_click_after_the_lock_it_dozes_off_when_the_jolt_ends() {
     let mut cat = cat(false, 1);
-    cat.click(1, sprites());
+    cat.click(0, sprites());
     let jolted = run_to_next_act(&mut cat);
     assert_eq!(jolted, sprites().rules.jolt_ms);
     assert_eq!(cat.act(), Act::Sleep);
@@ -534,14 +660,14 @@ fn with_no_click_after_the_lock_it_dozes_off_when_the_jolt_ends() {
 #[test]
 fn a_click_soon_after_dozing_off_startles_it_at_once() {
     let mut cat = cat(false, 1);
-    cat.click(1, sprites());
+    cat.click(0, sprites());
     run_to_next_act(&mut cat);
     run_for(&mut cat, sprites().rules.drowsy_ms - 500);
     assert_eq!(cat.act(), Act::Sleep);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!((cat.act(), cat.anim()), (Act::Startle, AnimId::Startle));
     assert!(
-        !cat.click(1, sprites()),
+        !cat.click(0, sprites()),
         "clicks during the startle do nothing"
     );
     let startled = run_to_next_act(&mut cat);
@@ -552,17 +678,17 @@ fn a_click_soon_after_dozing_off_startles_it_at_once() {
 #[test]
 fn a_click_after_the_drowsy_time_jolts_again() {
     let mut cat = cat(false, 1);
-    cat.click(1, sprites());
+    cat.click(0, sprites());
     run_to_next_act(&mut cat);
     run_for(&mut cat, sprites().rules.drowsy_ms);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!(cat.act(), Act::Jolt);
 }
 
 #[test]
 fn an_agent_start_during_a_jolt_goes_to_work() {
     let mut cat = cat(false, 1);
-    cat.click(1, sprites());
+    cat.click(0, sprites());
     assert!(cat.set_active(true));
     assert_eq!(cat.act(), Act::Laptop);
 }
@@ -571,13 +697,13 @@ fn an_agent_start_during_a_jolt_goes_to_work() {
 fn a_jump_or_startle_plays_to_the_end_when_an_agent_starts() {
     for startle in [false, true] {
         let mut cat = cat(false, 2);
-        cat.click(1, sprites());
+        cat.click(0, sprites());
         if startle {
             run_to_next_act(&mut cat);
         } else {
             past_the_jolt_lock(&mut cat);
         }
-        cat.click(1, sprites());
+        cat.click(0, sprites());
         let id = if startle {
             AnimId::Startle
         } else {
@@ -627,7 +753,7 @@ fn a_watching_cat_lies_down_before_a_nap_and_before_sleep() {
 #[test]
 fn a_jolt_that_dozes_off_or_a_walk_that_ends_skips_the_lie_down() {
     let mut cat = cat(false, 1);
-    cat.click(1, sprites());
+    cat.click(0, sprites());
     run_to_next_act(&mut cat);
     assert_eq!(cat.act(), Act::Sleep);
     let mut cat = walking_cat();
@@ -649,7 +775,7 @@ fn a_click_during_the_lie_down_jolts_and_a_hover_does_nothing() {
     let mut cat = lying_down_for_a_nap();
     cat.set_hovered(true);
     assert_eq!(cat.act(), Act::LieDown);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!(cat.act(), Act::Jolt);
 }
 
@@ -667,7 +793,7 @@ fn an_open_during_the_lie_down_starts_a_walk_in() {
 fn a_click_on_a_watching_cat_jumps_to_the_happy_eyes() {
     let mut cat = cat(false, 1);
     wake(&mut cat);
-    assert!(cat.click(1, sprites()));
+    assert!(cat.click(0, sprites()));
     assert_eq!(cat.act(), Act::Watch);
     assert_eq!(cat.step(), sprites().watch_happy);
     assert!(cat.step() > 0);
@@ -683,15 +809,15 @@ fn an_open_waits_out_of_view_then_walks_in_to_its_spot() {
         assert_eq!(cat.x(), AWAY);
         // Hover and clicks do nothing while it waits.
         cat.set_hovered(true);
-        assert!(!cat.click(1, sprites()));
-        assert!(!cat.click(2, sprites()));
+        assert!(!cat.click(0, sprites()));
+        assert!(!cat.click(0, sprites()));
         let waited = run_to_next_act(&mut cat);
         assert!(ENTER_DELAY_MS.contains(&waited), "{waited}");
 
         assert_eq!(cat.act(), Act::Enter);
         assert!(cat.visible());
         assert_eq!(cat.anim(), AnimId::WalkRight);
-        assert!(!cat.click(1, sprites()), "clicks do nothing on the way in");
+        assert!(!cat.click(0, sprites()), "clicks do nothing on the way in");
         cat.set_hovered(false);
         let mut last = cat.x();
         while cat.act() == Act::Enter {
@@ -978,6 +1104,13 @@ fn a_sidebar_open_at_app_start_runs_the_walk_in(cx: &mut TestAppContext) {
 fn hover_and_clicks_do_nothing_during_the_walk_in(cx: &mut TestAppContext) {
     let (handle, view) = open(cx);
     wait(cx, *ENTER_DELAY_MS.end() + 10);
+    // After the longest wait, the cat may still stand just out of view:
+    // let it take a few steps in.
+    let start = behaviour(&view, cx).x();
+    while behaviour(&view, cx).x() < start + 3 {
+        wait(cx, 90);
+    }
+    assert_eq!(act(&view, cx), Act::Enter);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.hover(CAT_ID, cx);
@@ -1050,25 +1183,17 @@ fn idle_a_click_jolts_at_once_and_it_dozes_off_on_the_clock(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn at_work_hover_does_nothing_and_a_double_click_walks_right(cx: &mut TestAppContext) {
+fn at_work_hover_does_nothing_and_clicks_walk_it_right(cx: &mut TestAppContext) {
     let (handle, view) = open_settled(cx);
     change_first(&view, cx, |issue| issue.claim = Some(demo_claim()));
     assert_eq!(act(&view, cx), Act::Laptop);
 
-    cx.update_window(handle, |_, window, cx| {
-        window.hover(CAT_ID, cx);
-        window.click(CAT_ID, cx);
-    })
-    .unwrap();
+    cx.update_window(handle, |_, window, cx| window.hover(CAT_ID, cx))
+        .unwrap();
     cx.run_until_parked();
     assert_eq!(act(&view, cx), Act::Laptop);
 
-    cx.update_window(handle, |_, window, cx| {
-        window.click_with_options(CAT_ID, ClickOptions::new().with_count(2), cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(act(&view, cx), Act::Commute);
+    bother_in_view(handle, &view, cx);
     wait(cx, 20_000);
     let cat = behaviour(&view, cx);
     assert_eq!((cat.act(), cat.x()), (Act::Laptop, cat.edges().1));
@@ -1081,16 +1206,62 @@ fn at_work_hover_does_nothing_and_a_double_click_walks_right(cx: &mut TestAppCon
     assert_eq!(cat.x(), cat.edges().0);
 }
 
+/// Clicks the working cat in the window, each click past its lock on the
+/// test clock, until it walks to the other side.
+fn bother_in_view(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    let rules = sprites().rules;
+    let click = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(CAT_ID, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    // A fast double click only makes it puzzled.
+    click(cx);
+    click(cx);
+    assert_eq!(act(view, cx), Act::Puzzled);
+    // Just inside the lock, between two timeline steps' ends.
+    wait(cx, rules.puzzled_lock_ms - 30);
+    click(cx);
+    assert_eq!(act(view, cx), Act::Puzzled);
+    wait(cx, 40);
+    click(cx);
+    assert_eq!(act(view, cx), Act::Angry);
+    wait(cx, rules.angry_lock_ms - 30);
+    click(cx);
+    assert_eq!(act(view, cx), Act::Angry);
+    wait(cx, 40);
+    click(cx);
+    assert_eq!(act(view, cx), Act::WorkStartle);
+    wait(cx, anim_ms(AnimId::WorkStartle) + 10);
+    assert_eq!(act(view, cx), Act::Commute);
+}
+
+#[gpui_kit::test]
+fn a_bothered_cat_calms_down_on_the_clock(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    change_first(&view, cx, |issue| issue.claim = Some(demo_claim()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(CAT_ID, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(act(&view, cx), Act::Puzzled);
+    wait(cx, sprites().rules.calm_ms - 50);
+    assert_eq!(act(&view, cx), Act::Puzzled);
+    wait(cx, 100);
+    assert_eq!(act(&view, cx), Act::Laptop);
+}
+
 #[gpui_kit::test]
 fn click_spam_during_a_walk_still_reaches_the_far_side(cx: &mut TestAppContext) {
     let (handle, view) = open_settled(cx);
     change_first(&view, cx, |issue| issue.claim = Some(demo_claim()));
     let double = || ClickOptions::new().with_count(2);
-    cx.update_window(handle, |_, window, cx| {
-        window.click_with_options(CAT_ID, double(), cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    bother_in_view(handle, &view, cx);
     assert_eq!(act(&view, cx), Act::Commute);
     // Double clicks on the moving cat, every frame of the walk.
     for _ in 0..400 {

@@ -26,10 +26,16 @@ pub enum AnimId {
     Startle,
     /// From sitting into sleep, once.
     LieDown,
+    /// At work, after a click: it stops typing, with a "?" over its head.
+    Puzzled,
+    /// At work, after more clicks: it glares, with a pulsing anger mark.
+    Angry,
+    /// At work, after the anger: it jumps up, once.
+    WorkStartle,
 }
 
 impl AnimId {
-    pub const ALL: [AnimId; 9] = [
+    pub const ALL: [AnimId; 12] = [
         AnimId::Watch,
         AnimId::Laptop,
         AnimId::Sleep,
@@ -39,6 +45,9 @@ impl AnimId {
         AnimId::Jump,
         AnimId::Startle,
         AnimId::LieDown,
+        AnimId::Puzzled,
+        AnimId::Angry,
+        AnimId::WorkStartle,
     ];
 
     fn file_name(self) -> &'static str {
@@ -52,6 +61,9 @@ impl AnimId {
             AnimId::Jump => "jump",
             AnimId::Startle => "startle",
             AnimId::LieDown => "lieDown",
+            AnimId::Puzzled => "puzzled",
+            AnimId::Angry => "angry",
+            AnimId::WorkStartle => "workStartle",
         }
     }
 }
@@ -109,6 +121,14 @@ pub struct Rules {
     /// After a jolt with no jump, a click within this time startles the
     /// cat at once.
     pub drowsy_ms: u64,
+    /// At work: clicks in this first part of the puzzled look do nothing.
+    /// A later click makes the cat angry.
+    pub puzzled_lock_ms: u64,
+    /// Clicks in this first part of the anger do nothing. A later click
+    /// startles the cat, and it moves to the other side.
+    pub angry_lock_ms: u64,
+    /// With no click for this long, a puzzled or angry cat types again.
+    pub calm_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +258,9 @@ impl Sprites {
         let rules = file.rules;
         if rules.jolt_lock_ms == 0 || rules.jolt_lock_ms >= rules.jolt_ms {
             return Err("the jolt lock must be inside the jolt".into());
+        }
+        if rules.calm_ms == 0 {
+            return Err("the calm-down time must not be zero".into());
         }
         Ok(Self {
             size,

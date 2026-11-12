@@ -1,5 +1,6 @@
 //! The pixel cat at the bottom of the sidebar. It types on a laptop while
-//! an agent works on a task, and a double click walks it to the other side.
+//! an agent works on a task, and clicks bother it until it moves to the
+//! other side.
 //! It sleeps when nothing goes on, and clicks startle it awake to sit and
 //! watch, then walk or nap. `behaviour.rs` holds those rules, and
 //! `sprites.rs` the art.
@@ -21,7 +22,7 @@ mod tests;
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
@@ -68,6 +69,8 @@ pub struct Mascot {
     paused: bool,
     /// Shows each timeline step for its time. None while hidden or paused.
     ticker: Option<Task<()>>,
+    /// When the ticker started the current step, on the executor's clock.
+    step_began: Option<Instant>,
     /// The strip's width and one sprite pixel, from the last layout.
     measured: Rc<Cell<Option<(Pixels, Pixels)>>>,
     /// The mouse button is down on the cat, so it draws a little smaller.
@@ -88,6 +91,7 @@ impl Mascot {
             shown: false,
             paused: false,
             ticker: None,
+            step_began: None,
             measured: Rc::new(Cell::new(None)),
             pressed: false,
             _store: subscription,
@@ -161,8 +165,12 @@ impl Mascot {
         }
     }
 
-    fn click(&mut self, count: usize, cx: &mut Context<Self>) {
-        if self.behaviour.click(count, sprites()) {
+    fn click(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let into = self.step_began.map_or(0, |began| {
+            now.saturating_duration_since(began).as_millis() as u64
+        });
+        if self.behaviour.click(into, sprites()) {
             self.restart(cx);
         }
     }
@@ -176,7 +184,10 @@ impl Mascot {
         }
         self.ticker = Some(cx.spawn(async move |this, cx| {
             loop {
-                let Ok(ms) = this.update(cx, |this, _| this.behaviour.step_ms(sprites())) else {
+                let Ok(ms) = this.update(cx, |this, cx| {
+                    this.step_began = Some(cx.background_executor().now());
+                    this.behaviour.step_ms(sprites())
+                }) else {
                     break;
                 };
                 cx.background_executor()
@@ -278,9 +289,7 @@ impl Render for Mascot {
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| this.set_pressed(false, cx)),
                         )
-                        .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                            this.click(event.click_count(), cx);
-                        }))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.click(cx)))
                         .child(
                             canvas(
                                 |_, _, _| {},

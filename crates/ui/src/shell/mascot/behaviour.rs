@@ -4,9 +4,13 @@
 //!
 //! While an agent works on a task, the cat works on its laptop:
 //!
-//! - A hover or a single click changes nothing.
-//! - A double click walks it to the other side of the sidebar, where it
-//!   works again.
+//! - A hover changes nothing.
+//! - Clicks bother it, step by step. Time moves it on, not the number of
+//!   clicks. A click makes it puzzled. A click after the puzzled lock
+//!   makes it angry. A click after the angry lock startles it, and it walks
+//!   to the other side of the sidebar, where it works again. Clicks inside
+//!   a lock do nothing, so ten fast clicks act like one.
+//! - With no click for a while, a puzzled or angry cat types again.
 //! - Every click during any walk is ignored, so clicks never stop or turn
 //!   a walk.
 //! - When the work ends away from the left edge, it walks back left. There
@@ -81,6 +85,12 @@ pub enum Act {
     Startle,
     /// Lies down from sitting, then sleeps or naps, as `lie_to` says.
     LieDown,
+    /// At work, a click stopped its typing: it looks up, puzzled.
+    Puzzled,
+    /// At work, more clicks made it angry.
+    Angry,
+    /// At work, it jumps up from anger, then walks to the other side.
+    WorkStartle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,6 +130,14 @@ pub struct Behaviour {
     drowsy_ms: u64,
     /// What follows a lie-down: `Sleep` or `Nap`.
     lie_to: Act,
+    /// Animation time when the current step started: the sum of every
+    /// step that ran, reset to a click's time when the click restarts the
+    /// timeline. It times the bothered cat.
+    clock_ms: u64,
+    /// `clock_ms` when the puzzled or angry act started.
+    bothered_at: u64,
+    /// `clock_ms` of the last click on a puzzled or angry cat.
+    clicked_at: u64,
     /// The lowest and the highest `x` that keep the whole cat inside the
     /// strip. It is unknown until the strip has a width.
     range: Option<(i32, i32)>,
@@ -148,6 +166,9 @@ impl Behaviour {
             after_watch: AfterWatch::Roam,
             drowsy_ms: 0,
             lie_to: Act::Sleep,
+            clock_ms: 0,
+            bothered_at: 0,
+            clicked_at: 0,
             range: None,
             hovered: false,
             hold: false,
@@ -182,10 +203,17 @@ impl Behaviour {
         self.range.unwrap_or((self.x, self.x))
     }
 
-    /// Whether the cat is at work: it types, or walks to the side where it
-    /// will type.
+    /// Whether the cat is at work: it types, is bothered at its laptop, or
+    /// walks to the side where it will type.
     fn working(&self) -> bool {
-        self.active && matches!(self.act, Act::Laptop | Act::Commute)
+        self.bothered()
+            || self.act == Act::WorkStartle
+            || self.active && matches!(self.act, Act::Laptop | Act::Commute)
+    }
+
+    /// Whether clicks at work made the cat puzzled or angry.
+    fn bothered(&self) -> bool {
+        matches!(self.act, Act::Puzzled | Act::Angry)
     }
 
     /// Whether the cat waits for, or walks in, after the sidebar opened.
@@ -202,6 +230,9 @@ impl Behaviour {
             Act::Jump => AnimId::Jump,
             Act::Startle => AnimId::Startle,
             Act::LieDown => AnimId::LieDown,
+            Act::Puzzled => AnimId::Puzzled,
+            Act::Angry => AnimId::Angry,
+            Act::WorkStartle => AnimId::WorkStartle,
             Act::Walk | Act::Commute if self.facing == Facing::Left => AnimId::WalkLeft,
             Act::Walk | Act::Commute | Act::Away | Act::Enter => AnimId::WalkRight,
         }
@@ -222,7 +253,13 @@ impl Behaviour {
             _ => {}
         }
         let timeline = &sprites.anim(self.anim()).timeline;
-        timeline[self.step % timeline.len()].ms
+        let ms = timeline[self.step % timeline.len()].ms;
+        if !self.bothered() {
+            return ms;
+        }
+        // The step ends early when the cat calms down within it.
+        let calm_at = self.clicked_at + rules.calm_ms;
+        ms.min(calm_at.saturating_sub(self.clock_ms).max(1))
     }
 
     /// Sets the columns the frame may start at, and `away`, a column that
@@ -261,7 +298,7 @@ impl Behaviour {
         }
         match self.act {
             Act::Sleep | Act::Jolt | Act::LieDown if active => self.start(Act::Laptop),
-            Act::Laptop if !active => {
+            Act::Laptop | Act::Puzzled | Act::Angry if !active => {
                 if self.x > self.edges().0 {
                     self.commute(Facing::Left);
                 } else {
@@ -303,27 +340,42 @@ impl Behaviour {
         matches!(self.act, Act::Away | Act::Enter | Act::Commute | Act::Walk)
     }
 
-    /// A click, the `count`th in a row. Returns true when the cat changed.
+    /// A click, `into_ms` after the current step started. Returns true
+    /// when the cat changed; the view then starts the new step's timer at
+    /// the click.
     ///
-    /// During any walk or jump, every click is ignored. At work, a double
-    /// click walks the cat to the other side and a single click does
-    /// nothing. A click on a sleeping cat jolts it, or startles it when it
+    /// During any walk or jump, every click is ignored. At work, clicks
+    /// bother the cat: puzzled, then angry, then startled, each after a
+    /// lock. A click on a sleeping cat jolts it, or startles it when it
     /// just dozed off, and a click during the jolt makes it jump. A click
     /// on a watching cat shows its happy eyes.
-    pub fn click(&mut self, count: usize, sprites: &Sprites) -> bool {
+    pub fn click(&mut self, into_ms: u64, sprites: &Sprites) -> bool {
+        let now = self.clock_ms + into_ms.min(self.step_ms(sprites));
+        let rules = sprites.rules;
         match self.act {
             _ if self.walking() => false,
-            Act::Jump | Act::Startle => false,
+            Act::Jump | Act::Startle | Act::WorkStartle => false,
             Act::Laptop => {
-                if count != 2 {
+                self.start(Act::Puzzled);
+                (self.clock_ms, self.bothered_at, self.clicked_at) = (now, now, now);
+                true
+            }
+            Act::Puzzled | Act::Angry => {
+                self.clicked_at = now;
+                let lock = if self.act == Act::Puzzled {
+                    rules.puzzled_lock_ms
+                } else {
+                    rules.angry_lock_ms
+                };
+                if now - self.bothered_at < lock {
                     return false;
                 }
-                let side = if self.x >= self.edges().1 {
-                    Facing::Left
+                if self.act == Act::Puzzled {
+                    self.start(Act::Angry);
                 } else {
-                    Facing::Right
-                };
-                self.commute(side);
+                    self.start(Act::WorkStartle);
+                }
+                (self.clock_ms, self.bothered_at) = (now, now);
                 true
             }
             Act::Sleep | Act::Nap | Act::LieDown => {
@@ -353,6 +405,7 @@ impl Behaviour {
     /// the cat one sprite pixel per step.
     pub fn advance(&mut self, sprites: &Sprites) {
         let spent = self.step_ms(sprites);
+        self.clock_ms += spent;
         match self.act {
             Act::Away => {
                 self.act = Act::Enter;
@@ -381,6 +434,13 @@ impl Behaviour {
                 }
                 return;
             }
+            // No click for a while: the cat types again.
+            Act::Puzzled | Act::Angry
+                if self.clock_ms >= self.clicked_at + sprites.rules.calm_ms =>
+            {
+                self.start(Act::Laptop);
+                return;
+            }
             Act::Walk => self.walk(),
             Act::Commute => {
                 let goal = self.goal_x();
@@ -406,7 +466,10 @@ impl Behaviour {
             | Act::Jolt
             | Act::Jump
             | Act::Startle
-            | Act::LieDown => false,
+            | Act::LieDown
+            | Act::Puzzled
+            | Act::Angry
+            | Act::WorkStartle => false,
             Act::Watch => !self.hold,
             Act::Walk | Act::Nap => true,
         };
@@ -433,6 +496,16 @@ impl Behaviour {
         match self.act {
             Act::Jump | Act::Startle => self.start(Act::Watch),
             Act::LieDown => self.start(self.lie_to),
+            // At work, it moves to the other side. Work that ended
+            // meanwhile sends it home instead.
+            Act::WorkStartle => {
+                let side = if !self.active || self.x >= self.edges().1 {
+                    Facing::Left
+                } else {
+                    Facing::Right
+                };
+                self.commute(side);
+            }
             _ => return false,
         }
         true
@@ -509,7 +582,10 @@ impl Behaviour {
             | Act::Jolt
             | Act::Jump
             | Act::Startle
-            | Act::LieDown => 0,
+            | Act::LieDown
+            | Act::Puzzled
+            | Act::Angry
+            | Act::WorkStartle => 0,
             Act::Watch => self.pick(WATCH_MS),
             Act::Walk | Act::Nap => self.pick(ROAM_MS),
         };
