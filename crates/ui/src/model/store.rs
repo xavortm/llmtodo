@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use gpui_shared_string::SharedString;
 
-use llmtodo_api_types::{IssueGit, Relation, ReviewAnswer};
+use llmtodo_api_types::{IssueGit, Relation, ReviewAnswer, WorkSession};
 use llmtodo_core::Question;
 
 use crate::model::data::{Catalog, Issue, IssueId, Renames};
@@ -63,6 +63,9 @@ pub struct IssueStore {
     /// came after them. Only the open task gets its detail on live events,
     /// so a task that opens again fetches it when it is here.
     stale_detail: std::collections::HashSet<IssueId>,
+    /// The agent sessions per issue, with their commits. Like the git
+    /// panel, only a single-issue fetch carries them.
+    sessions: HashMap<IssueId, Vec<WorkSession>>,
     pub catalog: Catalog,
     pub connection: Connection,
     /// The issues of the saved view the list shows, as the server sent
@@ -138,6 +141,7 @@ impl IssueStore {
             questions: HashMap::new(),
             reviews: HashMap::new(),
             stale_detail: Default::default(),
+            sessions: HashMap::new(),
             catalog: Catalog::default(),
             connection: Connection::Connecting,
             view: None,
@@ -299,18 +303,25 @@ impl IssueStore {
         self.stale_detail.remove(&id)
     }
 
-    /// Puts in the relations, reviews and git panel of one fetch.
+    /// Puts in the relations, reviews, git panel and sessions of one fetch.
     pub fn set_detail(
         &mut self,
         id: IssueId,
         relations: Vec<Relation>,
         reviews: Vec<ReviewAnswer>,
         git: IssueGit,
+        sessions: Vec<WorkSession>,
     ) {
         self.relations.insert(id, relations);
         self.reviews.insert(id, reviews);
         self.git.insert(id, git);
+        self.sessions.insert(id, sessions);
         self.stale_detail.remove(&id);
+    }
+
+    /// The agent sessions of an issue, once a fetch brought them.
+    pub fn sessions(&self, id: IssueId) -> Option<&[WorkSession]> {
+        self.sessions.get(&id).map(Vec::as_slice)
     }
 
     /// The review answers of an issue, oldest first, once a fetch brought
@@ -449,13 +460,25 @@ mod tests {
         store.mark_detail_stale(id(1));
         assert!(!store.take_stale_detail(id(1)));
 
-        store.set_detail(id(1), Vec::new(), Vec::new(), IssueGit::default());
+        store.set_detail(
+            id(1),
+            Vec::new(),
+            Vec::new(),
+            IssueGit::default(),
+            Vec::new(),
+        );
         store.mark_detail_stale(id(1));
         assert!(store.take_stale_detail(id(1)));
         assert!(!store.take_stale_detail(id(1)));
 
         store.mark_detail_stale(id(1));
-        store.set_detail(id(1), Vec::new(), Vec::new(), IssueGit::default());
+        store.set_detail(
+            id(1),
+            Vec::new(),
+            Vec::new(),
+            IssueGit::default(),
+            Vec::new(),
+        );
         assert!(!store.take_stale_detail(id(1)));
     }
 }

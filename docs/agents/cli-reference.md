@@ -191,6 +191,7 @@ Take an issue out of the trash, or bring back an old description
 List description revisions and field changes
 
 - `<key>`
+- `--bodies` (one of: true, false): Include the full text of every revision
 
 ### `llmtodo issue claim`
 
@@ -523,6 +524,7 @@ Change a title, replace the body, or patch one section
 ### `llmtodo doc history`
 
 - `<doc>`
+- `--bodies` (one of: true, false): Include the full text of every revision
 
 ### `llmtodo doc restore`
 
@@ -796,7 +798,7 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | GET | `/v1/documents/{doc}` | `doc view` | Read one document with its body |
 | PATCH | `/v1/documents/{doc}` | `doc update` | Change a document title or body |
 | DELETE | `/v1/documents/{doc}` | `doc delete` | Move a document to the trash |
-| GET | `/v1/documents/{doc}/history` | `doc history` | List a document's revisions |
+| GET | `/v1/documents/{doc}/history` | `doc history` | List a document's revisions, with their text only on ?bodies=true |
 | POST | `/v1/documents/{doc}/restore` | `doc restore` | Restore a document or one of its revisions |
 | POST | `/v1/issues/query` | `issue query` | Query issues |
 | POST | `/v1/issues/frontier` | `issue frontier` | Open, unblocked, unassigned sub-issues of a map issue or project |
@@ -805,7 +807,7 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | PATCH | `/v1/issues/{issue}` | `issue update` | Change an issue |
 | DELETE | `/v1/issues/{issue}` | `issue delete` | Move an issue to the trash |
 | POST | `/v1/issues/{issue}/restore` | `issue restore` | Take an issue out of the trash, or restore a description revision |
-| GET | `/v1/issues/{issue}/history` | `issue history` | Description revisions and activity |
+| GET | `/v1/issues/{issue}/history` | `issue history` | Description revisions and activity, with revision text only on ?bodies=true |
 | POST | `/v1/issues/{issue}/claim` | `issue claim` | Claim an issue for this session |
 | POST | `/v1/issues/{issue}/release` | `issue release` | Release this session's claim |
 | GET | `/v1/questions` | `issue questions` | Owner questions, open ones on open issues (?issue=&project=&all=true&cursor=&limit=) |

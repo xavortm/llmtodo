@@ -954,12 +954,15 @@ fn backend_sends_an_issues_history() {
             .any(|e| e.field == llmtodo_client::types::ActivityField::Created)
     );
     assert_eq!(history.revisions.len(), 1);
+    // LLM-179: the list carries no text for each version.
+    assert_eq!(history.revisions[0].body, None);
     let md = crate::task::history::activity_markdown(&history);
     assert!(md.contains("**You** created the issue"), "{md}");
 }
 
+/// The sessions come with the task's detail, not with its history.
 #[test]
-fn backend_sends_the_agent_sessions_with_the_history() {
+fn backend_sends_the_agent_sessions_with_the_detail() {
     let live = Live::new();
     live.rt
         .block_on(
@@ -971,11 +974,9 @@ fn backend_sends_the_agent_sessions_with_the_history() {
     live.wait(&mut events, "a snapshot", |e| {
         matches!(e, Event::Snapshot(_)).then_some(())
     });
-    backend.request(Request::History {
-        key: "LLM-1".into(),
-    });
-    let sessions = live.wait(&mut events, "the history", |e| match e {
-        Event::History { sessions, .. } => Some(sessions.clone()),
+    backend.fetch("LLM-1");
+    let sessions = live.wait(&mut events, "the detail", |e| match e {
+        Event::IssueDetail(parts) => Some(parts.sessions.clone()),
         _ => None,
     });
     assert_eq!(sessions.len(), 1);
@@ -1325,4 +1326,38 @@ fn a_steady_event_stream_still_refreshes() {
     let writes = live.rt.block_on(writer).unwrap();
     assert!(writes < 400, "the stream was still running");
     assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+}
+
+/// LLM-179: a live event on the open task brings its detail, then its
+/// history, once. The history needs no second detail fetch.
+#[test]
+fn a_live_event_on_the_open_task_sends_its_history_once() {
+    let live = Live::new();
+    let agent = live.client(Some("agent-179"));
+    let (backend, mut events) = live.backend();
+    let id = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => Some(s.issues[0].id),
+        _ => None,
+    });
+    backend.request(Request::Open { id: Some(id) });
+    let rename = UpdateIssue {
+        title: Some("Renamed for history".into()),
+        ..Default::default()
+    };
+    live.rt
+        .block_on(agent.update_issue("LLM-1", &rename))
+        .unwrap();
+    live.wait(&mut events, "the detail", |e| {
+        matches!(e, Event::IssueDetail(_)).then_some(())
+    });
+    let history = live.wait(&mut events, "the history", |e| match e {
+        Event::History { history, .. } => Some(history.clone()),
+        _ => None,
+    });
+    assert!(
+        history
+            .activity
+            .iter()
+            .any(|e| e.field == llmtodo_client::types::ActivityField::Title)
+    );
 }

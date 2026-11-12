@@ -219,7 +219,6 @@ fn send_activity(view: &Entity<Workspace>, cx: &mut TestAppContext) {
             Event::History {
                 key: "LLM-121".into(),
                 history: Box::new(history),
-                sessions: Vec::new(),
             },
             cx,
         )

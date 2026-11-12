@@ -474,6 +474,7 @@ impl Workspace {
                     this.history_for = open;
                     this.request(backend::Request::Open { id: open });
                     this.request_history(cx);
+                    this.show_sessions(cx);
                 }
             }),
         ];

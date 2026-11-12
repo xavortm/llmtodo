@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc as fmpsc;
 use llmtodo_client::types::{
-    ActivityEvent, ActivityQuery, ClientContext, ErrorCode, Issue, IssueDetail, IssueGit,
-    IssueOrder, IssueQuery, Label, Project, QuestionEntry, QuestionQuery, ReleaseRequest,
+    ActivityEvent, ActivityQuery, ClientContext, ErrorCode, HistoryQuery, Issue, IssueDetail,
+    IssueGit, IssueOrder, IssueQuery, Label, Project, QuestionEntry, QuestionQuery, ReleaseRequest,
     RestoreRequest, Team, UpdateIssue,
 };
 use llmtodo_client::types::{ActivityField, DocumentId, EntityType, IssueId};
@@ -128,8 +128,7 @@ pub enum Request {
         base: i64,
         force: bool,
     },
-    /// Send an issue's field changes, description revisions and agent
-    /// sessions.
+    /// Send an issue's field changes and description versions.
     History {
         key: String,
     },
@@ -181,12 +180,11 @@ pub enum Event {
     ViewDeleted {
         name: String,
     },
-    /// An issue's field changes, description revisions and agent sessions.
-    /// Sessions from this machine carry their commits.
+    /// An issue's field changes and description versions, without their
+    /// text. The sessions come with [`Event::IssueDetail`].
     History {
         key: String,
         history: Box<History>,
-        sessions: Vec<WorkSession>,
     },
     /// One document with its body.
     Document(Box<Document>),
@@ -244,6 +242,8 @@ pub struct DetailParts {
     pub reviews: Vec<llmtodo_api_types::ReviewAnswer>,
     /// The git panel, with its commits read from the local repo.
     pub git: IssueGit,
+    /// The agent sessions. Sessions from this machine carry their commits.
+    pub sessions: Vec<WorkSession>,
 }
 
 /// Where the data folder is, and which binary starts a server.
@@ -773,19 +773,16 @@ async fn session(
     }
 }
 
-/// Sends an issue's field changes, description revisions and agent
-/// sessions. A trashed or moved issue sends nothing: the next open asks
-/// again.
+/// Sends an issue's field changes and description versions, without the
+/// text of each version. A trashed or moved issue sends nothing: the next
+/// open asks again.
 async fn history(client: &Client, key: String, events: &Events) {
-    if let Ok((history, detail)) = tokio::try_join!(client.issue_history(&key), client.issue(&key))
-    {
-        let detail = with_commits(detail).await;
+    if let Ok(history) = client.issue_history(&key, &HistoryQuery::default()).await {
         send(
             events,
             Event::History {
                 key,
                 history: Box::new(history),
-                sessions: detail.sessions,
             },
         );
     }
@@ -917,8 +914,13 @@ async fn flush(
     }
     if !pending.keys.is_empty() {
         let keys: Vec<String> = pending.keys.iter().cloned().collect();
-        refresh_rows(client, keys, open, events).await?;
+        let open_key = refresh_rows(client, keys, open, events).await?;
         pending.keys.clear();
+        // Every event on an issue shows in its history, so the open task's
+        // history follows each refresh of it, once per batch of events.
+        if let Some(key) = open_key {
+            history(client, key, events).await;
+        }
     }
     while let Some(key) = pending.dependents_of.first().cloned() {
         dependents(client, &key, events).await?;
@@ -1090,6 +1092,7 @@ async fn send_detail(detail: IssueDetail, events: &Events) {
             relations: detail.relations,
             reviews: detail.reviews,
             git: detail.git,
+            sessions: detail.sessions,
         })),
     );
 }
@@ -1131,12 +1134,13 @@ async fn refresh(client: &Client, key: &str, events: &Events) -> Result<(), Stri
 /// Sends fresh list copies of the issues `keys` name, live or trashed, in
 /// one query each. They carry their text, so the inbox reads new questions.
 /// The open task gets its full detail instead. Unknown keys are skipped.
+/// Returns the open task's key when it was among them.
 async fn refresh_rows(
     client: &Client,
     keys: Vec<String>,
     open: Option<IssueId>,
     events: &Events,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let live = IssueQuery {
         keys,
         include_description: true,
@@ -1151,7 +1155,7 @@ async fn refresh_rows(
         match tokio::try_join!(client.query_all(&live), client.query_all(&trash)) {
             Ok(found) => found,
             Err(ClientError::Unreachable(e)) => return Err(e),
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
     rows.extend(trashed);
     let mut open_key = None;
@@ -1165,10 +1169,10 @@ async fn refresh_rows(
     if !rows.is_empty() {
         send(events, Event::Issues(rows));
     }
-    if let Some(key) = open_key {
-        refresh(client, &key, events).await?;
+    if let Some(key) = &open_key {
+        refresh(client, key, events).await?;
     }
-    Ok(())
+    Ok(open_key)
 }
 
 async fn apply_write(
@@ -1248,7 +1252,9 @@ async fn apply_write(
                 primary(client, events).await?;
             }
             // Undo the app's early change with the server's copy.
-            refresh_rows(client, vec![key.to_string()], open, events).await
+            refresh_rows(client, vec![key.to_string()], open, events)
+                .await
+                .map(|_| ())
         }
     }
 }

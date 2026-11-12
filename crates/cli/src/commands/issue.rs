@@ -26,7 +26,12 @@ pub enum IssueCmd {
         revision: Option<i64>,
     },
     /// List description revisions and field changes.
-    History { key: String },
+    History {
+        key: String,
+        /// Include the full text of every revision.
+        #[arg(long)]
+        bodies: bool,
+    },
     /// Claim an issue for this session: assignee and In Progress at once.
     /// Fails with exit code 4 when another session holds it.
     Claim {
@@ -522,7 +527,10 @@ pub async fn run(app: &App, cmd: IssueCmd) -> CliResult {
             app.out
                 .issue_detail(&c.restore_issue(&key, &RestoreRequest { revision }).await?);
         }
-        IssueCmd::History { key } => app.out.ser(&c.issue_history(&key).await?),
+        IssueCmd::History { key, bodies } => {
+            let q = HistoryQuery { bodies };
+            app.out.ser(&c.issue_history(&key, &q).await?)
+        }
         IssueCmd::Claim { key, steal } => claim_issue(app, c, &key, steal).await?,
         IssueCmd::Analyze { key, done } => analyze_issue(app, c, &key, done).await?,
         IssueCmd::Release { key, status, force } => app

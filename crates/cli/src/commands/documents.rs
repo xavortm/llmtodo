@@ -66,6 +66,9 @@ pub enum DocCmd {
     },
     History {
         doc: String,
+        /// Include the full text of every revision.
+        #[arg(long)]
+        bodies: bool,
     },
     Restore {
         doc: String,
@@ -167,7 +170,10 @@ pub async fn run(app: &App, cmd: DocCmd) -> CliResult {
             app.confirm(&format!("Move document {doc} to the trash?"))?;
             app.out.ser(&c.delete_document(&doc).await?)
         }
-        DocCmd::History { doc } => app.out.ser(&c.document_history(&doc).await?),
+        DocCmd::History { doc, bodies } => {
+            let q = HistoryQuery { bodies };
+            app.out.ser(&c.document_history(&doc, &q).await?)
+        }
         DocCmd::Restore { doc, revision } => app.out.ser(
             &c.restore_document(&doc, &RestoreRequest { revision })
                 .await?,

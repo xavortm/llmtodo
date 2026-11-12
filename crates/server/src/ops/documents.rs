@@ -36,10 +36,10 @@ pub async fn list(
 }
 
 /// The revisions and the activity of a document.
-pub async fn history(c: &mut SqliteConnection, r: &str) -> ApiResult<History> {
+pub async fn history(c: &mut SqliteConnection, r: &str, bodies: bool) -> ApiResult<History> {
     let d = documents::resolve(c, r).await?;
     Ok(History {
-        revisions: revisions::revisions(c, "document", &d.id).await?,
+        revisions: revisions::revisions(c, "document", &d.id, bodies).await?,
         activity: activity::for_entity(c, &d.id).await?,
     })
 }

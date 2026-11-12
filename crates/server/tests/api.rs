@@ -208,6 +208,17 @@ async fn create_view_query_update() {
         .ok(&owner(), "GET", "/v1/issues/ALX-1/history", Value::Null)
         .await;
     assert_eq!(h["revisions"].as_array().unwrap().len(), 3);
+    // The list leaves out each version's text unless asked.
+    assert!(h["revisions"][0].get("body").is_none());
+    let full = t
+        .ok(
+            &owner(),
+            "GET",
+            "/v1/issues/ALX-1/history?bodies=true",
+            Value::Null,
+        )
+        .await;
+    assert!(full["revisions"][0]["body"].is_string());
     let v = t
         .ok(
             &owner(),

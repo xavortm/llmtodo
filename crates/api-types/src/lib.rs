@@ -1098,10 +1098,22 @@ pub struct CreateAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Revision {
     pub version: i64,
-    pub body: String,
+    /// The full text. A history list leaves it out unless it asks for
+    /// bodies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     pub actor: Option<Actor>,
     pub session_id: Option<String>,
     pub created_at: Timestamp,
+}
+
+/// Options for an issue's or a document's history.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryQuery {
+    /// Include the full text of every revision. Off by default, because a
+    /// long-lived issue can have hundreds of versions.
+    #[serde(default)]
+    pub bodies: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

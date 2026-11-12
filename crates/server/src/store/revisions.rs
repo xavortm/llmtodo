@@ -30,16 +30,20 @@ pub async fn add_revision(
     Ok(())
 }
 
+/// Every revision of an entity, oldest first. The text comes only with
+/// `bodies`.
 pub async fn revisions(
     conn: &mut SqliteConnection,
     entity_type: &str,
     entity_id: &str,
+    bodies: bool,
 ) -> ApiResult<Vec<Revision>> {
     let actors = actors::all(conn).await?;
-    type Row = (i64, String, Option<String>, Option<String>, String);
+    type Row = (i64, Option<String>, Option<String>, Option<String>, String);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT version, body, actor_id, session_id, created_at FROM revisions WHERE entity_type = ? AND entity_id = ? ORDER BY version",
+        "SELECT version, CASE WHEN ? THEN body END, actor_id, session_id, created_at FROM revisions WHERE entity_type = ? AND entity_id = ? ORDER BY version",
     )
+    .bind(bodies)
     .bind(entity_type)
     .bind(entity_id)
     .fetch_all(&mut *conn)

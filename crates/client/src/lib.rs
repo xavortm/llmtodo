@@ -550,8 +550,8 @@ impl Client {
     pub async fn delete_document(&self, r: &str) -> Result<Document> {
         self.call::<ep::DeleteDocument, _>(r, &()).await
     }
-    pub async fn document_history(&self, r: &str) -> Result<History> {
-        self.call::<ep::DocumentHistory, _>(r, &()).await
+    pub async fn document_history(&self, r: &str, q: &HistoryQuery) -> Result<History> {
+        self.call::<ep::DocumentHistory, _>(r, q).await
     }
     pub async fn restore_document(&self, r: &str, req: &RestoreRequest) -> Result<Document> {
         self.call::<ep::RestoreDocument, _>(r, req).await
@@ -600,8 +600,8 @@ impl Client {
     pub async fn restore_issue(&self, r: &str, req: &RestoreRequest) -> Result<IssueDetail> {
         self.call::<ep::RestoreIssue, _>(r, req).await
     }
-    pub async fn issue_history(&self, r: &str) -> Result<History> {
-        self.call::<ep::IssueHistory, _>(r, &()).await
+    pub async fn issue_history(&self, r: &str, q: &HistoryQuery) -> Result<History> {
+        self.call::<ep::IssueHistory, _>(r, q).await
     }
     pub async fn claim(&self, r: &str, req: &ClaimRequest) -> Result<ClaimResponse> {
         self.call::<ep::Claim, _>(r, req).await

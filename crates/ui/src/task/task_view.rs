@@ -196,6 +196,7 @@ impl TaskView {
     }
 
     /// Sets the open task's Activity and Sessions tabs and its cost card.
+    #[cfg(test)]
     pub fn set_history(
         &mut self,
         id: IssueId,
@@ -204,7 +205,25 @@ impl TaskView {
         costs: crate::task::history::CostBreakdown,
         cx: &mut Context<Self>,
     ) {
+        self.set_activity(id, activity, cx);
+        self.set_sessions(id, sessions, costs, cx);
+    }
+
+    /// Sets the open task's Activity tab.
+    pub fn set_activity(&mut self, id: IssueId, activity: String, cx: &mut Context<Self>) {
         self.activity = Some((id, activity));
+        self.history_revision += 1;
+        cx.notify();
+    }
+
+    /// Sets the open task's Sessions tab and its cost card.
+    pub fn set_sessions(
+        &mut self,
+        id: IssueId,
+        sessions: String,
+        costs: crate::task::history::CostBreakdown,
+        cx: &mut Context<Self>,
+    ) {
         self.sessions = Some((id, sessions));
         self.session_costs = Some((id, costs));
         self.history_revision += 1;

@@ -76,7 +76,8 @@ pub async fn list_documents(
 pub async fn document_history(
     State(st): State<AppState>,
     Path(r): Path<String>,
+    Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<History>> {
     let mut c = st.pool().acquire().await?;
-    Ok(Json(ops::documents::history(&mut c, &r).await?))
+    Ok(Json(ops::documents::history(&mut c, &r, q.bodies).await?))
 }

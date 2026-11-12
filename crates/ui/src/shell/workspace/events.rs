@@ -41,27 +41,23 @@ impl Workspace {
                     relations,
                     reviews,
                     git,
+                    sessions,
                 } = *parts;
                 let issue = Issue::from_api(&issue, &self.store.read(cx).catalog);
                 let id = issue.id;
                 self.store.update(cx, |store, cx| {
-                    store.set_detail(id, relations, reviews, git);
+                    store.set_detail(id, relations, reviews, git, sessions);
                     cx.notify();
                 });
                 self.receive_issue(issue, cx);
-                // A change to the open task adds to its history.
-                if Some(id) == self.history_for {
-                    self.request_history(cx);
-                }
+                // The API thread sends the open task's history itself,
+                // after the live events that change it.
+                self.show_sessions(cx);
             }
             backend::Event::ViewIssues { name, ids } => self.on_view_issues(name, ids, cx),
             backend::Event::ViewSaved { name } => self.on_view_saved(name, cx),
             backend::Event::ViewDeleted { name } => self.on_view_deleted(name, cx),
-            backend::Event::History {
-                key,
-                history,
-                sessions,
-            } => self.on_history(key, history, sessions, cx),
+            backend::Event::History { key, history } => self.on_history(key, history, cx),
             backend::Event::Document(doc) => {
                 self.doc_view.update(cx, |view, cx| view.set_doc(*doc, cx));
             }
@@ -122,13 +118,24 @@ impl Workspace {
                 store.mark_detail_stale(issue.id);
             }
         });
-        let open = issues.iter().any(|i| Some(i.id) == self.history_for);
         for issue in issues {
             self.receive_issue(issue, cx);
         }
-        if open {
-            self.request_history(cx);
-        }
+    }
+
+    /// Shows the open task's agent sessions, once a fetch brought them.
+    pub(super) fn show_sessions(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.history_for else {
+            return;
+        };
+        let Some(sessions) = self.store.read(cx).sessions(id) else {
+            return;
+        };
+        let costs = crate::task::history::cost_breakdown(sessions);
+        let sessions = crate::task::history::sessions_markdown(sessions);
+        self.task.update(cx, |task, cx| {
+            task.set_sessions(id, sessions, costs, cx);
+        });
     }
 
     /// An answer about another tracker's teams.
@@ -204,19 +211,15 @@ impl Workspace {
         &mut self,
         key: String,
         history: Box<llmtodo_client::types::History>,
-        sessions: Vec<llmtodo_client::types::WorkSession>,
         cx: &mut Context<Self>,
     ) {
         let id = self.store.read(cx).by_key(&key).map(|i| i.id);
-        if id.is_some() && id == self.history_for {
+        if let Some(id) = id
+            && Some(id) == self.history_for
+        {
             let activity = crate::task::history::activity_markdown(&history);
-            let costs = crate::task::history::cost_breakdown(&sessions);
-            let sessions = crate::task::history::sessions_markdown(&sessions);
-            if let Some(id) = id {
-                self.task.update(cx, |task, cx| {
-                    task.set_history(id, activity, sessions, costs, cx);
-                });
-            }
+            self.task
+                .update(cx, |task, cx| task.set_activity(id, activity, cx));
         }
     }
 

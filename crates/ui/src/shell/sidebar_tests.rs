@@ -517,7 +517,6 @@ fn an_open_task_asks_for_its_history_and_shows_an_activity_tab(cx: &mut TestAppC
             Event::History {
                 key: "LLM-104".into(),
                 history: history_for_status_change(),
-                sessions: Vec::new(),
             },
             cx,
         )
@@ -544,7 +543,6 @@ fn an_open_task_asks_for_its_history_and_shows_an_activity_tab(cx: &mut TestAppC
             Event::History {
                 key: "LLM-104".into(),
                 history: history_for_status_change(),
-                sessions: Vec::new(),
             },
             cx,
         )
@@ -572,7 +570,6 @@ fn the_activity_tab_is_marked_read_only(cx: &mut TestAppContext) {
             crate::model::backend::Event::History {
                 key: "LLM-104".into(),
                 history: history_for_status_change(),
-                sessions: Vec::new(),
             },
             cx,
         )
@@ -845,7 +842,6 @@ fn the_task_tabs_grow_with_the_zoom(cx: &mut TestAppContext) {
             crate::model::backend::Event::History {
                 key: "LLM-104".into(),
                 history: history_for_status_change(),
-                sessions: Vec::new(),
             },
             cx,
         )

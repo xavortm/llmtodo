@@ -79,10 +79,10 @@ pub async fn deps(c: &mut SqliteConnection, r: &str, open: bool) -> ApiResult<De
 }
 
 /// The description revisions and the activity of an issue.
-pub async fn history(c: &mut SqliteConnection, r: &str) -> ApiResult<History> {
+pub async fn history(c: &mut SqliteConnection, r: &str, bodies: bool) -> ApiResult<History> {
     let id = issues::resolve_id(c, r).await?;
     Ok(History {
-        revisions: revisions::revisions(c, "issue", &id).await?,
+        revisions: revisions::revisions(c, "issue", &id, bodies).await?,
         activity: activity::for_issue(c, &id).await?,
     })
 }

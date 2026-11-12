@@ -240,7 +240,7 @@ endpoints! {
     Document: Get "/v1/documents/{doc}", "Read one document with its body", -, (t::Document), "doc view";
     UpdateDocument: Patch "/v1/documents/{doc}", "Change a document title or body", (t::UpdateDocument), (t::Document), "doc update";
     DeleteDocument: Delete "/v1/documents/{doc}", "Move a document to the trash", -, (t::Document), "doc delete";
-    DocumentHistory: Get "/v1/documents/{doc}/history", "List a document's revisions", -, (t::History), "doc history";
+    DocumentHistory: Get "/v1/documents/{doc}/history", "List a document's revisions, with their text only on ?bodies=true", (t::HistoryQuery), (t::History), "doc history";
     RestoreDocument: Post "/v1/documents/{doc}/restore", "Restore a document or one of its revisions", (t::RestoreRequest), (t::Document), "doc restore";
     // issues
     QueryIssues: Post "/v1/issues/query" [read], "Query issues", (t::IssueQuery), (t::Page<t::Issue>), "issue query";
@@ -250,7 +250,7 @@ endpoints! {
     UpdateIssue: Patch "/v1/issues/{issue}", "Change an issue", (t::UpdateIssue), (t::IssueDetail), "issue update";
     DeleteIssue: Delete "/v1/issues/{issue}", "Move an issue to the trash", -, (t::Issue), "issue delete";
     RestoreIssue: Post "/v1/issues/{issue}/restore", "Take an issue out of the trash, or restore a description revision", (t::RestoreRequest), (t::IssueDetail), "issue restore";
-    IssueHistory: Get "/v1/issues/{issue}/history", "Description revisions and activity", -, (t::History), "issue history";
+    IssueHistory: Get "/v1/issues/{issue}/history", "Description revisions and activity, with revision text only on ?bodies=true", (t::HistoryQuery), (t::History), "issue history";
     Claim: Post "/v1/issues/{issue}/claim", "Claim an issue for this session", (t::ClaimRequest), (t::ClaimResponse), "issue claim";
     Release: Post "/v1/issues/{issue}/release", "Release this session's claim", (t::ReleaseRequest), (t::Issue), "issue release";
     Questions: Get "/v1/questions", "Owner questions, open ones on open issues (?issue=&project=&all=true&cursor=&limit=)", (t::QuestionQuery), (t::Page<t::QuestionEntry>), "issue questions";

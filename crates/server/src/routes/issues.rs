@@ -48,9 +48,10 @@ pub async fn frontier(
 pub async fn history(
     State(st): State<AppState>,
     Path(r): Path<String>,
+    Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<History>> {
     let mut c = st.pool().acquire().await?;
-    Ok(Json(ops::issues::history(&mut c, &r).await?))
+    Ok(Json(ops::issues::history(&mut c, &r, q.bodies).await?))
 }
 
 pub async fn create(
