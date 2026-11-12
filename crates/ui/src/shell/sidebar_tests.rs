@@ -972,3 +972,70 @@ fn a_team_click_closes_a_task_from_another_team(cx: &mut TestAppContext) {
     assert_eq!(scope(&view, cx), Scope::Team("WEB".into()));
     assert_eq!(open_task(&view, cx), None);
 }
+
+/// LLM-182: a yellow dot shows left of a project's icon while an agent
+/// holds a claim on an open task in it, and goes when the claim ends.
+#[gpui_kit::test]
+fn a_dot_marks_a_project_while_an_agent_works_in_it(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let store = cx.read(|cx| view.read(cx).store().clone());
+    let claim = cx.read(|cx| {
+        store
+            .read(cx)
+            .iter()
+            .find_map(|i| i.claim.clone())
+            .expect("the demo holds a claim")
+    });
+    let set_claims = |cx: &mut TestAppContext, holder: Option<&str>| {
+        store.update(cx, |s, cx| {
+            let ids: Vec<_> = s.iter().map(|i| (i.id, i.key.to_string())).collect();
+            for (id, key) in ids {
+                let held = holder == Some(key.as_str());
+                s.modify(id, |i| i.claim = held.then(|| claim.clone()));
+            }
+            cx.notify();
+        });
+    };
+    let dots = |cx: &mut TestAppContext| -> Vec<&'static str> {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            ["project:app", "project:server", "team:LLM", "all"]
+                .into_iter()
+                .filter(|row| {
+                    window
+                        .within(format!("sidebar-{row}"))
+                        .try_find("locked-dot")
+                        .is_some()
+                })
+                .collect()
+        })
+        .unwrap()
+    };
+    cx.update_window(handle, |_, window, cx| window.press("cmd-b", cx))
+        .unwrap();
+
+    set_claims(cx, None);
+    assert_eq!(dots(cx), Vec::<&str>::new());
+
+    // LLM-102 is an open task in the server project.
+    let project = cx.read(|cx| view.read(cx).issue_by_key("LLM-102", cx).project.clone());
+    assert_eq!(project.as_deref(), Some("server"));
+    set_claims(cx, Some("LLM-102"));
+    assert_eq!(dots(cx), ["project:server"], "only the project row");
+
+    // The dot sits in the row's left padding, left of the icon.
+    cx.update_window(handle, |_, window, _| {
+        let row = window.find("sidebar-project:server").bounds();
+        let dot = window
+            .within("sidebar-project:server")
+            .find("locked-dot")
+            .bounds();
+        assert!(dot.left() >= row.left());
+        assert!(dot.right() <= row.left() + window.rem_size() * 1.5);
+    })
+    .unwrap();
+
+    // The claim ends: the dot goes at once.
+    set_claims(cx, None);
+    assert_eq!(dots(cx), Vec::<&str>::new());
+}

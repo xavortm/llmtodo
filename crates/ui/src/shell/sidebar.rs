@@ -160,6 +160,8 @@ pub struct ScopeCounts<'a> {
     trash: usize,
     teams: HashMap<&'a str, usize>,
     projects: HashMap<&'a str, usize>,
+    /// The projects with an open task that an agent holds a claim on.
+    locked: HashSet<&'a str>,
     /// The view the server sent, and its open issues.
     view: Option<(&'a str, usize)>,
     questions: usize,
@@ -185,6 +187,9 @@ impl<'a> ScopeCounts<'a> {
             *counts.teams.entry(issue.team.as_ref()).or_default() += 1;
             if let Some(project) = &issue.project {
                 *counts.projects.entry(project.as_ref()).or_default() += 1;
+                if issue.claim.is_some() {
+                    counts.locked.insert(project.as_ref());
+                }
             }
             if let (Some(members), Some((_, n))) = (view, counts.view.as_mut())
                 && members.ids.contains(&issue.id)
@@ -193,6 +198,15 @@ impl<'a> ScopeCounts<'a> {
             }
         }
         counts
+    }
+
+    /// Whether a row of `scope` shows the yellow dot: a project in which
+    /// an agent holds a claim on an open task.
+    pub fn locked(&self, scope: &Scope) -> bool {
+        match scope {
+            Scope::Project(slug) => self.locked.contains(slug.as_ref()),
+            _ => false,
+        }
     }
 
     /// The count a row of `scope` shows. Zero shows nothing.
@@ -210,6 +224,33 @@ impl<'a> ScopeCounts<'a> {
             Scope::Document(_) | Scope::Settings => 0,
         }
     }
+}
+
+/// The dot left of a project's icon while an agent works in it. It sits in
+/// the row's left padding: 1.5 rem on a project under a team, 0.5 rem on
+/// one without.
+fn locked_dot(nested: bool, fill: gpui_kit::Hsla) -> impl IntoElement {
+    const DOT: f32 = 0.375;
+    let left = if nested {
+        1.5 - DOT - 0.25
+    } else {
+        0.5 - DOT - 0.0625
+    };
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(gpui_kit::rems(left))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .id("locked-dot")
+                .test_support()
+                .size(gpui_kit::rems(DOT))
+                .rounded_full()
+                .bg(fill),
+        )
 }
 
 impl Render for Sidebar {
@@ -231,6 +272,8 @@ impl Render for Sidebar {
         // Like the list: the active row is a filled background, drawn
         // fainter while focus is elsewhere. No left border: the owner's rule.
         let active_bg = crate::shell::theme::selection_bg(theme, focused);
+        // The Locked badge's yellow, so both mean an agent works there.
+        let (locked_fill, _) = crate::shell::theme::locked_badge(theme);
         let mut column = v_flex()
             .id("sidebar")
             .key_context(CONTEXT)
@@ -328,6 +371,7 @@ impl Render for Sidebar {
             let team = matches!(scope, Scope::Team(_));
             let active = active_row == Some(ix);
             let count = counts.get(&scope);
+            let locked = counts.locked(&scope);
             let name = scope.name(catalog);
             let events = self.events.clone();
             let sidebar = sidebar.clone();
@@ -358,6 +402,11 @@ impl Render for Sidebar {
                     .when(active, |this| this.bg(active_bg))
                     .hover(move |s| s.bg(if active { active_hover } else { hover }))
                     .active(move |s| s.bg(pressed))
+                    // The dot sits in the left padding, so the icon and the
+                    // name stay where they are.
+                    .when(locked, |this| {
+                        this.relative().child(locked_dot(nested, locked_fill))
+                    })
                     .child(
                         Icon::new(scope.icon())
                             .small()
