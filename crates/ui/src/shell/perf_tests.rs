@@ -501,3 +501,44 @@ fn frame_times_10k(cx: &mut TestAppContext) {
 fn frame_times_50k(cx: &mut TestAppContext) {
     measure(50_000, cx);
 }
+
+/// LLM-173: one typed key in a description of about 50 KB, with the task
+/// in the editor. The time covers the highlighter update and one frame.
+#[gpui_kit::test]
+#[ignore = "builds a long description and prints timings"]
+fn typing_into_a_long_description(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, 200);
+    let long = description(0).repeat(50_000 / description(0).len() + 1);
+    let id = view.update(cx, |this, cx| {
+        let mut issue = this.visible_issue(1, cx).clone();
+        issue.claim = None;
+        issue.description = long.clone().into();
+        let id = issue.id;
+        this.receive_issue(issue, cx);
+        id
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        view.update(cx, |this, cx| this.open_task(id, window, cx));
+        window.render_frame(cx);
+        window.press("e", cx);
+        window.press("i", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let length = cx.read(|cx| view.read(cx).editor(cx).read(cx).value().len());
+    assert!(length >= 50_000, "{length}");
+    report(
+        "type one key, 50 KB description",
+        200,
+        handle,
+        cx,
+        |_, window, cx| {
+            window.input("x", cx);
+            window.draw(cx).clear(cx);
+        },
+    );
+    cx.update(|cx| cx.quit());
+}

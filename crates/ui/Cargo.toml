@@ -33,6 +33,9 @@ uuid = "1.29.2"
 # The string type the model holds. It is the same type GPUI uses, without
 # GPUI, so the model needs no GPUI import. Keep it on the GPUI version.
 gpui-shared-string = { package = "gpui-pre-shared-string", version = "=0.3.12" }
+# The edit type of GPUI Kit's `SyntaxHighlighter::update`, for incremental
+# parsing in `fold_highlighter.rs`. Keep it on GPUI Kit's version.
+tree-sitter = "=0.26.13"
 
 [dev-dependencies]
 tempfile = "3"

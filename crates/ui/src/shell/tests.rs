@@ -198,6 +198,38 @@ fn editor_folds_plus_sections(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// LLM-173: the folds follow each edit. A new first line moves every
+/// section down one line.
+#[gpui_kit::test]
+fn editor_folds_follow_a_typed_line(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let expected = cx.read(|cx| {
+        crate::task::fold_highlighter::fold_ranges(
+            &view.read(cx).issue_by_key("LLM-101", cx).description,
+        )
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.press("e", cx);
+        window.press("i", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let editor = view.read(cx).editor(cx).read(cx);
+        assert!(editor.value().starts_with('\n'));
+        for fold in &expected {
+            let map = editor.display_map();
+            assert!(map.is_fold_candidate(fold.start_line + 1));
+            assert!(!map.is_fold_candidate(fold.start_line));
+        }
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn editor_normal_mode_edits_without_typing(cx: &mut TestAppContext) {
     let (handle, view) = open(cx);

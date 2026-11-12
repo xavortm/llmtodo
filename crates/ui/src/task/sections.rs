@@ -30,6 +30,8 @@ pub struct SectionLines {
     pub end_line: usize,
 }
 
+/// The reference rules for `Kind::of`. A test checks that both agree.
+#[cfg(test)]
 fn fence_marker(line: &str) -> Option<&'static str> {
     let trimmed = line.trim_start();
     if trimmed.starts_with("```") {
@@ -48,6 +50,7 @@ fn opener_title(line: &str) -> Option<&str> {
     (!title.is_empty()).then_some(title)
 }
 
+#[cfg(test)]
 fn is_closer(line: &str) -> bool {
     line.trim_end() == "+++"
 }
@@ -79,24 +82,72 @@ struct Found {
     close_line: Option<usize>,
 }
 
-fn find(lines: &[Line<'_>]) -> Vec<Found> {
+/// What one line means to the section rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Kind {
+    /// The line opens or closes a code fence with this marker.
+    fence: Option<&'static str>,
+    /// `+++ Title`: the line opens a section.
+    opener: bool,
+    /// `+++`: the line closes a section.
+    closer: bool,
+}
+
+impl Kind {
+    /// The kind of one line, from its characters. It reads only the start
+    /// of most lines, so the editor can classify each line of a rope
+    /// without copying the text. The rules match `fence_marker`,
+    /// `opener_title` and `is_closer`.
+    fn of(chars: impl IntoIterator<Item = char>) -> Self {
+        let mut kind = Kind::default();
+        let mut chars = chars.into_iter();
+        let mut next = chars.next();
+        // A fence may follow spaces. A `+++` marker starts at column 0.
+        let mut column_zero = true;
+        while let Some(c) = next
+            && c.is_whitespace()
+        {
+            column_zero = false;
+            next = chars.next();
+        }
+        let three = [next, chars.next(), chars.next()];
+        if three == [Some('`'); 3] {
+            kind.fence = Some("```");
+        } else if three == [Some('~'); 3] {
+            kind.fence = Some("~~~");
+        } else if column_zero && three == [Some('+'); 3] {
+            match chars.next() {
+                None => kind.closer = true,
+                Some(c) if c.is_whitespace() => {
+                    let blank = chars.all(char::is_whitespace);
+                    kind.closer = blank;
+                    kind.opener = !blank && (c == ' ' || c == '\t');
+                }
+                Some(_) => {}
+            }
+        }
+        kind
+    }
+}
+
+fn find(kinds: impl IntoIterator<Item = Kind>) -> Vec<Found> {
     let mut found = Vec::new();
     let mut fence: Option<&'static str> = None;
     let mut open: Option<usize> = None;
-    for (ix, line) in lines.iter().enumerate() {
+    for (ix, kind) in kinds.into_iter().enumerate() {
         if let Some(marker) = fence {
-            if line.text.trim_start().starts_with(marker) {
+            if kind.fence == Some(marker) {
                 fence = None;
             }
             continue;
         }
-        if let Some(marker) = fence_marker(line.text) {
+        if let Some(marker) = kind.fence {
             fence = Some(marker);
             continue;
         }
         match open {
-            None if opener_title(line.text).is_some() => open = Some(ix),
-            Some(title_line) if is_closer(line.text) => {
+            None if kind.opener => open = Some(ix),
+            Some(title_line) if kind.closer => {
                 found.push(Found {
                     title_line,
                     close_line: Some(ix),
@@ -115,11 +166,12 @@ fn find(lines: &[Line<'_>]) -> Vec<Found> {
     found
 }
 
-/// Section line ranges, for editor folding.
-pub fn section_lines(source: &str) -> Vec<SectionLines> {
-    let lines = lines(source);
-    let last = lines.len().saturating_sub(1);
-    find(&lines)
+fn kinds<'a>(lines: &'a [Line<'_>]) -> impl Iterator<Item = Kind> + 'a {
+    lines.iter().map(|l| Kind::of(l.text.chars()))
+}
+
+fn to_section_lines(found: Vec<Found>, last: usize) -> Vec<SectionLines> {
+    found
         .into_iter()
         .map(|f| SectionLines {
             start_line: f.title_line,
@@ -128,12 +180,36 @@ pub fn section_lines(source: &str) -> Vec<SectionLines> {
         .collect()
 }
 
+/// Section line ranges, for editor folding.
+pub fn section_lines(source: &str) -> Vec<SectionLines> {
+    let lines = lines(source);
+    let last = lines.len().saturating_sub(1);
+    to_section_lines(find(kinds(&lines)), last)
+}
+
+/// `section_lines` for the editor's rope, line by line, with no copy of the
+/// text. A final newline ends the last line, as in `section_lines`, so it
+/// adds no line of its own.
+pub fn section_lines_of_rope(text: &gpui_kit::base::input::Rope) -> Vec<SectionLines> {
+    use gpui_kit::base::input::RopeExt as _;
+    let mut count = text.lines_len();
+    if text.len() > 0 && text.byte(text.len() - 1) == b'\n' {
+        count -= 1;
+    }
+    let found = find(
+        text.iter_lines()
+            .take(count)
+            .map(|line| Kind::of(line.chars())),
+    );
+    to_section_lines(found, count.saturating_sub(1))
+}
+
 /// Splits `source` into plain Markdown and sections, for the preview.
 pub fn segments(source: &str) -> Vec<Segment<'_>> {
     let lines = lines(source);
     let mut out = Vec::new();
     let mut cursor = 0;
-    for (index, f) in find(&lines).into_iter().enumerate() {
+    for (index, f) in find(kinds(&lines)).into_iter().enumerate() {
         let title_line = &lines[f.title_line];
         let before = &source[cursor..title_line.start];
         if !before.trim().is_empty() {
@@ -280,5 +356,65 @@ mod tests {
     #[test]
     fn bare_marker_without_title_does_not_open() {
         assert!(section_lines("+++\ntext\n+++\n").is_empty());
+    }
+
+    #[test]
+    fn the_line_kinds_follow_the_reference_rules() {
+        let lines = [
+            "",
+            " ",
+            "+++",
+            "+++ ",
+            "+++\t",
+            "+++ Title",
+            "+++\tTitle",
+            "+++Title",
+            " +++ Title",
+            " +++",
+            "+++ \u{a0}",
+            "+++\u{a0}Title",
+            "```",
+            "  ```rust",
+            "~~~",
+            "``",
+            "~~",
+            "text",
+            "++",
+            "+++ x\r",
+            "+++\r",
+            "  ",
+            "\t```",
+        ];
+        for line in lines {
+            let want = Kind {
+                fence: fence_marker(line),
+                opener: opener_title(line).is_some(),
+                closer: is_closer(line),
+            };
+            assert_eq!(Kind::of(line.chars()), want, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn the_rope_scan_matches_the_text_scan() {
+        let texts = [
+            "",
+            "\n",
+            "+++ A\nbody\n+++\n",
+            "+++ A\nbody\n+++",
+            "+++ A\nbody\n",
+            "+++ A\nbody",
+            "intro\n\n+++ A\n```\n+++\n```\n+++\n+++ B\nopen\n\n",
+            "+++ A\r\nx\r\n+++\r\n",
+            "+++ A\n\n\n",
+        ];
+        for text in texts {
+            let rope = gpui_kit::base::input::Rope::from(text);
+            assert_eq!(
+                section_lines_of_rope(&rope),
+                section_lines(text),
+                "{text:?}"
+            );
+        }
     }
 }

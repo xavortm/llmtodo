@@ -4568,6 +4568,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tree-sitter",
  "uuid",
 ]
 
