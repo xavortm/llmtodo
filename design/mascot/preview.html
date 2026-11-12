@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mascot Preview</title>
+<style>
+  :root { --bg: #f4f5f8; --panel: #ffffff; --text: #1f2030; --muted: #6b7189; --line: #dfe2ea; --ground: #c9cfe0; }
+  :root[data-theme="dark"] { --bg: #16171f; --panel: #1f2030; --text: #e7e9f0; --muted: #9aa6c7; --line: #2f3142; --ground: #3b3f52; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text); font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; display: grid; gap: 20px; }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: var(--line); }
+  button:active { transform: translateY(1px); }
+  button[aria-pressed="true"] { background: var(--text); color: var(--panel); border-color: var(--text); }
+  label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  #stage { width: 100%; image-rendering: pixelated; display: block; margin-top: 12px; border-bottom: 2px solid var(--ground); }
+  canvas { image-rendering: pixelated; }
+  .sheet { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sheet figure { margin: 0; text-align: center; color: var(--muted); font-size: 11px; }
+  .sheet canvas { background: var(--bg); border-radius: 4px; display: block; }
+  .sizes { display: flex; gap: 24px; align-items: flex-end; flex-wrap: wrap; }
+  .sizes figure { margin: 0; text-align: center; color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="bar" style="justify-content: space-between">
+    <h1>llmtodo mascot</h1>
+    <button id="theme">Toggle dark</button>
+  </div>
+
+  <section>
+    <h2>Stage</h2>
+    <div class="bar" id="modes"></div>
+    <div class="bar" style="margin-top: 8px">
+      <label>Scale <input id="scale" type="range" min="2" max="10" value="5"></label>
+      <label>Speed <input id="speed" type="range" min="25" max="300" value="100"></label>
+    </div>
+    <canvas id="stage"></canvas>
+  </section>
+
+  <section>
+    <h2>Real sizes</h2>
+    <div class="sizes" id="sizes"></div>
+  </section>
+
+  <section>
+    <h2>Frames</h2>
+    <div id="sheets" style="display: grid; gap: 14px"></div>
+  </section>
+</main>
+
+<script src="sprites.js"></script>
+<script>
+const { SIZE, ANIMS, rgba } = Mascot;
+const $ = (id) => document.getElementById(id);
+
+// One offscreen 32x32 canvas per frame.
+const cache = new Map();
+function frameCanvas(frame) {
+  if (!cache.has(frame)) {
+    const c = document.createElement("canvas");
+    c.width = c.height = SIZE;
+    c.getContext("2d").putImageData(new ImageData(rgba(frame), SIZE, SIZE), 0, 0);
+    cache.set(frame, c);
+  }
+  return cache.get(frame);
+}
+function drawScaled(canvas, frame, scale) {
+  canvas.width = canvas.height = SIZE * scale;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(frameCanvas(frame), 0, 0, SIZE * scale, SIZE * scale);
+}
+
+// Player: loops an animation, honoring each frame's duration.
+function player(onFrame) {
+  let anim = null, i = 0, left = 0;
+  return {
+    set(name) { if (anim !== name) { anim = name; i = 0; left = ANIMS[name][0].ms; onFrame(ANIMS[name][0], true); } },
+    get name() { return anim; },
+    tick(dt) {
+      if (!anim) return;
+      left -= dt;
+      while (left <= 0) {
+        i = (i + 1) % ANIMS[anim].length;
+        left += ANIMS[anim][i].ms;
+        onFrame(ANIMS[anim][i], false);
+      }
+    },
+    get frame() { return ANIMS[anim][i]; },
+  };
+}
+
+// Stage --------------------------------------------------------------
+const stage = $("stage");
+const STAGE_W = 160;
+let catX = 64, mode = "auto", autoState = null;
+let stepped = false;
+const cat = player((_, first) => { if (!first) stepped = true; });
+
+const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"]];
+for (const [id, label] of MODES) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.dataset.mode = id;
+  b.onclick = () => setMode(id);
+  $("modes").append(b);
+}
+function setMode(m) {
+  mode = m;
+  autoState = null;
+  document.querySelectorAll("#modes button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mode === m));
+  if (m !== "auto") cat.set(m);
+}
+
+function pickAuto() {
+  const r = Math.random();
+  if (r < 0.4) {
+    const target = 8 + Math.random() * (STAGE_W - SIZE - 16);
+    autoState = { anim: target < catX ? "walkLeft" : "walkRight", target };
+  } else {
+    const anim = ["watch", "laptop", "sleep"][Math.floor(Math.random() * 3)];
+    autoState = { anim, until: performance.now() + 4000 + Math.random() * 5000 };
+  }
+  cat.set(autoState.anim);
+}
+
+function render() {
+  const scale = +$("scale").value;
+  stage.width = STAGE_W * scale;
+  stage.height = SIZE * scale;
+  stage.style.maxWidth = STAGE_W * scale + "px";
+  const ctx = stage.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(frameCanvas(cat.frame.frame), Math.round(catX) * scale, 0, SIZE * scale, SIZE * scale);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = (now - last) * (+$("speed").value / 100);
+  last = now;
+  if (mode === "auto") {
+    if (!autoState) pickAuto();
+    else if (autoState.until && now > autoState.until) pickAuto();
+  }
+  stepped = false;
+  cat.tick(dt);
+  // Walking moves 2 sprite pixels per frame.
+  const walking = cat.name === "walkLeft" || cat.name === "walkRight";
+  if (walking && stepped) {
+    catX += cat.name === "walkRight" ? 2 : -2;
+    const max = STAGE_W - SIZE;
+    if (mode === "auto" && autoState.target != null && Math.abs(catX - autoState.target) <= 2) pickAuto();
+    if (catX > max) { catX = max; if (mode !== "auto") setMode("walkLeft"); else pickAuto(); }
+    if (catX < 0) { catX = 0; if (mode !== "auto") setMode("walkRight"); else pickAuto(); }
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+
+// Real sizes: what it looks like at 1x to 4x in the app.
+const sizePlayers = [];
+for (const s of [1, 2, 3, 4]) {
+  const fig = document.createElement("figure");
+  const c = document.createElement("canvas");
+  fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: `${s}x · ${SIZE * s}px` }));
+  $("sizes").append(fig);
+  sizePlayers.push([c, s]);
+}
+
+// Frame sheets.
+for (const [name, frames] of Object.entries(ANIMS)) {
+  const wrap = document.createElement("div");
+  wrap.append(Object.assign(document.createElement("h2"), { textContent: `${name} · ${frames.length} frames` }));
+  const row = document.createElement("div");
+  row.className = "sheet";
+  frames.forEach(({ frame, ms }, i) => {
+    const fig = document.createElement("figure");
+    const c = document.createElement("canvas");
+    drawScaled(c, frame, 3);
+    fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: `${i} · ${ms}ms` }));
+    row.append(fig);
+  });
+  wrap.append(row);
+  $("sheets").append(wrap);
+}
+
+function sizesLoop() {
+  for (const [c, s] of sizePlayers) drawScaled(c, cat.frame.frame, s);
+  requestAnimationFrame(sizesLoop);
+}
+
+$("theme").onclick = () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+};
+
+setMode("auto");
+pickAuto();
+requestAnimationFrame(loop);
+requestAnimationFrame(sizesLoop);
+</script>
+</body>
+</html>
