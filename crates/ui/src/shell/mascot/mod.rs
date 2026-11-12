@@ -1,6 +1,6 @@
 //! The pixel cat at the bottom of the sidebar. It types on a laptop while
 //! an agent works on a task, and a double click walks it to the other side.
-//! It sleeps when nothing goes on, and a hover or a click makes it sit and
+//! It sleeps when nothing goes on, and clicks startle it awake to sit and
 //! watch, then walk or nap. `behaviour.rs` holds those rules, and
 //! `sprites.rs` the art.
 //!
@@ -150,10 +150,8 @@ impl Mascot {
         }
     }
 
-    fn set_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
-        if self.behaviour.set_hovered(hovered) {
-            self.restart(cx);
-        }
+    fn set_hovered(&mut self, hovered: bool, _: &mut Context<Self>) {
+        self.behaviour.set_hovered(hovered);
     }
 
     fn set_pressed(&mut self, pressed: bool, cx: &mut Context<Self>) {

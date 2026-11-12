@@ -13,9 +13,22 @@
 //!   it lies down to sleep, or sits and watches for a while and then
 //!   sleeps, picked at random.
 //!
-//! While nothing goes on, the cat sleeps. A hover or a click makes it sit
-//! and watch. It keeps sitting while the pointer stays on it. Then it walks
-//! or naps, picked at random, and goes back to work or to sleep.
+//! While nothing goes on, the cat sleeps. A hover does not wake it, since
+//! the pointer always hovers before it clicks. Clicks startle it:
+//!
+//! - A first click jolts it awake, with its head up and wide eyes.
+//! - Clicks in the first part of the jolt do nothing, so a fast double
+//!   click does not jump at once. A click after that, before the jolt ends,
+//!   makes it jump up and land sitting.
+//! - With no such click, it dozes off again. A click soon after startles
+//!   it at once: it jolts and jumps in one go.
+//! - Clicks during a jump do nothing.
+//!
+//! `Rules` in `sprites.rs` has the times, from the art file.
+//!
+//! After the jump it sits and watches. It keeps sitting while the pointer
+//! stays on it. Then it walks or naps, picked at random, and goes back to
+//! work or to sleep. A click on a watching cat shows its happy eyes.
 //!
 //! No walk of any kind stops for a hover or a click. A pointer that is
 //! still on the cat when a walk ends does nothing until it leaves and comes
@@ -54,6 +67,14 @@ pub enum Act {
     Away,
     /// Walks in from out of view to its spot.
     Enter,
+    /// A click woke it: its head is up. It has two steps of one frame:
+    /// step 0 ignores clicks, and a click in step 1 makes it jump. The end
+    /// of step 1 is the time a click has.
+    Jolt,
+    /// Jumps up from a jolt and lands sitting.
+    Jump,
+    /// Jolts and jumps in one go, then lands sitting.
+    Startle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,6 +110,8 @@ pub struct Behaviour {
     /// An `x` that puts the whole cat past the left edge, out of view.
     away: i32,
     after_watch: AfterWatch,
+    /// Sleep time left in which a click startles the cat at once.
+    drowsy_ms: u64,
     /// The lowest and the highest `x` that keep the whole cat inside the
     /// strip. It is unknown until the strip has a width.
     range: Option<(i32, i32)>,
@@ -115,6 +138,7 @@ impl Behaviour {
             home: Facing::Left,
             away: 0,
             after_watch: AfterWatch::Roam,
+            drowsy_ms: 0,
             range: None,
             hovered: false,
             hold: false,
@@ -165,6 +189,9 @@ impl Behaviour {
             Act::Laptop => AnimId::Laptop,
             Act::Sleep | Act::Nap => AnimId::Sleep,
             Act::Watch => AnimId::Watch,
+            Act::Jolt => AnimId::Jolt,
+            Act::Jump => AnimId::Jump,
+            Act::Startle => AnimId::Startle,
             Act::Walk | Act::Commute if self.facing == Facing::Left => AnimId::WalkLeft,
             Act::Walk | Act::Commute | Act::Away | Act::Enter => AnimId::WalkRight,
         }
@@ -177,8 +204,12 @@ impl Behaviour {
 
     /// How long the current step shows. Out of view, the wait is one step.
     pub fn step_ms(&self, sprites: &Sprites) -> u64 {
-        if self.act == Act::Away {
-            return self.left_ms.max(1);
+        let rules = sprites.rules;
+        match self.act {
+            Act::Away => return self.left_ms.max(1),
+            Act::Jolt if self.step == 0 => return rules.jolt_lock_ms,
+            Act::Jolt => return rules.jolt_ms - rules.jolt_lock_ms,
+            _ => {}
         }
         let timeline = &sprites.anim(self.anim()).timeline;
         timeline[self.step % timeline.len()].ms
@@ -219,7 +250,7 @@ impl Behaviour {
             return false;
         }
         match self.act {
-            Act::Sleep if active => self.start(Act::Laptop),
+            Act::Sleep | Act::Jolt if active => self.start(Act::Laptop),
             Act::Laptop if !active => {
                 if self.x > self.edges().0 {
                     self.commute(Facing::Left);
@@ -236,11 +267,11 @@ impl Behaviour {
         true
     }
 
-    /// The pointer moved onto or off the cat. Returns true when the cat
-    /// changed.
-    pub fn set_hovered(&mut self, hovered: bool) -> bool {
+    /// The pointer moved onto or off the cat. It never changes what the
+    /// cat does: it only holds a watching cat in place.
+    pub fn set_hovered(&mut self, hovered: bool) {
         if self.hovered == hovered {
-            return false;
+            return;
         }
         self.hovered = hovered;
         if !hovered {
@@ -249,18 +280,12 @@ impl Behaviour {
                 // The watch time starts when the pointer leaves.
                 self.left_ms = self.pick(WATCH_MS);
             }
-            return false;
+            return;
         }
-        // No walk of any kind stops for the pointer, and work ignores it.
-        if self.walking() || self.working() {
-            return false;
+        // A pointer that comes during a walk or at work holds nothing.
+        if !self.walking() && !self.working() {
+            self.hold = true;
         }
-        self.hold = true;
-        if self.act != Act::Watch {
-            self.start(Act::Watch);
-            return true;
-        }
-        false
     }
 
     /// Whether the cat waits to walk in, or walks.
@@ -270,28 +295,44 @@ impl Behaviour {
 
     /// A click, the `count`th in a row. Returns true when the cat changed.
     ///
-    /// During any walk, every click is ignored. At work, a double click
-    /// walks the cat to the other side and a single click does nothing.
-    /// Otherwise any click makes it sit and look happy.
+    /// During any walk or jump, every click is ignored. At work, a double
+    /// click walks the cat to the other side and a single click does
+    /// nothing. A click on a sleeping cat jolts it, or startles it when it
+    /// just dozed off, and a click during the jolt makes it jump. A click
+    /// on a watching cat shows its happy eyes.
     pub fn click(&mut self, count: usize, sprites: &Sprites) -> bool {
-        if self.walking() {
-            return false;
-        }
-        if self.act == Act::Laptop {
-            if count != 2 {
-                return false;
+        match self.act {
+            _ if self.walking() => false,
+            Act::Jump | Act::Startle => false,
+            Act::Laptop => {
+                if count != 2 {
+                    return false;
+                }
+                let side = if self.x >= self.edges().1 {
+                    Facing::Left
+                } else {
+                    Facing::Right
+                };
+                self.commute(side);
+                true
             }
-            let side = if self.x >= self.edges().1 {
-                Facing::Left
-            } else {
-                Facing::Right
-            };
-            self.commute(side);
-            return true;
+            Act::Sleep | Act::Nap => {
+                let next = if self.drowsy_ms > 0 { Act::Startle } else { Act::Jolt };
+                self.start(next);
+                true
+            }
+            // The start of the jolt ignores clicks.
+            Act::Jolt if self.step == 0 => false,
+            Act::Jolt => {
+                self.start(Act::Jump);
+                true
+            }
+            _ => {
+                self.start(Act::Watch);
+                self.step = sprites.watch_happy;
+                true
+            }
         }
-        self.start(Act::Watch);
-        self.step = sprites.watch_happy;
-        true
     }
 
     /// The current step has run its time: show the next one. Walking moves
@@ -313,6 +354,19 @@ impl Behaviour {
                     return;
                 }
             }
+            Act::Sleep => self.drowsy_ms = self.drowsy_ms.saturating_sub(spent),
+            Act::Jolt if self.step == 0 => {
+                self.step = 1;
+                return;
+            }
+            // No click came in time: the cat dozes off, drowsy for a while.
+            Act::Jolt => {
+                self.start(rest(self.active));
+                if self.act == Act::Sleep {
+                    self.drowsy_ms = sprites.rules.drowsy_ms;
+                }
+                return;
+            }
             Act::Walk => self.walk(),
             Act::Commute => {
                 let goal = self.goal_x();
@@ -326,8 +380,18 @@ impl Behaviour {
         }
         let len = sprites.anim(self.anim()).timeline.len();
         self.step = (self.step + 1) % len;
+        if self.step == 0 && self.wake_ended() {
+            return;
+        }
         let counts = match self.act {
-            Act::Laptop | Act::Sleep | Act::Commute | Act::Away | Act::Enter => false,
+            Act::Laptop
+            | Act::Sleep
+            | Act::Commute
+            | Act::Away
+            | Act::Enter
+            | Act::Jolt
+            | Act::Jump
+            | Act::Startle => false,
             Act::Watch => !self.hold,
             Act::Walk | Act::Nap => true,
         };
@@ -345,6 +409,16 @@ impl Behaviour {
             }
             _ => self.start(rest(self.active)),
         }
+    }
+
+    /// A jump or startle played once to its end: the cat landed sitting,
+    /// on the first watch frame. Returns false for every other act.
+    fn wake_ended(&mut self) -> bool {
+        if !matches!(self.act, Act::Jump | Act::Startle) {
+            return false;
+        }
+        self.start(Act::Watch);
+        true
     }
 
     fn edge_x(&self, side: Facing) -> i32 {
@@ -397,8 +471,16 @@ impl Behaviour {
         self.act = act;
         self.step = 0;
         self.after_watch = AfterWatch::Roam;
+        self.drowsy_ms = 0;
         self.left_ms = match act {
-            Act::Laptop | Act::Sleep | Act::Commute | Act::Away | Act::Enter => 0,
+            Act::Laptop
+            | Act::Sleep
+            | Act::Commute
+            | Act::Away
+            | Act::Enter
+            | Act::Jolt
+            | Act::Jump
+            | Act::Startle => 0,
             Act::Watch => self.pick(WATCH_MS),
             Act::Walk | Act::Nap => self.pick(ROAM_MS),
         };

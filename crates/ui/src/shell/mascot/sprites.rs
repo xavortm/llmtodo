@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
-/// The five animations in the data file.
+/// The animations the app reads from the data file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimId {
     Watch,
@@ -18,15 +18,24 @@ pub enum AnimId {
     Sleep,
     WalkRight,
     WalkLeft,
+    /// The sleeping cat's head snaps up: one frame, held 1 s.
+    Jolt,
+    /// From the jolt, it jumps up and lands sitting.
+    Jump,
+    /// The jolt and the jump in one go.
+    Startle,
 }
 
 impl AnimId {
-    const ALL: [AnimId; 5] = [
+    pub const ALL: [AnimId; 8] = [
         AnimId::Watch,
         AnimId::Laptop,
         AnimId::Sleep,
         AnimId::WalkRight,
         AnimId::WalkLeft,
+        AnimId::Jolt,
+        AnimId::Jump,
+        AnimId::Startle,
     ];
 
     fn file_name(self) -> &'static str {
@@ -36,6 +45,9 @@ impl AnimId {
             AnimId::Sleep => "sleep",
             AnimId::WalkRight => "walkRight",
             AnimId::WalkLeft => "walkLeft",
+            AnimId::Jolt => "jolt",
+            AnimId::Jump => "jump",
+            AnimId::Startle => "startle",
         }
     }
 }
@@ -76,8 +88,23 @@ pub struct Sprites {
     dark: Vec<u32>,
     /// The watch step where the happy eyes start. A click jumps there.
     pub watch_happy: usize,
+    /// The click timings, from `RULES` in `design/mascot/sprites.js`.
+    pub rules: Rules,
     /// The first and the last column any frame paints.
     pub cols: (u8, u8),
+}
+
+/// How long the cat's click reactions last, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rules {
+    /// How long a jolt lasts. A click during it makes the cat jump.
+    pub jolt_ms: u64,
+    /// Clicks in this first part of a jolt do nothing.
+    pub jolt_lock_ms: u64,
+    /// After a jolt with no jump, a click within this time startles the
+    /// cat at once.
+    pub drowsy_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +112,7 @@ struct File {
     size: u8,
     palettes: HashMap<String, HashMap<char, String>>,
     cues: Cues,
+    rules: Rules,
     animations: HashMap<String, FileAnim>,
 }
 
@@ -203,12 +231,17 @@ impl Sprites {
         if file.cues.watch_happy >= anims[&AnimId::Watch].timeline.len() {
             return Err("the watch cue is past the timeline".into());
         }
+        let rules = file.rules;
+        if rules.jolt_lock_ms == 0 || rules.jolt_lock_ms >= rules.jolt_ms {
+            return Err("the jolt lock must be inside the jolt".into());
+        }
         Ok(Self {
             size,
             anims,
             light,
             dark,
             watch_happy: file.cues.watch_happy,
+            rules,
             cols,
         })
     }

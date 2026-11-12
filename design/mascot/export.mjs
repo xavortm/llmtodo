@@ -89,7 +89,7 @@ if (process.argv.includes("--app")) {
   for (const [theme, { bg, ...colours }] of Object.entries(Mascot.PALETTES)) palettes[theme] = colours;
   const out = "crates/ui/assets/mascot/mascot.json";
   mkdirSync("crates/ui/assets/mascot", { recursive: true });
-  const data = { generated: "node design/mascot/export.mjs --app", size: S, palettes, cues: { watchHappy }, animations };
+  const data = { generated: "node design/mascot/export.mjs --app", size: S, palettes, cues: { watchHappy }, rules: Mascot.RULES, animations };
   writeFileSync(out, JSON.stringify(data, null, 1) + "\n");
   console.log(`wrote ${out}`);
   process.exit(0);
