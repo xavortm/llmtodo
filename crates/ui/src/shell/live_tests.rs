@@ -106,18 +106,24 @@ impl Live {
     }
 
     fn backend(&self) -> (Backend, UnboundedReceiver<Event>) {
-        Backend::start(Target {
-            data_dir: self.dir.path().to_path_buf(),
-            spawn: None,
-            read_only: false,
-        })
+        self.backend_with(false, Duration::ZERO)
     }
 
     fn read_only_backend(&self) -> (Backend, UnboundedReceiver<Event>) {
+        self.backend_with(true, Duration::ZERO)
+    }
+
+    /// A backend whose live refreshes each wait `slow_flush` first.
+    fn backend_with(
+        &self,
+        read_only: bool,
+        slow_flush: Duration,
+    ) -> (Backend, UnboundedReceiver<Event>) {
         Backend::start(Target {
             data_dir: self.dir.path().to_path_buf(),
             spawn: None,
-            read_only: true,
+            read_only,
+            slow_flush,
         })
     }
 
@@ -1247,4 +1253,76 @@ fn only_the_open_task_gets_its_detail_on_live_events() {
     });
     let parts = parts.unwrap();
     assert_eq!(parts.issue.description.as_deref(), Some("Open now.\n"));
+}
+
+/// LLM-172: the owner's write reaches the server while a slow live refresh
+/// still runs, instead of waiting behind it.
+#[test]
+fn a_write_does_not_wait_behind_a_live_refresh() {
+    let live = Live::new();
+    let agent = live.client(Some("agent-172"));
+    let (backend, mut events) = live.backend_with(false, Duration::from_secs(3));
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    let rename = UpdateIssue {
+        title: Some("Renamed by an agent".into()),
+        ..Default::default()
+    };
+    live.rt
+        .block_on(agent.update_issue("LLM-1", &rename))
+        .unwrap();
+    // The refresh starts after the settle wait, then runs for 3 seconds.
+    std::thread::sleep(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let status = UpdateIssue {
+        status: Some("In Progress".into()),
+        ..Default::default()
+    };
+    backend.write("LLM-1", Write::Update(Box::new(status)), WriteKind::Status);
+    let first = live.wait(&mut events, "the write or the refresh", |e| match e {
+        Event::WriteDone { .. } => Some("write"),
+        Event::Issues(_) => Some("refresh"),
+        _ => None,
+    });
+    assert_eq!(first, "write");
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// LLM-172: events that keep coming less than the settle wait apart still
+/// get their refresh, soon after the first one.
+#[test]
+fn a_steady_event_stream_still_refreshes() {
+    let live = Live::new();
+    let agent = live.client(Some("agent-172b"));
+    let (_backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let stop = stop.clone();
+        live.rt.spawn(async move {
+            let mut n = 0;
+            while !stop.load(Ordering::Relaxed) && n < 400 {
+                let rename = UpdateIssue {
+                    title: Some(format!("Title {n}")),
+                    ..Default::default()
+                };
+                agent.update_issue("LLM-1", &rename).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                n += 1;
+            }
+            n
+        })
+    };
+    let started = std::time::Instant::now();
+    live.wait(&mut events, "a refresh during the stream", |e| {
+        matches!(e, Event::Issues(_)).then_some(())
+    });
+    let waited = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let writes = live.rt.block_on(writer).unwrap();
+    assert!(writes < 400, "the stream was still running");
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
 }
