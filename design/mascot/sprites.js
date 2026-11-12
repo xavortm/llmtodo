@@ -21,7 +21,7 @@
       W: "#2f3142", // fur
       S: "#222330", // fur shade
       P: "#d4869e", // inner ear
-      B: "#46364b", // blush
+      B: "#2f3142", // blush: same as fur, it barely showed on black
       N: "#f08fab", // nose
       E: "#f5c542", // open eyes
       Q: "#9aa0b8", // closed eyes
@@ -32,11 +32,12 @@
       Z: "#7d84a0", // sleep z
     },
     // White cat on a dark background. A soft outline keeps the edge visible
-    // without a black ring that melts into the background.
+    // without a black ring that melts into the background. Like the black
+    // cat, it uses one colour for all lines.
     dark: {
       bg: "#16171f",
       O: "#8a93ad",
-      I: "#5f6682",
+      I: "#8a93ad", // inner lines share the outline colour
       W: "#ffffff",
       S: "#c9cfe0",
       P: "#f2a7bd",
