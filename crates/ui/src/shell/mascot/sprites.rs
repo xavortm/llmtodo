@@ -24,10 +24,12 @@ pub enum AnimId {
     Jump,
     /// The jolt and the jump in one go.
     Startle,
+    /// From sitting into sleep, once.
+    LieDown,
 }
 
 impl AnimId {
-    pub const ALL: [AnimId; 8] = [
+    pub const ALL: [AnimId; 9] = [
         AnimId::Watch,
         AnimId::Laptop,
         AnimId::Sleep,
@@ -36,6 +38,7 @@ impl AnimId {
         AnimId::Jolt,
         AnimId::Jump,
         AnimId::Startle,
+        AnimId::LieDown,
     ];
 
     fn file_name(self) -> &'static str {
@@ -48,6 +51,7 @@ impl AnimId {
             AnimId::Jolt => "jolt",
             AnimId::Jump => "jump",
             AnimId::Startle => "startle",
+            AnimId::LieDown => "lieDown",
         }
     }
 }

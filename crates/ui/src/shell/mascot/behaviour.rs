@@ -30,6 +30,10 @@
 //! stays on it. Then it walks or naps, picked at random, and goes back to
 //! work or to sleep. A click on a watching cat shows its happy eyes.
 //!
+//! A sitting cat never drops straight into sleep: it lies down slowly
+//! first. An agent start during that sends it to work, and a click jolts
+//! it, as on a sleeping cat.
+//!
 //! No walk of any kind stops for a hover or a click. A pointer that is
 //! still on the cat when a walk ends does nothing until it leaves and comes
 //! back.
@@ -75,6 +79,8 @@ pub enum Act {
     Jump,
     /// Jolts and jumps in one go, then lands sitting.
     Startle,
+    /// Lies down from sitting, then sleeps or naps, as `lie_to` says.
+    LieDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,6 +118,8 @@ pub struct Behaviour {
     after_watch: AfterWatch,
     /// Sleep time left in which a click startles the cat at once.
     drowsy_ms: u64,
+    /// What follows a lie-down: `Sleep` or `Nap`.
+    lie_to: Act,
     /// The lowest and the highest `x` that keep the whole cat inside the
     /// strip. It is unknown until the strip has a width.
     range: Option<(i32, i32)>,
@@ -139,6 +147,7 @@ impl Behaviour {
             away: 0,
             after_watch: AfterWatch::Roam,
             drowsy_ms: 0,
+            lie_to: Act::Sleep,
             range: None,
             hovered: false,
             hold: false,
@@ -192,6 +201,7 @@ impl Behaviour {
             Act::Jolt => AnimId::Jolt,
             Act::Jump => AnimId::Jump,
             Act::Startle => AnimId::Startle,
+            Act::LieDown => AnimId::LieDown,
             Act::Walk | Act::Commute if self.facing == Facing::Left => AnimId::WalkLeft,
             Act::Walk | Act::Commute | Act::Away | Act::Enter => AnimId::WalkRight,
         }
@@ -250,7 +260,7 @@ impl Behaviour {
             return false;
         }
         match self.act {
-            Act::Sleep | Act::Jolt if active => self.start(Act::Laptop),
+            Act::Sleep | Act::Jolt | Act::LieDown if active => self.start(Act::Laptop),
             Act::Laptop if !active => {
                 if self.x > self.edges().0 {
                     self.commute(Facing::Left);
@@ -316,7 +326,7 @@ impl Behaviour {
                 self.commute(side);
                 true
             }
-            Act::Sleep | Act::Nap => {
+            Act::Sleep | Act::Nap | Act::LieDown => {
                 let next = if self.drowsy_ms > 0 {
                     Act::Startle
                 } else {
@@ -395,7 +405,8 @@ impl Behaviour {
             | Act::Enter
             | Act::Jolt
             | Act::Jump
-            | Act::Startle => false,
+            | Act::Startle
+            | Act::LieDown => false,
             Act::Watch => !self.hold,
             Act::Walk | Act::Nap => true,
         };
@@ -409,20 +420,33 @@ impl Behaviour {
         match self.act {
             Act::Watch if self.after_watch == AfterWatch::Roam => {
                 let next = if self.coin() { Act::Walk } else { Act::Nap };
-                self.start(next);
+                self.lie_down_or_start(next);
             }
-            _ => self.start(rest(self.active)),
+            _ => self.lie_down_or_start(rest(self.active)),
         }
     }
 
-    /// A jump or startle played once to its end: the cat landed sitting,
-    /// on the first watch frame. Returns false for every other act.
+    /// A jump, startle or lie-down played once to its end. After a jump
+    /// or startle, the cat landed sitting, on the first watch frame. After
+    /// a lie-down, it sleeps or naps. Returns false for every other act.
     fn wake_ended(&mut self) -> bool {
-        if !matches!(self.act, Act::Jump | Act::Startle) {
-            return false;
+        match self.act {
+            Act::Jump | Act::Startle => self.start(Act::Watch),
+            Act::LieDown => self.start(self.lie_to),
+            _ => return false,
         }
-        self.start(Act::Watch);
         true
+    }
+
+    /// Starts `act`. A watching cat that goes to sleep or naps lies down
+    /// first.
+    fn lie_down_or_start(&mut self, act: Act) {
+        if self.act == Act::Watch && matches!(act, Act::Sleep | Act::Nap) {
+            self.start(Act::LieDown);
+            self.lie_to = act;
+        } else {
+            self.start(act);
+        }
     }
 
     fn edge_x(&self, side: Facing) -> i32 {
@@ -484,7 +508,8 @@ impl Behaviour {
             | Act::Enter
             | Act::Jolt
             | Act::Jump
-            | Act::Startle => 0,
+            | Act::Startle
+            | Act::LieDown => 0,
             Act::Watch => self.pick(WATCH_MS),
             Act::Walk | Act::Nap => self.pick(ROAM_MS),
         };

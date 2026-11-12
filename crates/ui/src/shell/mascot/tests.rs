@@ -31,6 +31,7 @@ fn the_art_file_parses_with_every_animation() {
         AnimId::Jolt,
         AnimId::Jump,
         AnimId::Startle,
+        AnimId::LieDown,
     ] {
         let anim = art.anim(id);
         assert!(!anim.frames.is_empty(), "{id:?}");
@@ -173,6 +174,20 @@ fn wake(cat: &mut Behaviour) {
     assert_eq!(cat.act(), Act::Watch);
 }
 
+/// A cat that lies down plays the whole lie-down, then sleeps or naps.
+fn after_lie_down(cat: &mut Behaviour) {
+    if cat.act() == Act::LieDown {
+        assert_eq!(cat.anim(), AnimId::LieDown);
+        let lay = run_to_next_act(cat);
+        assert_eq!(lay, anim_ms(AnimId::LieDown));
+        assert!(
+            matches!(cat.act(), Act::Sleep | Act::Nap),
+            "{:?}",
+            cat.act()
+        );
+    }
+}
+
 /// A cat that watched and then started to walk.
 fn walking_cat() -> Behaviour {
     for seed in 0.. {
@@ -308,6 +323,8 @@ fn when_work_ends_on_the_right_it_walks_home_then_sleeps_or_sits() {
                 // It sits for a while, then falls asleep: no walk, no nap.
                 let sat = run_to_next_act(&mut cat);
                 assert!(WATCH_MS.contains(&sat), "{sat}");
+                assert_eq!(cat.act(), Act::LieDown);
+                after_lie_down(&mut cat);
                 assert_eq!(cat.act(), Act::Sleep);
             }
             other => panic!("{other:?}"),
@@ -355,6 +372,7 @@ fn idle_clicks_make_it_watch_for_as_long_as_the_pointer_stays() {
     assert!(WATCH_MS.contains(&cat.left_ms()));
     let watched = run_to_next_act(&mut cat);
     assert!(WATCH_MS.contains(&watched), "{watched}");
+    after_lie_down(&mut cat);
     assert!(matches!(cat.act(), Act::Walk | Act::Nap), "{:?}", cat.act());
     assert!(ROAM_MS.contains(&cat.left_ms()));
     let roamed = run_to_next_act(&mut cat);
@@ -369,6 +387,7 @@ fn after_watching_it_sometimes_walks_and_sometimes_naps() {
         let mut cat = cat(false, seed);
         wake(&mut cat);
         run_to_next_act(&mut cat);
+        after_lie_down(&mut cat);
         picks.insert(cat.act());
         run_to_next_act(&mut cat);
         assert_eq!(cat.act(), Act::Sleep);
@@ -445,6 +464,7 @@ fn a_pointer_left_on_the_cat_after_the_walk_home_does_not_hold_it() {
             // It sits for the usual time, then sleeps, under the pointer.
             let watched = run_to_next_act(&mut cat);
             assert!(WATCH_MS.contains(&watched), "{watched}");
+            after_lie_down(&mut cat);
             assert_eq!(cat.act(), Act::Sleep);
             sat = true;
         }
@@ -458,6 +478,7 @@ fn a_hover_does_not_wake_a_napping_cat_and_a_click_jolts_it() {
         let mut cat = cat(false, seed);
         wake(&mut cat);
         run_to_next_act(&mut cat);
+        after_lie_down(&mut cat);
         if cat.act() == Act::Nap {
             cat.set_hovered(true);
             assert_eq!(cat.act(), Act::Nap);
@@ -568,6 +589,78 @@ fn a_jump_or_startle_plays_to_the_end_when_an_agent_starts() {
         assert_eq!(played, anim_ms(id));
         assert_eq!(cat.act(), Act::Watch);
     }
+}
+
+/// A cat that watched and then started to lie down for a nap.
+fn lying_down_for_a_nap() -> Behaviour {
+    for seed in 0.. {
+        let mut cat = cat(false, seed);
+        wake(&mut cat);
+        run_to_next_act(&mut cat);
+        if cat.act() == Act::LieDown {
+            return cat;
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_watching_cat_lies_down_before_a_nap_and_before_sleep() {
+    // A watch after a click ends in a walk, or a lie-down and a nap.
+    let mut cat = lying_down_for_a_nap();
+    assert_eq!(cat.step(), 0);
+    let lay = run_to_next_act(&mut cat);
+    assert_eq!(lay, anim_ms(AnimId::LieDown));
+    assert_eq!(cat.act(), Act::Nap);
+    assert!(
+        ROAM_MS.contains(&cat.left_ms()),
+        "the nap gets its full time"
+    );
+    // A nap that ends goes to sleep with no second lie-down.
+    run_to_next_act(&mut cat);
+    assert_eq!(cat.act(), Act::Sleep);
+    // The watch after the walk home ends in a lie-down too: the
+    // `when_work_ends_on_the_right_it_walks_home_then_sleeps_or_sits` test
+    // covers it.
+}
+
+#[test]
+fn a_jolt_that_dozes_off_or_a_walk_that_ends_skips_the_lie_down() {
+    let mut cat = cat(false, 1);
+    cat.click(1, sprites());
+    run_to_next_act(&mut cat);
+    assert_eq!(cat.act(), Act::Sleep);
+    let mut cat = walking_cat();
+    run_to_next_act(&mut cat);
+    assert_eq!(cat.act(), Act::Sleep);
+}
+
+#[test]
+fn an_agent_start_during_the_lie_down_goes_to_work() {
+    let mut cat = lying_down_for_a_nap();
+    run_for(&mut cat, 300);
+    assert_eq!(cat.act(), Act::LieDown);
+    assert!(cat.set_active(true));
+    assert_eq!(cat.act(), Act::Laptop);
+}
+
+#[test]
+fn a_click_during_the_lie_down_jolts_and_a_hover_does_nothing() {
+    let mut cat = lying_down_for_a_nap();
+    cat.set_hovered(true);
+    assert_eq!(cat.act(), Act::LieDown);
+    assert!(cat.click(1, sprites()));
+    assert_eq!(cat.act(), Act::Jolt);
+}
+
+#[test]
+fn an_open_during_the_lie_down_starts_a_walk_in() {
+    let mut cat = lying_down_for_a_nap();
+    cat.enter();
+    assert_eq!(cat.act(), Act::Away);
+    run_to_next_act(&mut cat);
+    run_to_next_act(&mut cat);
+    assert_eq!(cat.act(), Act::Sleep);
 }
 
 #[test]
@@ -928,7 +1021,7 @@ fn idle_clicks_watch_then_walk_or_nap_then_back(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     assert_eq!(act(&view, cx), Act::Watch);
-    wait(cx, *WATCH_MS.end() + 200);
+    wait(cx, *WATCH_MS.end() + anim_ms(AnimId::LieDown) + 200);
     let roam = act(&view, cx);
     assert!(matches!(roam, Act::Walk | Act::Nap), "{roam:?}");
     wait(cx, *ROAM_MS.end() + 200);
