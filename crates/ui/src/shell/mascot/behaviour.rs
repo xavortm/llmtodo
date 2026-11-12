@@ -17,6 +17,10 @@
 //! and watch. It keeps sitting while the pointer stays on it. Then it walks
 //! or naps, picked at random, and goes back to work or to sleep.
 //!
+//! No walk of any kind stops for a hover or a click. A pointer that is
+//! still on the cat when a walk ends does nothing until it leaves and comes
+//! back.
+//!
 //! Each time the sidebar opens, the cat waits out of view for 1 to 3 s.
 //! Then it walks in from the left edge to its spot: the left edge, or the
 //! right edge when it works there. Hover and clicks do nothing meanwhile.
@@ -89,6 +93,10 @@ pub struct Behaviour {
     /// strip. It is unknown until the strip has a width.
     range: Option<(i32, i32)>,
     hovered: bool,
+    /// The pointer came onto the cat while it could react, so it keeps the
+    /// cat sitting. A pointer that was already there when a walk ended
+    /// does not.
+    hold: bool,
     active: bool,
     rng: u64,
 }
@@ -109,6 +117,7 @@ impl Behaviour {
             after_watch: AfterWatch::Roam,
             range: None,
             hovered: false,
+            hold: false,
             active,
             // Xorshift needs a seed other than zero.
             rng: seed | 1,
@@ -234,18 +243,29 @@ impl Behaviour {
             return false;
         }
         self.hovered = hovered;
-        if self.entering() || self.act == Act::Commute || self.working() {
+        if !hovered {
+            let held = std::mem::take(&mut self.hold);
+            if held && self.act == Act::Watch {
+                // The watch time starts when the pointer leaves.
+                self.left_ms = self.pick(WATCH_MS);
+            }
             return false;
         }
-        if hovered && self.act != Act::Watch {
+        // No walk of any kind stops for the pointer, and work ignores it.
+        if self.walking() || self.working() {
+            return false;
+        }
+        self.hold = true;
+        if self.act != Act::Watch {
             self.start(Act::Watch);
             return true;
         }
-        if !hovered && self.act == Act::Watch {
-            // The watch time starts when the pointer leaves.
-            self.left_ms = self.pick(WATCH_MS);
-        }
         false
+    }
+
+    /// Whether the cat waits to walk in, or walks.
+    fn walking(&self) -> bool {
+        matches!(self.act, Act::Away | Act::Enter | Act::Commute | Act::Walk)
     }
 
     /// A click, the `count`th in a row. Returns true when the cat changed.
@@ -254,7 +274,7 @@ impl Behaviour {
     /// walks the cat to the other side and a single click does nothing.
     /// Otherwise any click makes it sit and look happy.
     pub fn click(&mut self, count: usize, sprites: &Sprites) -> bool {
-        if matches!(self.act, Act::Away | Act::Enter | Act::Commute | Act::Walk) {
+        if self.walking() {
             return false;
         }
         if self.act == Act::Laptop {
@@ -308,7 +328,7 @@ impl Behaviour {
         self.step = (self.step + 1) % len;
         let counts = match self.act {
             Act::Laptop | Act::Sleep | Act::Commute | Act::Away | Act::Enter => false,
-            Act::Watch => !self.hovered,
+            Act::Watch => !self.hold,
             Act::Walk | Act::Nap => true,
         };
         if !counts {

@@ -388,6 +388,63 @@ fn a_walk_moves_one_pixel_a_step_and_turns_at_the_edges() {
 }
 
 #[test]
+fn a_hover_never_stops_a_roaming_walk() {
+    let mut cat = walking_cat();
+    let x = cat.x();
+    assert!(!cat.set_hovered(true));
+    assert_eq!(cat.act(), Act::Walk);
+    cat.advance(sprites());
+    assert_ne!(cat.x(), x, "it walks on under the pointer");
+    let walked = run_to_next_act(&mut cat);
+    assert!(walked > 0);
+    assert_eq!(cat.act(), Act::Sleep, "the walk runs to its end");
+
+    // The pointer is still there: it does nothing.
+    run_for(&mut cat, 30_000);
+    assert_eq!(cat.act(), Act::Sleep);
+    // It leaves and comes back: now the cat sits and watches.
+    assert!(!cat.set_hovered(false));
+    assert!(cat.set_hovered(true));
+    assert_eq!(cat.act(), Act::Watch);
+}
+
+#[test]
+fn a_pointer_left_on_the_cat_after_the_walk_home_does_not_hold_it() {
+    let mut sat = false;
+    for seed in 0..40 {
+        let mut cat = working_on_the_right(seed);
+        cat.set_active(false);
+        assert!(!cat.set_hovered(true));
+        assert_eq!(cat.act(), Act::Commute);
+        run_to_next_act(&mut cat);
+        if cat.act() == Act::Watch {
+            // It sits for the usual time, then sleeps, under the pointer.
+            let watched = run_to_next_act(&mut cat);
+            assert!(WATCH_MS.contains(&watched), "{watched}");
+            assert_eq!(cat.act(), Act::Sleep);
+            sat = true;
+        }
+    }
+    assert!(sat);
+}
+
+#[test]
+fn a_hover_still_wakes_a_napping_cat() {
+    for seed in 0..40 {
+        let mut cat = cat(false, seed);
+        cat.set_hovered(true);
+        cat.set_hovered(false);
+        run_to_next_act(&mut cat);
+        if cat.act() == Act::Nap {
+            assert!(cat.set_hovered(true));
+            assert_eq!(cat.act(), Act::Watch);
+            return;
+        }
+    }
+    panic!("no seed napped");
+}
+
+#[test]
 fn idle_a_click_jumps_to_the_happy_eyes() {
     let mut cat = cat(false, 1);
     assert!(cat.click(1, sprites()));
