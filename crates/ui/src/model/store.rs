@@ -37,6 +37,15 @@ pub struct IssueStore {
     /// while the store changes.
     issues: Vec<Arc<Issue>>,
     index: HashMap<IssueId, usize>,
+    /// Each issue's ID by its key, so `by_key` is one lookup. The preview
+    /// asks it once for each issue key in the text.
+    keys: HashMap<SharedString, IssueId>,
+    /// Counts up whenever the set of keys changes. A view that turned issue
+    /// keys into links keeps its text until this changes.
+    keys_revision: u64,
+    /// The counts the status bar and the sidebar show, kept up to date on
+    /// every write, so a render does not scan the issues.
+    tally: Tally,
     /// The git panel per issue. Only a single-issue fetch carries it, so a
     /// snapshot keeps what is here.
     git: HashMap<IssueId, IssueGit>,
@@ -64,6 +73,41 @@ pub struct IssueStore {
     pub tracker: usize,
 }
 
+/// Counts over the issues that are not in the Trash.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Tally {
+    /// Issues with a claim.
+    claims: usize,
+    /// Open questions on issues that are not closed.
+    questions: usize,
+}
+
+impl Tally {
+    fn of(issue: &Issue) -> Self {
+        if issue.deleted {
+            return Self::default();
+        }
+        Self {
+            claims: usize::from(issue.claim.is_some()),
+            questions: if issue.status.is_closed() {
+                0
+            } else {
+                issue.open_questions as usize
+            },
+        }
+    }
+
+    fn add(&mut self, other: Self) {
+        self.claims += other.claims;
+        self.questions += other.questions;
+    }
+
+    fn remove(&mut self, other: Self) {
+        self.claims -= other.claims;
+        self.questions -= other.questions;
+    }
+}
+
 impl Default for IssueStore {
     fn default() -> Self {
         Self::new()
@@ -82,6 +126,9 @@ impl IssueStore {
         Self {
             issues: Vec::new(),
             index: HashMap::new(),
+            keys: HashMap::new(),
+            keys_revision: 0,
+            tally: Tally::default(),
             git: HashMap::new(),
             relations: HashMap::new(),
             questions: HashMap::new(),
@@ -104,6 +151,8 @@ impl IssueStore {
     pub fn modify<R>(&mut self, id: IssueId, f: impl FnOnce(&mut Issue) -> R) -> Option<R> {
         let ix = *self.index.get(&id)?;
         let before = self.issues[ix].description.clone();
+        let key_before = self.issues[ix].key.clone();
+        self.tally.remove(Tally::of(&self.issues[ix]));
         let issue = Arc::make_mut(&mut self.issues[ix]);
         let out = f(issue);
         if issue.description != before {
@@ -112,7 +161,21 @@ impl IssueStore {
             issue.open_questions = open.len() as u32;
             Self::set_questions(&mut self.questions, id, open);
         }
+        self.tally.add(Tally::of(&self.issues[ix]));
+        let key = self.issues[ix].key.clone();
+        if key != key_before {
+            self.rekey(&key_before, key, id);
+        }
         Some(out)
+    }
+
+    /// Moves `id` from its old key to its new one.
+    fn rekey(&mut self, old: &SharedString, new: SharedString, id: IssueId) {
+        if self.keys.get(old) == Some(&id) {
+            self.keys.remove(old);
+        }
+        self.keys.insert(new, id);
+        self.keys_revision += 1;
     }
 
     fn set_questions(map: &mut HashMap<IssueId, Vec<Question>>, id: IssueId, open: Vec<Question>) {
@@ -172,8 +235,10 @@ impl IssueStore {
             self.questions.remove(&id);
         }
         if let Some(&ix) = self.index.get(&id) {
+            self.tally.remove(Tally::of(&self.issues[ix]));
             let issue = Arc::make_mut(&mut self.issues[ix]);
             issue.open_questions = issue.open_questions.saturating_sub(1);
+            self.tally.add(Tally::of(&self.issues[ix]));
         }
         Some(left)
     }
@@ -183,7 +248,9 @@ impl IssueStore {
     pub fn remap(&mut self, catalog: Catalog) -> Renames {
         let renames = catalog.renames_from(&self.catalog);
         for issue in &mut self.issues {
+            self.tally.remove(Tally::of(issue));
             Arc::make_mut(issue).remap(&catalog, &renames);
+            self.tally.add(Tally::of(issue));
         }
         self.catalog = catalog;
         renames
@@ -232,7 +299,17 @@ impl IssueStore {
     }
 
     pub fn by_key(&self, key: &str) -> Option<&Issue> {
-        self.iter().find(|i| i.key.as_ref() == key)
+        self.keys.get(key).and_then(|&id| self.get(id))
+    }
+
+    /// Counts up whenever an issue key starts or stops naming an issue.
+    pub fn keys_revision(&self) -> u64 {
+        self.keys_revision
+    }
+
+    /// How many tasks outside the Trash hold a claim.
+    pub fn claim_count(&self) -> usize {
+        self.tally.claims
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Issue> {
@@ -255,9 +332,7 @@ impl IssueStore {
 
     /// How many open questions the open issues hold.
     pub fn open_question_count(&self) -> usize {
-        self.with_open_questions()
-            .map(|(_, count)| count as usize)
-            .sum()
+        self.tally.questions
     }
 
     /// The issues that are neither closed nor in the Trash and have open
@@ -273,6 +348,9 @@ impl IssueStore {
     pub fn replace_all(&mut self, issues: Vec<Issue>) {
         let old = std::mem::take(&mut self.issues);
         let old_index = std::mem::take(&mut self.index);
+        let old_keys = std::mem::take(&mut self.keys);
+        let revision = self.keys_revision;
+        self.tally = Tally::default();
         for mut issue in issues {
             if let Some(&ix) = old_index.get(&issue.id) {
                 issue.keep_text_of(&old[ix]);
@@ -281,6 +359,12 @@ impl IssueStore {
         }
         let index = &self.index;
         self.questions.retain(|id, _| index.contains_key(id));
+        // The same keys keep the old revision, so prepared text stays.
+        self.keys_revision = if self.keys == old_keys {
+            revision
+        } else {
+            revision + 1
+        };
     }
 
     /// Puts a fresh copy in place by ID, or adds it. A team move changes the
@@ -292,13 +376,20 @@ impl IssueStore {
             issue.keep_text_of(&self.issues[ix]);
         }
         self.questions_from_text(&issue);
+        self.tally.add(Tally::of(&issue));
         match self.index.get(&issue.id) {
-            Some(&ix) => Some(Arc::unwrap_or_clone(std::mem::replace(
-                &mut self.issues[ix],
-                Arc::new(issue),
-            ))),
+            Some(&ix) => {
+                let old = std::mem::replace(&mut self.issues[ix], Arc::new(issue));
+                self.tally.remove(Tally::of(&old));
+                if old.key != self.issues[ix].key {
+                    let (key, id) = (self.issues[ix].key.clone(), old.id);
+                    self.rekey(&old.key, key, id);
+                }
+                Some(Arc::unwrap_or_clone(old))
+            }
             None => {
                 self.index.insert(issue.id, self.issues.len());
+                self.rekey(&SharedString::default(), issue.key.clone(), issue.id);
                 self.issues.push(Arc::new(issue));
                 None
             }

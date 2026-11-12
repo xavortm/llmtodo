@@ -199,7 +199,7 @@ fn the_task_view_shows_questions_as_a_tab(cx: &mut TestAppContext) {
             .task()
             .read(cx)
             .open_tab(cx)
-            .map(|(_, t)| t.into_iter().map(|t| t.title).collect::<Vec<_>>());
+            .map(|(_, t)| t.iter().map(|t| t.title.clone()).collect::<Vec<_>>());
         assert!(
             tabs.unwrap_or_default()
                 .iter()

@@ -494,7 +494,7 @@ fn an_open_task_asks_for_its_history_and_shows_an_activity_tab(cx: &mut TestAppC
         cx.read(|cx| {
             view.read(cx)
                 .open_tab(cx)
-                .map(|(_, tabs)| tabs.into_iter().map(|t| t.title).collect())
+                .map(|(_, tabs)| tabs.iter().map(|t| t.title.clone()).collect())
                 .unwrap_or_default()
         })
     };

@@ -197,12 +197,11 @@ impl Workspace {
             let activity = crate::task::history::activity_markdown(&history);
             let costs = crate::task::history::cost_breakdown(&sessions);
             let sessions = crate::task::history::sessions_markdown(&sessions);
-            self.task.update(cx, |task, cx| {
-                task.activity = id.map(|id| (id, activity));
-                task.sessions = id.map(|id| (id, sessions));
-                task.session_costs = id.map(|id| (id, costs));
-                cx.notify();
-            });
+            if let Some(id) = id {
+                self.task.update(cx, |task, cx| {
+                    task.set_history(id, activity, sessions, costs, cx);
+                });
+            }
         }
     }
 

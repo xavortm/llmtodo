@@ -2319,7 +2319,7 @@ impl Workspace {
             .find(|d| d.id == id)
             .map(|d| d.version);
         let view = self.doc_view.read(cx);
-        let held = view.doc.as_ref().filter(|d| d.id == id).map(|d| d.version);
+        let held = view.doc().filter(|d| d.id == id).map(|d| d.version);
         let ask = view.open != Some(id) || held.is_none() || (newer > held && !view.editing);
         self.doc_view.update(cx, |view, cx| view.show(id, cx));
         if ask {
@@ -2363,7 +2363,7 @@ impl Workspace {
     /// Saves the document editor's text, if it changed.
     fn save_document(&mut self, force: bool, cx: &mut Context<Self>) {
         let view = self.doc_view.read(cx);
-        let (Some(doc), true) = (view.doc.clone(), view.editing) else {
+        let (Some(doc), true) = (view.doc().cloned(), view.editing) else {
             return;
         };
         let text = view.editor.read(cx).value().to_string();
@@ -3563,7 +3563,7 @@ impl Workspace {
     // Tabs.
 
     /// The open tab of the task view, clamped to the tabs it has now.
-    pub fn open_tab(&self, cx: &App) -> Option<(usize, Vec<sections::Tab>)> {
+    pub fn open_tab(&self, cx: &App) -> Option<(usize, std::rc::Rc<Vec<sections::Tab>>)> {
         self.task.read(cx).open_tab(cx)
     }
 

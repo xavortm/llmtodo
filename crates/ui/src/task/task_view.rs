@@ -7,7 +7,9 @@
 //! Like the list, it keeps its own view state, such as scrolling, tabs and
 //! vim mode, and asks the workspace for every change to an issue.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
@@ -53,6 +55,34 @@ pub struct Detail {
     pub mode: DetailMode,
 }
 
+/// What the prepared tabs were built from. A change to any part builds
+/// them again.
+#[derive(Clone, PartialEq)]
+struct PreparedStamp {
+    issue: IssueId,
+    description: SharedString,
+    history: u64,
+    keys: u64,
+    server: Option<SharedString>,
+}
+
+/// The open task's tabs, each tab's Markdown ready for the preview, and the
+/// description's questions. Cloning it costs three counter bumps.
+#[derive(Clone)]
+struct PreparedTabs {
+    stamp: PreparedStamp,
+    tabs: Rc<Vec<sections::Tab>>,
+    bodies: Rc<[SharedString]>,
+    questions: Rc<Vec<llmtodo_core::Question>>,
+}
+
+/// The conflict view's lines and the two texts they came from.
+struct ConflictLines {
+    theirs: SharedString,
+    mine: SharedString,
+    lines: Rc<[(SharedString, bool)]>,
+}
+
 /// The task view, when it shows the preview and holds focus.
 pub const DETAIL_CONTEXT: &str = "DetailPane";
 
@@ -86,9 +116,21 @@ pub struct TaskView {
     /// Set when a click gave the task view focus, cleared by any key.
     pub focus_by_mouse: bool,
     /// The open task's Activity tab, as Markdown, once the server sent it.
-    pub activity: Option<(IssueId, String)>,
+    activity: Option<(IssueId, String)>,
     /// The open task's Sessions tab: the work log of agent sessions.
-    pub sessions: Option<(IssueId, String)>,
+    sessions: Option<(IssueId, String)>,
+    /// Counts up whenever `activity` or `sessions` changes.
+    history_revision: u64,
+    /// The open task's tabs and their preview text. GPUI renders the view
+    /// on every scroll frame, so the text work runs only when its input
+    /// changes. See [`PreparedTabs`].
+    prepared: RefCell<Option<PreparedTabs>>,
+    /// The server's lines in the save conflict view, each with whether the
+    /// owner's text lacks it. Built again when either text changes.
+    conflict_lines: RefCell<Option<ConflictLines>>,
+    /// How often the prepared tabs were built, for tests.
+    #[cfg(test)]
+    pub(crate) prepared_builds: std::cell::Cell<usize>,
     /// What each session cost on the open task, for the cost line's card.
     pub session_costs: Option<(IssueId, crate::task::history::CostBreakdown)>,
     /// The editor holds the owner's text from a refused save, and the
@@ -140,8 +182,29 @@ impl TaskView {
             review_error: HashMap::new(),
             activity: None,
             sessions: None,
+            history_revision: 0,
+            prepared: RefCell::new(None),
+            conflict_lines: RefCell::new(None),
+            #[cfg(test)]
+            prepared_builds: Default::default(),
             session_costs: None,
         }
+    }
+
+    /// Sets the open task's Activity and Sessions tabs and its cost card.
+    pub fn set_history(
+        &mut self,
+        id: IssueId,
+        activity: String,
+        sessions: String,
+        costs: crate::task::history::CostBreakdown,
+        cx: &mut Context<Self>,
+    ) {
+        self.activity = Some((id, activity));
+        self.sessions = Some((id, sessions));
+        self.session_costs = Some((id, costs));
+        self.history_revision += 1;
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -297,9 +360,69 @@ impl TaskView {
     // Tabs.
 
     /// The open tab of the task view, clamped to the tabs it has now.
-    pub fn open_tab(&self, cx: &App) -> Option<(usize, Vec<sections::Tab>)> {
+    pub fn open_tab(&self, cx: &App) -> Option<(usize, Rc<Vec<sections::Tab>>)> {
         let detail = self.open?;
         let issue = self.store.read(cx).get(detail.issue)?;
+        let tabs = self.prepared(issue, cx).tabs;
+        let ix = self
+            .open_tabs
+            .get(&issue.key)
+            .copied()
+            .unwrap_or(0)
+            .min(tabs.len().saturating_sub(1));
+        Some((ix, tabs))
+    }
+
+    /// The prepared tabs of `issue`, built again only when the text, the
+    /// history, the server address or the store's keys changed.
+    fn prepared(&self, issue: &Issue, cx: &App) -> PreparedTabs {
+        let store = self.store.read(cx);
+        let stamp = PreparedStamp {
+            issue: issue.id,
+            description: issue.description.clone(),
+            history: self.history_revision,
+            keys: store.keys_revision(),
+            server: store.server_url.clone(),
+        };
+        let mut cache = self.prepared.borrow_mut();
+        if let Some(prepared) = cache.as_ref().filter(|p| p.stamp == stamp) {
+            return prepared.clone();
+        }
+        #[cfg(test)]
+        self.prepared_builds.set(self.prepared_builds.get() + 1);
+        let tabs = Rc::new(self.build_tabs(issue));
+        let bodies = tabs
+            .iter()
+            .map(|tab| {
+                crate::task::preview::prepare(&tab.body, stamp.server.as_deref(), |key| {
+                    store.by_key(key).is_some()
+                })
+                .into()
+            })
+            .collect::<Vec<SharedString>>()
+            .into();
+        let questions = Rc::new(llmtodo_core::questions(&issue.description));
+        let prepared = PreparedTabs {
+            stamp,
+            tabs,
+            bodies,
+            questions,
+        };
+        *cache = Some(prepared.clone());
+        prepared
+    }
+
+    /// Each tab's preview text for the open task, for tests.
+    #[cfg(test)]
+    pub(crate) fn prepared_text(&self, cx: &App) -> Vec<SharedString> {
+        let Some(issue) = self.open.and_then(|d| self.store.read(cx).get(d.issue)) else {
+            return Vec::new();
+        };
+        self.prepared(issue, cx).bodies.to_vec()
+    }
+
+    /// Splits the description into tabs and adds the history tabs.
+    fn build_tabs(&self, issue: &Issue) -> Vec<sections::Tab> {
         let mut tabs = sections::tabs(&issue.description);
         // An empty description keeps its tab. Without it, the read-only
         // Activity tab comes first, and `e` refuses to edit (LLM-131).
@@ -325,7 +448,7 @@ impl TaskView {
         ] {
             if let Some((_, body)) = extra
                 .as_ref()
-                .filter(|(id, body)| *id == detail.issue && !body.is_empty())
+                .filter(|(id, body)| *id == issue.id && !body.is_empty())
             {
                 tabs.push(sections::Tab {
                     title: title.into(),
@@ -334,13 +457,7 @@ impl TaskView {
                 });
             }
         }
-        let ix = self
-            .open_tabs
-            .get(&issue.key)
-            .copied()
-            .unwrap_or(0)
-            .min(tabs.len().saturating_sub(1));
-        Some((ix, tabs))
+        tabs
     }
 
     pub fn set_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -1076,49 +1193,38 @@ impl TaskView {
         &self,
         element_id: SharedString,
         tab: &sections::Tab,
+        body: SharedString,
+        questions: &[llmtodo_core::Question],
         issue: &Issue,
         cx: &App,
     ) -> gpui_kit::AnyElement {
         if tab
             .title
             .eq_ignore_ascii_case(llmtodo_core::questions::QUESTIONS_SECTION)
+            && !questions.is_empty()
         {
-            let questions = llmtodo_core::questions(&issue.description);
-            if !questions.is_empty() {
-                let answers = Some(self.answers.clone());
-                return gpui_kit::component::v_flex()
-                    .id(element_id)
-                    .test_support()
-                    .w_full()
-                    .gap_2()
-                    .children(questions.iter().map(|q| {
-                        let input = answers
-                            .as_ref()
-                            .and_then(|a| a.read(cx).get(issue.id, q.number));
-                        crate::inbox::question_card(
-                            issue.id,
-                            q,
-                            input,
-                            false,
-                            self.events.clone(),
-                            cx,
-                        )
-                    }))
-                    .into_any_element();
-            }
+            let answers = Some(self.answers.clone());
+            return gpui_kit::component::v_flex()
+                .id(element_id)
+                .test_support()
+                .w_full()
+                .gap_2()
+                .children(questions.iter().map(|q| {
+                    let input = answers
+                        .as_ref()
+                        .and_then(|a| a.read(cx).get(issue.id, q.number));
+                    crate::inbox::question_card(issue.id, q, input, false, self.events.clone(), cx)
+                }))
+                .into_any_element();
         }
-        self.tab_view(element_id, &tab.body, cx).into_any_element()
+        self.tab_view(element_id, body, cx).into_any_element()
     }
 
     /// One tab's Markdown, ready for the preview: file paths get the
     /// server's address, issue keys become links, and a click on a link
     /// opens the issue in the app or the page in the browser.
-    fn tab_view(&self, element_id: SharedString, body: &str, cx: &App) -> TextView {
-        let store = self.store.read(cx);
-        let server = store.server_url.clone();
-        let body = crate::task::preview::prepare(body, server.as_deref(), |key| {
-            store.by_key(key).is_some()
-        });
+    fn tab_view(&self, element_id: SharedString, body: SharedString, cx: &App) -> TextView {
+        let server = self.store.read(cx).server_url.clone();
         let link_events = self.events.clone();
         TextView::markdown(element_id, body)
             // Same size as the list rows.
@@ -1150,7 +1256,14 @@ impl TaskView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let (active, tabs) = self.open_tab(cx).unwrap_or_default();
+        let prepared = self.prepared(issue, cx);
+        let tabs = &prepared.tabs;
+        let active = self
+            .open_tabs
+            .get(&issue.key)
+            .copied()
+            .unwrap_or(0)
+            .min(tabs.len().saturating_sub(1));
         let id = issue.id;
         // Until the fetch brings the text, the view shows that it loads.
         let loading = !issue.description_loaded;
@@ -1171,7 +1284,14 @@ impl TaskView {
         let views: Vec<(usize, Option<&'static str>, gpui_kit::AnyElement)> = shown
             .into_iter()
             .map(|(ix, t)| {
-                let view = self.tab_body(format!("{id}-tab-{ix}").into(), t, issue, cx);
+                let view = self.tab_body(
+                    format!("{id}-tab-{ix}").into(),
+                    t,
+                    prepared.bodies[ix].clone(),
+                    &prepared.questions,
+                    issue,
+                    cx,
+                );
                 (ix, t.read_only, view)
             })
             .collect();
@@ -1282,6 +1402,40 @@ impl TaskView {
             )
     }
 
+    /// The server's lines for the conflict view, from the cache while
+    /// neither text changed.
+    fn conflict_lines(
+        &self,
+        theirs: &SharedString,
+        mine: SharedString,
+    ) -> Rc<[(SharedString, bool)]> {
+        let mut cache = self.conflict_lines.borrow_mut();
+        if let Some(c) = cache
+            .as_ref()
+            .filter(|c| &c.theirs == theirs && c.mine == mine)
+        {
+            return c.lines.clone();
+        }
+        let mine_lines: std::collections::HashSet<&str> = mine.lines().collect();
+        let lines: Rc<[(SharedString, bool)]> = theirs
+            .lines()
+            .map(|line| {
+                let text = if line.is_empty() {
+                    SharedString::from(" ")
+                } else {
+                    SharedString::from(line.to_string())
+                };
+                (text, !mine_lines.contains(line))
+            })
+            .collect();
+        *cache = Some(ConflictLines {
+            theirs: theirs.clone(),
+            mine: mine.clone(),
+            lines: lines.clone(),
+        });
+        lines
+    }
+
     /// The save conflict view: what to do, then the owner's text in the
     /// editor on the left and the server's version on the right. Server
     /// lines that the owner's text lacks are shaded.
@@ -1292,22 +1446,17 @@ impl TaskView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let mine = self.editor.read(cx).value();
-        let mine_lines: std::collections::HashSet<&str> = mine.lines().collect();
+        let shown = self.conflict_lines(&issue.description, mine);
         let theme = cx.theme();
         let changed_bg = theme.secondary_active;
-        let lines: Vec<_> = issue
-            .description
-            .lines()
-            .map(|line| {
+        let lines: Vec<_> = shown
+            .iter()
+            .map(|(line, changed)| {
                 div()
                     .w_full()
                     .px_3()
-                    .when(!mine_lines.contains(line), |d| d.bg(changed_bg))
-                    .child(if line.is_empty() {
-                        SharedString::from(" ")
-                    } else {
-                        SharedString::from(line.to_string())
-                    })
+                    .when(*changed, |d| d.bg(changed_bg))
+                    .child(line.clone())
             })
             .collect();
         let choice = |id: &'static str, label: &'static str, tooltip: &'static str, ghost: bool| {
@@ -1812,9 +1961,10 @@ impl Render for TaskView {
         // The answer fields of owner questions are made here,
         // where the window can make them. The Owner questions tab reads them.
         let answers = self.answers.clone();
-        for q in llmtodo_core::questions(&issue.description) {
+        let questions = self.prepared(&issue, cx).questions;
+        for q in questions.iter() {
             answers.update(cx, |a, cx| {
-                a.input(issue.id, &q, window, cx);
+                a.input(issue.id, q, window, cx);
             });
         }
         if issue.status.review {

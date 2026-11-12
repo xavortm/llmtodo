@@ -428,7 +428,7 @@ impl Workspace {
             count.push_str(&format!(", {marked} marked"));
         }
         let connection = self.store.read(cx).connection.clone();
-        let claimed = crate::issues::claims::claim_rows(self.store.read(cx)).len();
+        let claimed = self.store.read(cx).claim_count();
         let theme = cx.theme();
         let hover = theme.foreground.opacity(0.08);
         let pressed = theme.foreground.opacity(0.16);

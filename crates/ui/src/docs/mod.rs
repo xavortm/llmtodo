@@ -53,13 +53,24 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// The document body with issue keys as links and file paths on the
+/// server, and the store state it was built against.
+struct PreparedDoc {
+    keys: u64,
+    server: Option<SharedString>,
+    text: SharedString,
+}
+
 pub struct DocView {
     store: Entity<IssueStore>,
     events: ViewEvents,
     /// The document the sidebar picked, before and after it loads.
     pub open: Option<DocumentId>,
     /// The copy the server sent last, with its body.
-    pub doc: Option<Document>,
+    doc: Option<Document>,
+    /// The body, ready for the preview. `set_doc` clears it, and a render
+    /// builds it again, so scrolling does not redo the text work.
+    prepared: Option<PreparedDoc>,
     pub editing: bool,
     /// The version the edit started from. A save sends it.
     pub base: i64,
@@ -88,6 +99,7 @@ impl DocView {
             events,
             open: None,
             doc: None,
+            prepared: None,
             editing: false,
             base: 0,
             editor,
@@ -101,15 +113,47 @@ impl DocView {
         if self.open != Some(id) {
             self.open = Some(id);
             self.doc = None;
+            self.prepared = None;
             self.editing = false;
             self.scroll.set_offset(Default::default());
         }
         cx.notify();
     }
 
+    /// The copy the server sent last, with its body.
+    pub fn doc(&self) -> Option<&Document> {
+        self.doc.as_ref()
+    }
+
+    /// The body ready for the preview. It is built again only after a new
+    /// copy, or when the server address or the store's keys changed.
+    fn prepared_body(&mut self, cx: &App) -> Option<SharedString> {
+        let body = self.doc.as_ref()?.body.as_deref()?;
+        let store = self.store.read(cx);
+        let (keys, server) = (store.keys_revision(), store.server_url.clone());
+        if let Some(p) = self
+            .prepared
+            .as_ref()
+            .filter(|p| p.keys == keys && p.server == server)
+        {
+            return Some(p.text.clone());
+        }
+        let text: SharedString = crate::task::preview::prepare(body, server.as_deref(), |key| {
+            store.by_key(key).is_some()
+        })
+        .into();
+        self.prepared = Some(PreparedDoc {
+            keys,
+            server,
+            text: text.clone(),
+        });
+        Some(text)
+    }
+
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.open = None;
         self.doc = None;
+        self.prepared = None;
         self.editing = false;
         cx.notify();
     }
@@ -119,6 +163,7 @@ impl DocView {
     pub fn set_doc(&mut self, doc: Document, cx: &mut Context<Self>) {
         if self.open == Some(doc.id) {
             self.doc = Some(doc);
+            self.prepared = None;
             cx.notify();
         }
     }
@@ -251,10 +296,13 @@ impl Render for DocView {
         let header = self.render_header(cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let body = self.doc.as_ref().and_then(|d| d.body.clone());
+        let body = if self.editing {
+            None
+        } else {
+            self.prepared_body(cx)
+        };
         let id = self.open.map(|i| i.to_string()).unwrap_or_default();
-        let store = self.store.read(cx);
-        let server = store.server_url.clone();
+        let server = self.store.read(cx).server_url.clone();
         let link_events = self.events.clone();
         let content = match (&body, self.editing) {
             (_, true) => div()
@@ -262,39 +310,32 @@ impl Render for DocView {
                 .min_h_0()
                 .child(Editor::new(&self.editor).h_full())
                 .into_any_element(),
-            (Some(body), false) if !body.trim().is_empty() => {
-                let prepared = crate::task::preview::prepare(body, server.as_deref(), |key| {
-                    store.by_key(key).is_some()
-                });
-                v_flex()
-                    .id("doc-preview-body")
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .px_4()
-                    .py_3()
-                    .child(
-                        TextView::markdown(SharedString::from(format!("doc-{id}")), prepared)
-                            .text_sm()
-                            .on_link_click(move |url, _, window, cx| {
-                                match crate::task::preview::link_target(url, server.as_deref()) {
-                                    crate::task::preview::LinkTarget::Issue(key) => {
-                                        link_events.emit(
-                                            ViewEvent::OpenKey(key.to_string()),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                    crate::task::preview::LinkTarget::Browser(url) => {
-                                        cx.open_url(&url)
-                                    }
+            (Some(prepared), false) if !prepared.trim().is_empty() => v_flex()
+                .id("doc-preview-body")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .px_4()
+                .py_3()
+                .child(
+                    TextView::markdown(SharedString::from(format!("doc-{id}")), prepared.clone())
+                        .text_sm()
+                        .on_link_click(move |url, _, window, cx| {
+                            match crate::task::preview::link_target(url, server.as_deref()) {
+                                crate::task::preview::LinkTarget::Issue(key) => {
+                                    link_events.emit(
+                                        ViewEvent::OpenKey(key.to_string()),
+                                        window,
+                                        cx,
+                                    );
                                 }
-                            }),
-                    )
-                    .into_any_element()
-            }
+                                crate::task::preview::LinkTarget::Browser(url) => cx.open_url(&url),
+                            }
+                        }),
+                )
+                .into_any_element(),
             (Some(_), false) => v_flex()
                 .flex_1()
                 .items_center()
