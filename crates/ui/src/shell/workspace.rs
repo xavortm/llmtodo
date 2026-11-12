@@ -119,17 +119,6 @@ fn status_word(name: &str) -> String {
     name.to_lowercase().replace(' ', "-")
 }
 
-/// The catalog the server sent.
-fn catalog_of(data: &backend::CatalogData) -> Catalog {
-    Catalog::from_api(
-        &data.teams,
-        &data.labels,
-        &data.projects,
-        &data.views,
-        &data.documents,
-    )
-}
-
 /// The project name and its folder, with the home folder shortened to `~`.
 /// `LLMTODO_PROJECT_DIR` picks the folder; it defaults to the working folder.
 fn project_name_and_path() -> (SharedString, SharedString) {
@@ -507,6 +496,8 @@ impl Workspace {
         // A save still waiting for the window to stop goes out at quit.
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.persist(cx);
+            // Kept description text is written on a background thread.
+            crate::model::drafts::flush();
             async {}
         }));
         // And when the red button closes the window, which quits the app.
@@ -514,6 +505,7 @@ impl Workspace {
             let me = cx.weak_entity();
             move |_, cx| {
                 me.update(cx, |this, cx| this.persist(cx)).ok();
+                crate::model::drafts::flush();
                 true
             }
         });
@@ -1002,23 +994,19 @@ impl Workspace {
                 self.pipeline.hold(snapshot);
             }
         }
-        let missing = self.store.update(cx, |store, cx| {
+        self.store.update(cx, |store, cx| {
             store.catalog = catalog;
             store.replace_all(issues);
             // A snapshot holds the Trash too, but an issue can go to the
             // Trash while it loads. The owner may still be editing it. Keep
-            // the old copy so the editor and its text stay, and fetch the
-            // issue, because the server still returns it by key.
-            let missing = editing.filter(|open| store.get(open.id).is_none());
-            if let Some(open) = &missing {
-                store.upsert(open.clone());
+            // the old copy so the editor and its text stay. The load dropped
+            // its cached detail, so the open task's fetch below asks for the
+            // issue, which the server still returns by key.
+            if let Some(open) = editing.filter(|open| store.get(open.id).is_none()) {
+                store.upsert(open);
             }
             cx.notify();
-            missing
         });
-        if let Some(open) = missing {
-            self.fetch(&open.key);
-        }
         // A reconnect can bring a claim that started while offline.
         if let Some(open) = open_before {
             let kept = self.close_editor_on_lock(open.id, Some(&open.description), cx);

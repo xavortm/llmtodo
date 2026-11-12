@@ -136,7 +136,7 @@ fn a_key_from_another_tracker_opens_there(cx: &mut TestAppContext) {
     assert_eq!(started.lock().unwrap().len(), 1);
     view.update(cx, |this, cx| {
         assert_eq!(this.trackers(cx).1, 1);
-        this.apply_event(Event::Snapshot(Box::new(real_snapshot())), cx);
+        this.apply_event(Event::Snapshot(Box::new(real_snapshot().load())), cx);
     });
     cx.read(|cx| {
         let this = view.read(cx);
@@ -227,7 +227,7 @@ fn a_read_only_tracker_sends_no_writes(cx: &mut TestAppContext) {
         view.update(cx, |this, cx| {
             assert!(this.switch_tracker(1, cx));
             assert!(this.message().contains("read-only"), "{}", this.message());
-            this.apply_event(Event::Snapshot(Box::new(real_snapshot())), cx);
+            this.apply_event(Event::Snapshot(Box::new(real_snapshot().load())), cx);
             this.open_key("REAL-13", cx);
             assert_eq!(this.open_task_key(cx).as_deref(), Some("REAL-13"));
             for command in [

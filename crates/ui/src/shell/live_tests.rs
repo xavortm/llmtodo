@@ -191,6 +191,7 @@ fn save(text: &str, version: i64) -> Write {
 fn llm_1_text(event: &Event) -> Option<(String, i64)> {
     let issue = match event {
         Event::Snapshot(s) => s
+            .raw
             .issues
             .iter()
             .find(|i| i.key.to_string() == "LLM-1")?
@@ -253,7 +254,7 @@ fn a_read_only_backend_reads_but_cannot_write() {
     let live = Live::new();
     let (backend, mut events) = live.read_only_backend();
     let snapshot = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.clone()),
+        Event::Snapshot(s) => Some(s.raw.clone()),
         _ => None,
     });
     assert_eq!(snapshot.issues.len(), 1);
@@ -318,7 +319,7 @@ fn backend_loads_writes_and_hears_claims() {
         matches!(e, Event::Connected { .. }).then_some(())
     });
     let snapshot = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.clone()),
+        Event::Snapshot(s) => Some(s.raw.clone()),
         _ => None,
     });
     assert_eq!(snapshot.issues.len(), 1);
@@ -633,7 +634,7 @@ fn backend_keeps_events_that_arrive_before_a_disconnect() {
         matches!(e, Event::Connected { .. }).then_some(())
     });
     let claim = live.wait(&mut events, "the claim", |e| match e {
-        Event::Snapshot(s) => s.issues[0].claim.clone(),
+        Event::Snapshot(s) => s.raw.issues[0].claim.clone(),
         e => issue_event(e).and_then(|i| i.claim),
     });
     assert_eq!(claim.session_id, "agent-3");
@@ -780,7 +781,7 @@ fn backend_loads_the_trash_and_saved_views_and_reads_a_view() {
     });
     let (backend, mut events) = live.backend();
     let snapshot = live.wait(&mut events, "a snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.clone()),
+        Event::Snapshot(s) => Some(s.raw.clone()),
         _ => None,
     });
     let trashed: Vec<_> = snapshot
@@ -1016,7 +1017,7 @@ fn backend_reads_and_saves_a_document_on_its_version() {
         .unwrap();
     let (backend, mut events) = live.backend();
     let listed = live.wait(&mut events, "a snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.catalog.documents.clone()),
+        Event::Snapshot(s) => Some(s.raw.catalog.documents.clone()),
         _ => None,
     });
     assert_eq!(listed.len(), 1);
@@ -1138,7 +1139,7 @@ fn backend_sends_open_questions_with_the_snapshot() {
     live.rt.block_on(agent.update_issue("LLM-1", &ask)).unwrap();
     let (_backend, mut events) = live.backend();
     let snapshot = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.clone()),
+        Event::Snapshot(s) => Some(s.raw.clone()),
         _ => None,
     });
     assert_eq!(snapshot.issues[0].description, None);
@@ -1181,7 +1182,7 @@ fn backend_sends_a_review_answer_and_the_rounds() {
     });
     let (backend, mut events) = live.backend();
     let id = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.issues[0].id),
+        Event::Snapshot(s) => Some(s.raw.issues[0].id),
         _ => None,
     });
     // The panel shows LLM-1, so the write's answer carries its rounds.
@@ -1218,7 +1219,7 @@ fn only_the_open_task_gets_its_detail_on_live_events() {
     let agent = live.client(Some("agent-171"));
     let (backend, mut events) = live.backend();
     let id = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.issues[0].id),
+        Event::Snapshot(s) => Some(s.raw.issues[0].id),
         _ => None,
     });
     let set_text = |text: &str| UpdateIssue {
@@ -1336,7 +1337,7 @@ fn a_live_event_on_the_open_task_sends_its_history_once() {
     let agent = live.client(Some("agent-179"));
     let (backend, mut events) = live.backend();
     let id = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => Some(s.issues[0].id),
+        Event::Snapshot(s) => Some(s.raw.issues[0].id),
         _ => None,
     });
     backend.request(Request::Open { id: Some(id) });
@@ -1360,4 +1361,22 @@ fn a_live_event_on_the_open_task_sends_its_history_once() {
             .iter()
             .any(|e| e.field == llmtodo_client::types::ActivityField::Title)
     );
+}
+
+/// LLM-177: the snapshot reaches the app with its issues already mapped to
+/// the app's catalog, so the main thread does not map them.
+#[test]
+fn the_snapshot_arrives_mapped() {
+    let live = Live::new();
+    let (_backend, mut events) = live.backend();
+    let loaded = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => Some(s.clone()),
+        _ => None,
+    });
+    assert_eq!(loaded.issues.len(), loaded.raw.issues.len());
+    let issue = &loaded.issues[0];
+    assert_eq!(issue.key.as_ref(), "LLM-1");
+    assert_eq!(issue.id, loaded.raw.issues[0].id);
+    assert_eq!(issue.title.as_ref(), "App on live data");
+    assert!(loaded.catalog.teams.iter().any(|t| t.0.as_ref() == "LLM"));
 }

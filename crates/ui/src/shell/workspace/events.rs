@@ -22,17 +22,18 @@ impl Workspace {
                 self.set_connection(Connection::Offline(reason.into()), cx);
             }
             backend::Event::Snapshot(snapshot) => {
-                let catalog = catalog_of(&snapshot.catalog);
-                let issues: Vec<Issue> = snapshot
-                    .issues
-                    .iter()
-                    .map(|i| Issue::from_api(i, &catalog))
-                    .collect();
-                self.load_questions(&issues, &snapshot.questions, cx);
+                // The API thread already mapped the issues.
+                let backend::Loaded {
+                    catalog,
+                    issues,
+                    questions,
+                    ..
+                } = *snapshot;
+                self.load_questions(&issues, &questions, cx);
                 self.load(catalog, issues, cx);
                 self.loaded_tracker(cx);
             }
-            backend::Event::Catalog(data) => self.apply_catalog(catalog_of(&data), cx),
+            backend::Event::Catalog(data) => self.apply_catalog(data.catalog(), cx),
             backend::Event::Issue(issue) => self.receive_rows(vec![*issue], cx),
             backend::Event::Issues(issues) => self.receive_rows(issues, cx),
             backend::Event::IssueDetail(parts) => {

@@ -1601,19 +1601,22 @@ fn statuses_and_labels_come_from_the_server(cx: &mut TestAppContext) {
     };
     view.update(cx, |this, cx| {
         this.apply_event(
-            crate::model::backend::Event::Snapshot(Box::new(crate::model::backend::Snapshot {
-                catalog: crate::model::backend::CatalogData {
-                    teams: vec![team],
-                    labels: vec![label],
-                    ..Default::default()
-                },
-                questions: Vec::new(),
-                issues: vec![
-                    issue(9, "Duplicate", "canceled"),
-                    issue(10, "In Review", "started"),
-                    issue(2, "Todo", "unstarted"),
-                ],
-            })),
+            crate::model::backend::Event::Snapshot(Box::new(
+                crate::model::backend::Snapshot {
+                    catalog: crate::model::backend::CatalogData {
+                        teams: vec![team],
+                        labels: vec![label],
+                        ..Default::default()
+                    },
+                    questions: Vec::new(),
+                    issues: vec![
+                        issue(9, "Duplicate", "canceled"),
+                        issue(10, "In Review", "started"),
+                        issue(2, "Todo", "unstarted"),
+                    ],
+                }
+                .load(),
+            )),
             cx,
         );
         // Keys sort by number, not as text.
@@ -2024,15 +2027,18 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
         .unwrap()
     };
     let snapshot = |issues: Vec<Issue>| {
-        crate::model::backend::Event::Snapshot(Box::new(crate::model::backend::Snapshot {
-            catalog: crate::model::backend::CatalogData {
-                teams: vec![team("Todo")],
-                labels: vec![label("fe")],
-                ..Default::default()
-            },
-            issues,
-            questions: Vec::new(),
-        }))
+        crate::model::backend::Event::Snapshot(Box::new(
+            crate::model::backend::Snapshot {
+                catalog: crate::model::backend::CatalogData {
+                    teams: vec![team("Todo")],
+                    labels: vec![label("fe")],
+                    ..Default::default()
+                },
+                issues,
+                questions: Vec::new(),
+            }
+            .load(),
+        ))
     };
     let by_key = |this: &Workspace, k: &str, cx: &gpui_kit::App| this.issue_by_key(k, cx).clone();
     view.update(cx, |this, cx| {

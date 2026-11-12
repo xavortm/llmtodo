@@ -228,6 +228,8 @@ impl Workspace {
             return;
         };
         self.pipeline.keep_unsent();
+        // The new app reads the kept text, so it must be on disk first.
+        crate::model::drafts::flush();
         let restart = Restart::new(&state.data_dir, &state.watch.bundle, state.cli.clone());
         match (state.launch)(&restart) {
             Ok(_) => cx.quit(),

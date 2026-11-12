@@ -159,6 +159,8 @@ impl WritePipeline {
             return None;
         }
         self.in_flight.remove(&id);
+        // The keys of finished writes are not needed any more.
+        self.sent_keys.retain(|_, sent| *sent != id);
         self.held.remove(&id)
     }
 
@@ -326,6 +328,8 @@ mod tests {
         assert_eq!(applied.version, 9);
         assert!(!pipeline.has_writes(issue.id));
         assert!(!pipeline.is_busy());
+        // LLM-177: the sent key goes once the last write returns.
+        assert!(pipeline.sent_keys.is_empty());
     }
 
     #[test]

@@ -42,7 +42,20 @@ pub struct CatalogData {
     pub documents: Vec<Document>,
 }
 
-/// Everything the list needs, loaded in one go.
+impl CatalogData {
+    /// The catalog as the app maps issues to it.
+    pub fn catalog(&self) -> crate::model::data::Catalog {
+        crate::model::data::Catalog::from_api(
+            &self.teams,
+            &self.labels,
+            &self.projects,
+            &self.views,
+            &self.documents,
+        )
+    }
+}
+
+/// Everything the list needs, loaded in one go, as the server sent it.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub catalog: CatalogData,
@@ -51,6 +64,43 @@ pub struct Snapshot {
     pub issues: Vec<Issue>,
     /// The open owner questions on open issues, for the inbox.
     pub questions: Vec<QuestionEntry>,
+}
+
+/// A snapshot with its issues already mapped to the app's catalog. The
+/// API thread does the mapping, so a large tracker does not hold up the
+/// main thread.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// The catalog as the server sent it.
+    pub data: CatalogData,
+    pub catalog: crate::model::data::Catalog,
+    pub issues: Vec<crate::model::data::Issue>,
+    pub questions: Vec<QuestionEntry>,
+    /// Tests: the snapshot as the server sent it.
+    #[cfg(test)]
+    pub raw: Snapshot,
+}
+
+impl Snapshot {
+    /// Maps every issue to the app's catalog.
+    pub fn load(self) -> Loaded {
+        #[cfg(test)]
+        let raw = self.clone();
+        let catalog = self.catalog.catalog();
+        let issues = self
+            .issues
+            .iter()
+            .map(|i| crate::model::data::Issue::from_api(i, &catalog))
+            .collect();
+        Loaded {
+            data: self.catalog,
+            catalog,
+            issues,
+            questions: self.questions,
+            #[cfg(test)]
+            raw,
+        }
+    }
 }
 
 /// What a write changes, so the app can word its message and track saves.
@@ -148,7 +198,7 @@ pub enum Event {
     Offline {
         reason: String,
     },
-    Snapshot(Box<Snapshot>),
+    Snapshot(Box<Loaded>),
     /// Statuses, labels, teams, projects, views or documents changed. No
     /// issues come with it: the app maps the issues it holds again.
     Catalog(Box<CatalogData>),
@@ -972,11 +1022,14 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
     let issues = last_copy_of_each(issues, |i| i.key.to_string());
     send(
         events,
-        Event::Snapshot(Box::new(Snapshot {
-            catalog,
-            issues,
-            questions,
-        })),
+        Event::Snapshot(Box::new(
+            Snapshot {
+                catalog,
+                issues,
+                questions,
+            }
+            .load(),
+        )),
     );
     Ok(())
 }

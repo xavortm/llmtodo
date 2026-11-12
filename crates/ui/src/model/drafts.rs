@@ -4,10 +4,16 @@
 //! editor. Claims never time out, so it can wait for hours, and it has to
 //! survive an app quit. Each task keeps its text until the owner saves it
 //! or picks the server's version.
+//!
+//! Each change writes the file on one background thread, with an fsync, so
+//! the main thread never waits on the disk. [`flush`] waits for the writes
+//! on their way, and [`DraftStore::open`] and the app's quit call it.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 
 use gpui_shared_string::SharedString;
 
@@ -29,6 +35,8 @@ impl DraftStore {
     /// A corrupt file must not stop the app, so it is logged and the store
     /// starts empty.
     pub fn open(data_dir: &Path) -> Self {
+        // A write on its way may be for this file.
+        flush();
         let path = data_dir.join(FILE);
         let entries = match std::fs::read(&path) {
             Ok(raw) => serde_json::from_slice(&raw).unwrap_or_else(|err| {
@@ -84,28 +92,110 @@ impl DraftStore {
         removed
     }
 
-    /// Writes the file. A failed write is logged, and the text stays in
-    /// memory for as long as the app runs.
+    /// Sends the file's new text to the writer thread. A failed write is
+    /// logged, and the text stays in memory for as long as the app runs.
     fn persist(&self) {
         let Some(path) = self.path.as_ref().filter(|_| !self.memory_only) else {
             return;
         };
-        if let Err(err) = write_atomic(path, &self.entries) {
-            eprintln!("llmtodo: could not write {}: {err}", path.display());
+        let bytes = match serde_json::to_vec_pretty(&self.entries) {
+            Ok(bytes) => bytes,
+            Err(err) => return eprintln!("llmtodo: could not encode drafts: {err}"),
+        };
+        let job = Job::Write {
+            path: path.clone(),
+            bytes,
+        };
+        let unsent = match writer().map(Mutex::lock) {
+            Some(Ok(tx)) => tx.send(job).err().map(|e| e.0),
+            _ => Some(job),
+        };
+        // No writer thread: write here.
+        if let Some(Job::Write { path, bytes }) = unsent {
+            write_logged(&path, &bytes);
         }
+    }
+}
+
+/// Work for the writer thread.
+enum Job {
+    Write {
+        path: PathBuf,
+        bytes: Vec<u8>,
+    },
+    /// Answers once every write sent before it is done.
+    Flush(mpsc::Sender<()>),
+}
+
+/// The writer thread's queue, started on first use. None when the thread
+/// cannot start.
+fn writer() -> Option<&'static Mutex<mpsc::Sender<Job>>> {
+    static WRITER: OnceLock<Option<Mutex<mpsc::Sender<Job>>>> = OnceLock::new();
+    WRITER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Job>();
+            std::thread::Builder::new()
+                .name("llmtodo-drafts".into())
+                .spawn(move || write_jobs(rx))
+                .ok()
+                .map(|_| Mutex::new(tx))
+        })
+        .as_ref()
+}
+
+/// Runs the writer thread. Writes that wait together keep only the newest
+/// text of each file, so a burst of changes writes once.
+fn write_jobs(rx: mpsc::Receiver<Job>) {
+    while let Ok(job) = rx.recv() {
+        let mut due: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        for job in std::iter::once(job).chain(rx.try_iter()) {
+            match job {
+                Job::Write { path, bytes } => match due.iter_mut().find(|(p, _)| *p == path) {
+                    Some(entry) => entry.1 = bytes,
+                    None => due.push((path, bytes)),
+                },
+                Job::Flush(done) => {
+                    for (path, bytes) in due.drain(..) {
+                        write_logged(&path, &bytes);
+                    }
+                    let _ = done.send(());
+                }
+            }
+        }
+        for (path, bytes) in due {
+            write_logged(&path, &bytes);
+        }
+    }
+}
+
+/// Waits until every draft write sent so far is on disk.
+pub fn flush() {
+    let Some(tx) = writer() else {
+        return;
+    };
+    let (done, wait) = mpsc::channel();
+    let sent = tx.lock().is_ok_and(|tx| tx.send(Job::Flush(done)).is_ok());
+    if sent {
+        let _ = wait.recv();
+    }
+}
+
+fn write_logged(path: &Path, bytes: &[u8]) {
+    if let Err(err) = write_atomic(path, bytes) {
+        eprintln!("llmtodo: could not write {}: {err}", path.display());
     }
 }
 
 /// Writes a temporary file and renames it over `path`. A crash at any
 /// moment leaves either the old file or the new one, never half of one.
-fn write_atomic(path: &Path, entries: &BTreeMap<String, String>) -> std::io::Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let written = (|| {
         let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(entries)?)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temporary, path)
     })();
@@ -160,6 +250,21 @@ mod tests {
         assert_eq!(reopened.get("LLM-2").unwrap(), "Two.");
     }
 
+    /// LLM-177: an insert returns before the disk write, and a flush waits
+    /// for it. A burst of changes ends with the newest text on disk.
+    #[test]
+    fn writes_run_off_the_callers_thread_and_flush_waits_for_them() {
+        let dir = folder();
+        let mut store = DraftStore::open(dir.path());
+        for n in 0..50 {
+            store.insert("LLM-1".into(), format!("Version {n}."));
+        }
+        flush();
+        let raw = std::fs::read(dir.path().join(FILE)).unwrap();
+        let on_disk: BTreeMap<String, String> = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(on_disk["LLM-1"], "Version 49.");
+    }
+
     #[test]
     fn a_missing_file_starts_empty() {
         let dir = folder();
@@ -199,6 +304,7 @@ mod tests {
         let dir = folder();
         let mut store = DraftStore::open(dir.path());
         store.insert("LLM-1".into(), "One.".into());
+        flush();
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())

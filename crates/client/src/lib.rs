@@ -295,18 +295,12 @@ impl Client {
         path: &str,
         body: Option<&B>,
     ) -> Result<T> {
-        let v = self
-            .raw(
-                method,
-                path,
-                body.map(serde_json::to_value)
-                    .transpose()
-                    .map_err(|e| ClientError::Other(e.to_string()))?,
-            )
-            .await?;
-        serde_json::from_value(v).map_err(|e| {
-            ClientError::Other(format!("unexpected response from {method} {path}: {e}"))
-        })
+        let body = body
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| ClientError::Other(e.to_string()))?;
+        let bytes = self.send_within(method, path, body, self.timeout).await?;
+        typed(&bytes, method, path)
     }
 
     /// Sends one request and returns the JSON as it came.
@@ -326,6 +320,19 @@ impl Client {
         body: Option<serde_json::Value>,
         timeout: Duration,
     ) -> Result<serde_json::Value> {
+        let bytes = self.send_within(method, path, body, timeout).await?;
+        Ok(loose_json(&bytes))
+    }
+
+    /// Sends one request and returns the body of a success. A status of 400
+    /// or more becomes [`ClientError::Api`], from the server's error body.
+    async fn send_within(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>> {
         let m = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())
             .map_err(|e| ClientError::Other(e.to_string()))?;
         if self.read_only && is_write(&m, path) {
@@ -359,26 +366,22 @@ impl Client {
             *self.server_version.lock().unwrap() = Some(v.to_string());
         }
         let status = res.status().as_u16();
-        let text = res
-            .text()
+        let bytes = res
+            .bytes()
             .await
-            .map_err(|e| send_error(e, method, path, timeout))?;
-        let value: serde_json::Value = if text.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
-        };
+            .map_err(|e| send_error(e, method, path, timeout))?
+            .to_vec();
         if status >= 400 {
-            let detail = serde_json::from_value::<ErrorBody>(value.clone())
+            let detail = serde_json::from_slice::<ErrorBody>(&bytes)
                 .map(|b| b.error)
                 .unwrap_or_else(|_| ErrorDetail {
                     code: fallback_code(status),
-                    message: format!("HTTP {status}: {value}"),
+                    message: format!("HTTP {status}: {}", loose_json(&bytes)),
                     details: serde_json::Value::Null,
                 });
             return Err(ClientError::Api { status, detail });
         }
-        Ok(value)
+        Ok(bytes)
     }
 
     /// Sends one request to endpoint `E`. `args` fills the `{name}` path
@@ -409,10 +412,8 @@ impl Client {
             self.timeout
         };
         let method = E::METHOD.as_str();
-        let v = self.raw_within(method, &path, body, timeout).await?;
-        serde_json::from_value(v).map_err(|e| {
-            ClientError::Other(format!("unexpected response from {method} {path}: {e}"))
-        })
+        let bytes = self.send_within(method, &path, body, timeout).await?;
+        typed(&bytes, method, &path)
     }
 
     // ------------------------------------------------------------ server
@@ -904,7 +905,10 @@ fn is_default_data_dir(dir: &Path) -> bool {
     same_dir(dir, &data_dir::standard_data_dir_in(Path::new(&home)))
 }
 
-fn spawn_server(bin: &Path, data_dir: &Path) -> Result<()> {
+/// Starts `<bin> server run` for `data_dir` and returns its process ID. A
+/// detached thread waits on it, so a server that exits does not stay a
+/// zombie until the caller quits.
+fn spawn_server(bin: &Path, data_dir: &Path) -> Result<u32> {
     std::fs::create_dir_all(data_dir).map_err(|e| ClientError::Other(e.to_string()))?;
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -929,14 +933,75 @@ fn spawn_server(bin: &Path, data_dir: &Path) -> Result<()> {
         // stop the server.
         cmd.process_group(0);
     }
-    cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| ClientError::Unreachable(format!("could not start {}: {e}", bin.display())))?;
-    Ok(())
+    let pid = child.id();
+    let _ = std::thread::Builder::new()
+        .name("llmtodo-server-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(pid)
+}
+
+/// A response body read straight into `T`, in one pass. An empty body
+/// reads as JSON `null`.
+fn typed<T: DeserializeOwned>(bytes: &[u8], method: &str, path: &str) -> Result<T> {
+    let bytes = if bytes.is_empty() { b"null" } else { bytes };
+    serde_json::from_slice(bytes)
+        .map_err(|e| ClientError::Other(format!("unexpected response from {method} {path}: {e}")))
+}
+
+/// A response body as JSON. An empty body is `null`, and text that is not
+/// JSON is a string.
+fn loose_json(bytes: &[u8]) -> serde_json::Value {
+    if bytes.is_empty() {
+        return serde_json::Value::Null;
+    }
+    serde_json::from_slice(bytes)
+        .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LLM-177: a response reads straight into its type. Empty and non-JSON
+    /// bodies keep their old meaning.
+    #[test]
+    fn response_bodies_read_in_one_pass() {
+        let n: Option<u32> = typed(b"", "GET", "/x").unwrap();
+        assert_eq!(n, None);
+        let v: Vec<u32> = typed(b"[1,2]", "GET", "/x").unwrap();
+        assert_eq!(v, [1, 2]);
+        let err = typed::<u32>(b"oops", "GET", "/x").unwrap_err();
+        assert!(err.to_string().contains("unexpected response from GET /x"));
+        assert_eq!(loose_json(b""), serde_json::Value::Null);
+        assert_eq!(loose_json(b"oops"), serde_json::json!("oops"));
+        assert_eq!(loose_json(br#"{"a":1}"#), serde_json::json!({"a": 1}));
+    }
+
+    /// LLM-177: a started server that exits is reaped, not left a zombie.
+    #[cfg(unix)]
+    #[test]
+    fn a_started_server_that_exits_is_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        // `true server run` exits at once, like a server that fails to start.
+        let pid = spawn_server(Path::new("/usr/bin/true"), dir.path()).unwrap();
+        let state = || {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            state().is_empty()
+        });
+        assert!(gone, "the process is still listed: {}", state());
+    }
 
     #[test]
     fn segments_encode_slashes() {

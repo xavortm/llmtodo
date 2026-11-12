@@ -403,8 +403,15 @@ impl IssueStore {
             }
             self.upsert(issue);
         }
+        // Per-issue caches drop issues the new list lacks, such as purged
+        // ones or those of another tracker.
         let index = &self.index;
         self.questions.retain(|id, _| index.contains_key(id));
+        self.git.retain(|id, _| index.contains_key(id));
+        self.relations.retain(|id, _| index.contains_key(id));
+        self.reviews.retain(|id, _| index.contains_key(id));
+        self.sessions.retain(|id, _| index.contains_key(id));
+        self.stale_detail.retain(|id| index.contains_key(id));
         // The same keys keep the old revision, so prepared text stays.
         self.keys_revision = if self.keys == old_keys {
             revision
@@ -480,5 +487,28 @@ mod tests {
             Vec::new(),
         );
         assert!(!store.take_stale_detail(id(1)));
+    }
+
+    /// LLM-177: a full load drops the cached detail of issues it lacks.
+    #[test]
+    fn a_full_load_drops_the_detail_of_missing_issues() {
+        let mut store = IssueStore::new();
+        let demo = crate::model::demo::issues(&crate::model::demo::catalog());
+        let (kept, gone) = (demo[0].id, demo[1].id);
+        store.replace_all(demo.clone());
+        for id in [kept, gone] {
+            let git = IssueGit::default();
+            store.set_detail(id, Vec::new(), Vec::new(), git, Vec::new());
+            store.mark_detail_stale(id);
+        }
+        store.replace_all(demo.into_iter().filter(|i| i.id != gone).collect());
+        assert!(store.git(kept).is_some());
+        assert!(store.relations(kept).is_some());
+        assert!(store.sessions(kept).is_some());
+        assert!(store.git(gone).is_none());
+        assert!(store.relations(gone).is_none());
+        assert!(store.sessions(gone).is_none());
+        assert!(!store.reviews.contains_key(&gone));
+        assert!(!store.take_stale_detail(gone));
     }
 }
