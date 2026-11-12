@@ -94,6 +94,9 @@ impl DocView {
             state.set_highlighter_factory(crate::task::fold_highlighter::factory(), cx);
             state
         });
+        // The view is cached, and it reads the catalog and the server from
+        // the store.
+        cx.observe(&store, |_, _, cx| cx.notify()).detach();
         Self {
             store,
             events,
@@ -293,6 +296,8 @@ use gpui_kit::component::Disableable as _;
 
 impl Render for DocView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let header = self.render_header(cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -375,7 +380,9 @@ impl Render for DocView {
             }))
             .flex_1()
             .min_w_0()
-            .h_full()
+            // The workspace draws this view cached, so GPUI lays it out as
+            // its own root, where `flex_1` does nothing. It fills by size.
+            .size_full()
             .child(header)
             .child(content)
     }

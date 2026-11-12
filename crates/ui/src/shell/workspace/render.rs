@@ -119,7 +119,7 @@ impl Workspace {
         let open = self.detail(cx).is_some();
         group
             .with_handle_appearance(std::rc::Rc::new(Self::divider))
-            .child(self.list.clone().into_any_element())
+            .child(cached(&self.list).into_any_element())
             .child(
                 // Fixed: only a drag on the divider changes its size, never
                 // the content of the task that is open.
@@ -128,7 +128,7 @@ impl Workspace {
                     .size(size)
                     .size_range(range)
                     .fixed()
-                    .when(open, |this| this.child(self.task.clone())),
+                    .when(open, |this| this.child(cached(&self.task))),
             )
     }
 
@@ -169,8 +169,6 @@ impl Workspace {
         context
     }
 
-    /// The project name on the left, its folder on the right. A click on
-    /// the folder copies it. Restart to update sits left of the folder.
     /// The sidebar column: the scope rows, and the cat below them. The cat
     /// is a sibling of the sidebar view, not a child, and the sidebar is
     /// cached. So a new cat frame does not draw the rows again, and they
@@ -184,20 +182,16 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .child(
-                div().flex_1().min_h_0().child(
-                    self.sidebar
-                        .clone()
-                        .cached(gpui_kit::StyleRefinement::default().size_full()),
-                ),
-            )
+            .child(div().flex_1().min_h_0().child(cached(&self.sidebar)))
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
             })
     }
 
+    /// The project name on the left, its folder on the right. A click on
+    /// the folder copies it. Restart to update sits left of the folder.
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let update = self.render_update_button(cx);
+        let update = self.render_update_button();
         let theme = cx.theme();
         let (name, path) = self.project.clone();
         let hover = theme.foreground.opacity(0.08);
@@ -511,6 +505,16 @@ impl Workspace {
     }
 }
 
+/// A view drawn from its cache until it notifies. A cat frame or an
+/// update-button frame draws the workspace again, because each is a view
+/// inside it, but not the views drawn this way (LLM-169). So each such view
+/// must notify itself on every change it shows: it observes the store, and
+/// the workspace notifies it when it sets the view's fields.
+fn cached<V: Render>(view: &Entity<V>) -> impl IntoElement + use<V> {
+    view.clone()
+        .cached(gpui_kit::StyleRefinement::default().size_full())
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -627,11 +631,11 @@ impl Render for Workspace {
                     })
                     .map(|this| {
                         if self.settings_shown(cx) {
-                            this.child(self.settings_view.clone())
+                            this.child(cached(&self.settings_view))
                         } else if self.inbox_shown(cx) {
-                            this.child(self.inbox.clone())
+                            this.child(cached(&self.inbox))
                         } else if self.doc_shown(cx) {
-                            this.child(self.doc_view.clone())
+                            this.child(cached(&self.doc_view))
                         } else {
                             this.child(self.render_split(window, cx))
                         }

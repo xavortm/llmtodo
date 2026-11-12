@@ -216,6 +216,8 @@ impl IssueList {
             InputState::new(window, cx)
                 .placeholder("Filter: text, status:todo, label:bug, assignee:me")
         });
+        // The list is cached, and its rows draw each issue from the store.
+        cx.observe(&store, |_, _, cx| cx.notify()).detach();
         Self {
             store,
             events,
@@ -1549,6 +1551,8 @@ impl IssueList {
 
 impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let rem_size = window.rem_size();
         let demand = self.demand(cx);
         self.layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
@@ -1560,7 +1564,9 @@ impl Render for IssueList {
             .flex_1()
             .min_w_0()
             .overflow_hidden()
-            .h_full()
+            // The workspace draws this view cached, so GPUI lays it out as
+            // its own root, where `flex_1` does nothing. It fills by size.
+            .size_full()
             .child(measure)
             .child(filter_bar)
             .child(header)

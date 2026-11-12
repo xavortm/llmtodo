@@ -7,6 +7,8 @@ pub mod docs;
 pub mod inbox;
 pub mod issues;
 pub mod model;
+#[cfg(test)]
+pub mod render_count;
 pub mod settings;
 pub mod shell;
 pub mod task;

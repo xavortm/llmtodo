@@ -108,7 +108,8 @@ impl Workspace {
         match refusal {
             None => {
                 batch.approved.push(id);
-                self.answers.update(cx, |a, _| a.clear_feedback_later(id));
+                self.answers
+                    .update(cx, |a, cx| a.clear_feedback_later(id, cx));
             }
             Some(message) => batch.failed.push((key.to_string().into(), message)),
         }

@@ -182,6 +182,8 @@ impl Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let catalog = self.store.read(cx).catalog.clone();
         let rows = scopes(&catalog);
         let counts = self.open_counts(&rows, cx);

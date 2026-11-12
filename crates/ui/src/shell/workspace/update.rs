@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonCustomVariant;
-use gpui_kit::{Animation, AnimationExt as _, Hsla, hsla, linear_color_stop, linear_gradient};
+use gpui_kit::{
+    Animation, AnimationExt as _, EventEmitter, Hsla, hsla, linear_color_stop, linear_gradient,
+};
 
 use super::*;
 use crate::model::update::{Restart, UpdateWatch};
@@ -46,7 +48,32 @@ pub struct UpdateState {
     restarting: bool,
     /// Starts the helper. Tests record the restart instead.
     launch: fn(&Restart) -> std::io::Result<()>,
+    /// The title bar button, as its own view, so a frame of its gradient
+    /// draws only the button and the workspace, not the cached views.
+    button: Entity<UpdateButton>,
     _poll: gpui_kit::Task<()>,
+    _click: gpui_kit::Subscription,
+}
+
+/// The Restart to update button. The workspace owns its state and copies
+/// it here with `set`. A click emits `RestartClicked`.
+pub struct UpdateButton {
+    commit: Option<String>,
+    restarting: bool,
+}
+
+pub struct RestartClicked;
+
+impl EventEmitter<RestartClicked> for UpdateButton {}
+
+impl UpdateButton {
+    fn set(&mut self, commit: Option<String>, restarting: bool, cx: &mut Context<Self>) {
+        if self.commit != commit || self.restarting != restarting {
+            self.commit = commit;
+            self.restarting = restarting;
+            cx.notify();
+        }
+    }
 }
 
 fn spawn_helper(restart: &Restart) -> std::io::Result<()> {
@@ -72,6 +99,13 @@ impl Workspace {
                 cx.background_executor().timer(CHECK_EVERY).await;
             }
         });
+        let button = cx.new(|_| UpdateButton {
+            commit: None,
+            restarting: false,
+        });
+        let click = cx.subscribe(&button, |this, _, _: &RestartClicked, cx| {
+            this.restart_to_update(cx)
+        });
         self.update = Some(UpdateState {
             watch,
             data_dir,
@@ -79,7 +113,9 @@ impl Workspace {
             ready: None,
             restarting: false,
             launch: spawn_helper,
+            button,
             _poll: poll,
+            _click: click,
         });
     }
 
@@ -90,8 +126,26 @@ impl Workspace {
         let newer = state.watch.newer();
         if newer != state.ready {
             state.ready = newer;
+            self.sync_update_button(cx);
+            // The button comes or goes in the title bar.
             cx.notify();
         }
+    }
+
+    /// Copies the update state into the button view.
+    fn sync_update_button(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &self.update else {
+            return;
+        };
+        let (commit, restarting) = (state.ready.clone(), state.restarting);
+        state
+            .button
+            .update(cx, |button, cx| button.set(commit, restarting, cx));
+    }
+
+    #[cfg(test)]
+    pub fn update_restarting(&self) -> bool {
+        self.update.as_ref().is_some_and(|s| s.restarting)
     }
 
     #[cfg(test)]
@@ -130,6 +184,7 @@ impl Workspace {
         if let Some(state) = &mut self.update {
             state.restarting = true;
         }
+        self.sync_update_button(cx);
         self.message = "Restarting to update".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -178,6 +233,7 @@ impl Workspace {
             Ok(_) => cx.quit(),
             Err(err) => {
                 state.restarting = false;
+                self.sync_update_button(cx);
                 self.message = format!("Could not restart: {err}").into();
                 cx.notify();
             }
@@ -185,41 +241,52 @@ impl Workspace {
     }
 
     /// The title bar button. It shows only when a new build is installed.
-    pub(super) fn render_update_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_update_button(&self) -> Option<AnyElement> {
         let state = self.update.as_ref()?;
-        let commit = state.ready.as_ref()?;
+        state.ready.as_ref()?;
+        Some(state.button.clone().into_any_element())
+    }
+}
+
+impl Render for UpdateButton {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
+        let Some(commit) = &self.commit else {
+            return div().into_any_element();
+        };
         let short: String = commit.chars().take(7).collect();
         let tip = format!("A new build is installed ({short}). Your unsaved text is kept");
-        Some(
-            crate::shell::tooltip::with_card(
-                "restart-update-tip",
-                Button::new("restart-update")
-                    .custom(
-                        ButtonCustomVariant::new(cx)
-                            .color(yellow(0.55))
-                            .foreground(hsla(0., 0., 0.1, 1.))
-                            .hover(yellow(0.68))
-                            .active(hsla(AMBER_HUE, 0.96, 0.45, 1.)),
-                    )
-                    .xsmall()
-                    .icon(IconName::RefreshCw)
-                    .label(if state.restarting {
-                        "Restarting…"
-                    } else {
-                        "Restart to update"
-                    })
-                    .disabled(state.restarting)
-                    .on_click(cx.listener(|this, _, _, cx| this.restart_to_update(cx)))
-                    // The animation runs only while the button renders, so it
-                    // costs nothing when no update is ready.
-                    .with_animation(
-                        "restart-update-gradient",
-                        Animation::new(GRADIENT_TURN).repeat(),
-                        |button, delta| button.bg(update_gradient(delta)),
-                    ),
-                crate::shell::tooltip::Card::text(tip),
-            )
-            .into_any_element(),
+        crate::shell::tooltip::with_card(
+            "restart-update-tip",
+            Button::new("restart-update")
+                .custom(
+                    ButtonCustomVariant::new(cx)
+                        .color(yellow(0.55))
+                        .foreground(hsla(0., 0., 0.1, 1.))
+                        .hover(yellow(0.68))
+                        .active(hsla(AMBER_HUE, 0.96, 0.45, 1.)),
+                )
+                .xsmall()
+                .icon(IconName::RefreshCw)
+                .label(if self.restarting {
+                    "Restarting…"
+                } else {
+                    "Restart to update"
+                })
+                .disabled(self.restarting)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(RestartClicked)))
+                // The animation runs only while the button renders, so it
+                // costs nothing when no update is ready. Each frame notifies
+                // this view only, and the workspace draws its cached views
+                // from their cache.
+                .with_animation(
+                    "restart-update-gradient",
+                    Animation::new(GRADIENT_TURN).repeat(),
+                    |button, delta| button.bg(update_gradient(delta)),
+                ),
+            crate::shell::tooltip::Card::text(tip),
         )
+        .into_any_element()
     }
 }

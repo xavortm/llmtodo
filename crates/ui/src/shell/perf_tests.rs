@@ -219,10 +219,12 @@ fn measure(count: usize, cx: &mut TestAppContext) {
     report("frame, sidebar open", count, handle, cx, |_, window, cx| {
         window.render_frame(cx);
     });
+    // `render_frame` refreshes the whole window, so these frames use a
+    // plain draw, as the platform does: only dirty views render.
     let mascot = cx.read(|cx| view.read(cx).mascot().clone());
     report("mascot frame", count, handle, cx, move |_, window, cx| {
         mascot.update(cx, |mascot, cx| mascot.tick(cx));
-        window.render_frame(cx);
+        window.draw(cx).clear(cx);
     });
     cx.update(|cx| cx.quit());
 }

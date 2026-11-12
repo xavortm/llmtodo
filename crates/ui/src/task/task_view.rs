@@ -160,6 +160,10 @@ impl TaskView {
             state.set_highlighter_factory(fold_highlighter::factory(), cx);
             state
         });
+        // The view is cached. It draws the open task from the store, and
+        // the answer fields from `answers`.
+        cx.observe(&store, |_, _, cx| cx.notify()).detach();
+        cx.observe(&answers, |_, _, cx| cx.notify()).detach();
         Self {
             store,
             events,
@@ -1952,6 +1956,8 @@ impl TaskView {
 
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let Some(detail) = self.open else {
             return div().into_any_element();
         };

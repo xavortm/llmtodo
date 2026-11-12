@@ -20,6 +20,8 @@ pub mod workspace;
 #[cfg(test)]
 mod app_menus_tests;
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod live_tests;
 #[cfg(test)]
 mod perf_tests;

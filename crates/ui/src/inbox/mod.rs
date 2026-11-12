@@ -211,9 +211,11 @@ impl AnswerInputs {
         input
     }
 
-    /// Empties the feedback field of `issue` on its next draw.
-    pub fn clear_feedback_later(&mut self, issue: IssueId) {
+    /// Empties the feedback field of `issue` on its next draw. The views
+    /// that draw it observe this entity, so the notify draws them.
+    pub fn clear_feedback_later(&mut self, issue: IssueId, cx: &mut Context<Self>) {
         self.clear_feedback.insert(issue);
+        cx.notify();
     }
 
     pub fn feedback(&self, issue: IssueId) -> Option<Entity<TextareaState>> {
@@ -467,6 +469,7 @@ impl InboxView {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&store, |_, _, cx| cx.notify()).detach();
+        cx.observe(&answers, |_, _, cx| cx.notify()).detach();
         Self {
             store,
             events,
@@ -669,6 +672,8 @@ impl InboxView {
 
 impl Render for InboxView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let entries = entries(self.store.read(cx));
         let selected = self.selection(&entries);
         let reviews: Vec<(IssueId, SharedString, SharedString)> = self
@@ -846,7 +851,9 @@ impl Render for InboxView {
             .on_action(cx.listener(|this, _: &Choose9, w, cx| this.choose(8, w, cx)))
             .flex_1()
             .min_w_0()
-            .h_full()
+            // The workspace draws this view cached, so GPUI lays it out as
+            // its own root, where `flex_1` does nothing. It fills by size.
+            .size_full()
             .border_color(border)
             .child(header)
             .child(content)

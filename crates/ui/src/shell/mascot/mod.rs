@@ -10,7 +10,8 @@
 //! The mascot is its own entity, so a new frame notifies only this view.
 //! Its timer runs only while the sidebar is on screen and the Settings
 //! switch is on: the workspace calls `set_shown`. With the switch off, the
-//! workspace does not draw the strip at all.
+//! workspace does not draw the strip at all. The timer also rests while the
+//! window is hidden or minimized: the workspace calls `set_paused`.
 
 pub mod behaviour;
 pub mod sprites;
@@ -62,7 +63,10 @@ pub struct Mascot {
     store: Entity<IssueStore>,
     behaviour: Behaviour,
     shown: bool,
-    /// Shows each timeline step for its time. None while hidden.
+    /// The window is hidden, so no frame would show. The cat keeps its
+    /// place and goes on when the window shows again.
+    paused: bool,
+    /// Shows each timeline step for its time. None while hidden or paused.
     ticker: Option<Task<()>>,
     /// The strip's width and one sprite pixel, from the last layout.
     measured: Rc<Cell<Option<(Pixels, Pixels)>>>,
@@ -82,6 +86,7 @@ impl Mascot {
             store,
             behaviour: Behaviour::new(active, seed),
             shown: false,
+            paused: false,
             ticker: None,
             measured: Rc::new(Cell::new(None)),
             pressed: false,
@@ -128,6 +133,16 @@ impl Mascot {
         self.restart(cx);
     }
 
+    /// The window was hidden or showed again. Unlike `set_shown`, a show
+    /// does not start a walk-in: the cat goes on from where it was.
+    pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        if self.paused == paused {
+            return;
+        }
+        self.paused = paused;
+        self.restart(cx);
+    }
+
     fn refresh_active(&mut self, cx: &mut Context<Self>) {
         let active = agent_active(self.store.read(cx), jiff::Timestamp::now());
         if self.behaviour.set_active(active) {
@@ -157,7 +172,7 @@ impl Mascot {
     /// Draws the current step now and times the next one from now.
     fn restart(&mut self, cx: &mut Context<Self>) {
         cx.notify();
-        if !self.shown {
+        if !self.shown || self.paused {
             self.ticker = None;
             return;
         }
@@ -203,6 +218,8 @@ impl Mascot {
 
 impl Render for Mascot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         self.sync_range();
         let art = sprites();
         let runs = art.frame(self.behaviour.anim(), self.behaviour.step());

@@ -74,6 +74,7 @@ mod update;
 mod view_events;
 
 pub use keys::*;
+pub use update::UpdateButton;
 
 pub use crate::issues::list::Row;
 pub use crate::task::task_view::Detail;
@@ -488,6 +489,14 @@ impl Workspace {
                 },
             ));
         }
+        // No frame shows while the window is hidden, so the cat rests.
+        subscriptions.push(
+            cx.observe_window_visibility(window, |this, visibility, _, cx| {
+                let hidden = visibility == gpui_kit::WindowVisibility::Hidden;
+                this.mascot
+                    .update(cx, |mascot, cx| mascot.set_paused(hidden, cx));
+            }),
+        );
         // The window frame, saved when it moves or resizes.
         subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
             this.window_moved(frame_of(window), cx);
@@ -952,13 +961,18 @@ impl Workspace {
     }
 
     /// Runs `f` on the list, then lets an open preview follow the selection.
-    /// Every change to the list goes through here.
+    /// Every change to the list goes through here. The list is cached, so
+    /// this notifies it: `f` may set its fields directly.
     fn list_do<R>(
         &mut self,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut IssueList, &mut Context<IssueList>) -> R,
     ) -> R {
-        let out = self.list.update(cx, f);
+        let out = self.list.update(cx, |list, cx| {
+            let out = f(list, cx);
+            cx.notify();
+            out
+        });
         let selected = self.list.read(cx).selected_issue();
         self.task.update(cx, |task, cx| task.follow(selected, cx));
         self.fetch_open_details(cx);
@@ -1042,7 +1056,10 @@ impl Workspace {
         let catalog = &self.store.read(cx).catalog;
         if !catalog.teams.is_empty() && !scope.exists(catalog) {
             self.message = format!("{} is gone. Showing all issues", scope.name(catalog)).into();
-            self.list.update(cx, |list, _| list.scope = Scope::All);
+            self.list.update(cx, |list, cx| {
+                list.scope = Scope::All;
+                cx.notify();
+            });
             self.sidebar.update(cx, |sidebar, cx| {
                 sidebar.active = Scope::All;
                 cx.notify();
@@ -1089,10 +1106,14 @@ impl Workspace {
         }
         let keys: std::collections::HashSet<SharedString> =
             store.iter().map(|i| i.key.clone()).collect();
-        let pruned = self.task.update(cx, |task, _| {
+        let pruned = self.task.update(cx, |task, cx| {
             let before = task.open_tabs.len();
             task.open_tabs.retain(|key, _| keys.contains(key));
-            task.open_tabs.len() != before
+            let pruned = task.open_tabs.len() != before;
+            if pruned {
+                cx.notify();
+            }
+            pruned
         });
         if pruned {
             self.persist(cx);
@@ -1321,7 +1342,10 @@ impl Workspace {
         self.hide_closed_days = settings.hide_closed_days.clamp(1, MAX_HIDE_DAYS);
         self.open_last_view = settings.open_last_view;
         let vim = settings.vim_editor;
-        self.task.update(cx, |task, _| task.vim_enabled = vim);
+        self.task.update(cx, |task, cx| {
+            task.vim_enabled = vim;
+            cx.notify();
+        });
         let scope = if settings.open_last_view {
             self.restore_task = settings.last_task.clone();
             Scope::from_setting(&settings.sidebar_scope).unwrap_or_default()
@@ -1344,9 +1368,10 @@ impl Workspace {
             .map(|(k, v)| (SharedString::from(k.clone()), *v))
             .collect();
         let panel_heights = settings.panel_heights.clone();
-        self.task.update(cx, |task, _| {
+        self.task.update(cx, |task, cx| {
             task.open_tabs = open_tabs;
             task.panel_heights = panel_heights;
+            cx.notify();
         });
         self.list_do(cx, |list, cx| {
             list.sort = sort;
@@ -1997,7 +2022,10 @@ impl Workspace {
                 name: view.to_string(),
             });
         }
-        self.list.update(cx, |list, _| list.scope = scope.clone());
+        self.list.update(cx, |list, cx| {
+            list.scope = scope.clone();
+            cx.notify();
+        });
         self.sync_doc_view(cx);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.active = scope.clone();
@@ -2525,7 +2553,7 @@ impl Workspace {
             return;
         }
         self.answers
-            .update(cx, |a, _| a.clear_feedback_later(issue));
+            .update(cx, |a, cx| a.clear_feedback_later(issue, cx));
         let status = self.store.read(cx).get(issue).map(|i| i.status.clone());
         self.message = match (verdict, status) {
             (ReviewVerdict::Approved, Some(s)) if s.is_closed() => {

@@ -244,6 +244,8 @@ impl SettingsView {
             // Cmd-plus, Cmd-minus and a restored zoom change the level
             // outside this view.
             cx.observe(&values, |_, _, cx| cx.notify()),
+            // The view is cached: it counts hidden tasks from the store.
+            cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe_global_in::<theme::Zoom>(window, |this, window, cx| {
                 this.show_zoom(window, cx);
                 cx.notify();
@@ -549,6 +551,8 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         let values = self.values(cx);
         let rows: Vec<AnyElement> = ROWS
             .into_iter()
@@ -574,7 +578,9 @@ impl Render for SettingsView {
             }))
             .flex_1()
             .min_w_0()
-            .h_full()
+            // The workspace draws this view cached, so GPUI lays it out as
+            // its own root, where `flex_1` does nothing. It fills by size.
+            .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .bg(theme.background)
