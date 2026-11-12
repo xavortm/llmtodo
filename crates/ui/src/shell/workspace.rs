@@ -3974,7 +3974,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// LLM-190: copies the keys of several tasks, one per line, in the
+    /// LLM-190: copies the keys of several tasks, comma-separated, in the
     /// order of `ids`.
     pub fn copy_keys(&mut self, ids: &[IssueId], cx: &mut Context<Self>) {
         let store = self.store.read(cx);
@@ -3985,7 +3985,7 @@ impl Workspace {
         if keys.is_empty() {
             return;
         }
-        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(keys.join("\n")));
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(keys.join(",")));
         self.message = format!("Copied {} IDs", keys.len()).into();
         cx.notify();
     }

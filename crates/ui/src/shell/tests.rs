@@ -791,7 +791,7 @@ fn a_click_on_a_marked_id_copies_every_marked_id(cx: &mut TestAppContext) {
     mark_then_click_key(handle, 3, 1, cx);
 
     let copied = cx.read_from_clipboard().and_then(|c| c.text());
-    assert_eq!(copied.as_deref(), Some("LLM-101\nLLM-102\nLLM-103"));
+    assert_eq!(copied.as_deref(), Some("LLM-101,LLM-102,LLM-103"));
     cx.read(|cx| assert_eq!(view.read(cx).message(), "Copied 3 IDs"));
     // The click does not reach the row, so the marks stay.
     assert_eq!(marked_keys(&view, cx), ["LLM-101", "LLM-102", "LLM-103"]);
