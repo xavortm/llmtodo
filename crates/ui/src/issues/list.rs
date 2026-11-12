@@ -1096,7 +1096,6 @@ impl IssueList {
         let tags: Vec<_> = widgets::tags(&issue, cx).collect();
         let layout = self.layout.clone();
         let llm = Self::render_llm_badge(&issue, window, cx);
-        let claimed = issue.claim.is_some();
         let marked = self.marked.contains(&issue.id);
         let theme = cx.theme();
         let hover = theme.list_hover;
@@ -1104,16 +1103,9 @@ impl IssueList {
         let selected_hover = crate::shell::theme::selection_hover(theme);
         // A selection in a list without focus is drawn fainter.
         let selected_bg = crate::shell::theme::selection_bg(theme, list_focused);
-        // A claimed row is tinted with the lock hue, strongly enough to
-        // differ from the gray group headers. This is the owner's one
-        // exception to the monochrome rows besides tags.
-        let locked = crate::shell::theme::locked_row(theme);
-        let muted = if claimed {
-            locked.text
-        } else {
-            theme.muted_foreground
-        };
-        let pressed = if claimed { locked.pressed } else { pressed };
+        // A claimed row has no tint of its own: the Locked badge in the
+        // LLM column marks it.
+        let muted = theme.muted_foreground;
         let key = widgets::issue_key(
             ("row-key", row).into(),
             &issue,
@@ -1129,16 +1121,11 @@ impl IssueList {
         let cursor_on_marked = theme.foreground.opacity(0.13);
         let cursor_on_marked_hover = theme.foreground.opacity(0.16);
         let filled = selected || marked;
-        // A marked row uses the marked fill, even when an agent holds it.
-        let tinted = claimed && !marked;
         let hover = match (selected && marked, filled) {
             (true, _) => cursor_on_marked_hover,
-            _ if tinted && selected => locked.selected_hover,
-            _ if tinted => locked.hover,
             (false, true) => selected_hover,
             (false, false) => hover,
         };
-        let (locked_rest, locked_selected) = (locked.rest, locked.selected);
         let check = self.mark_box(row, id, marked, cx);
         let click_events = self.events.clone();
         columns::row_frame()
@@ -1151,13 +1138,6 @@ impl IssueList {
             .when(marked, |this| this.bg(marked_bg))
             .when(selected, |this| this.bg(selected_bg))
             .when(selected && marked, |this| this.bg(cursor_on_marked))
-            .when(tinted, |this| {
-                this.bg(if selected {
-                    locked_selected
-                } else {
-                    locked_rest
-                })
-            })
             .hover(move |s| s.bg(hover))
             .active(move |s| s.bg(pressed))
             .when(self.shows(Column::Check), |this| {

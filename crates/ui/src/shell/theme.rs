@@ -230,44 +230,8 @@ pub fn row_pressed(theme: &Theme) -> Hsla {
     theme.foreground.opacity(0.18)
 }
 
-/// The colors of a task row that an agent has locked. The tint has to read
-/// as a different thing from the gray group headers, in hue and in strength.
-pub struct LockedRow {
-    pub rest: Hsla,
-    pub hover: Hsla,
-    pub selected: Hsla,
-    pub selected_hover: Hsla,
-    pub pressed: Hsla,
-    /// Secondary text, in place of `muted_foreground`, which is too faint on
-    /// the tint.
-    pub text: Hsla,
-}
-
-pub fn locked_row(theme: &Theme) -> LockedRow {
-    let hue = theme.warning;
-    // Amber is close to white in lightness, so a light page needs more of it.
-    let [rest, hover, selected, selected_hover, pressed] = if luminance(theme.background) < 0.5 {
-        [0.24, 0.3, 0.36, 0.42, 0.5]
-    } else {
-        [0.45, 0.55, 0.65, 0.72, 0.8]
-    };
-    let selected = hue.opacity(selected);
-    LockedRow {
-        rest: hue.opacity(rest),
-        hover: hue.opacity(hover),
-        selected,
-        selected_hover: hue.opacity(selected_hover),
-        pressed: hue.opacity(pressed),
-        text: ensure_contrast(
-            theme.muted_foreground,
-            &[blend(selected, theme.background)],
-            4.5,
-        ),
-    }
-}
-
 /// The fill and text of the `Locked` badge on a task row. It is solid, so it
-/// stands out from the row's own tint.
+/// stands out on any row fill.
 pub fn locked_badge(theme: &Theme) -> (Hsla, Hsla) {
     let fill = theme.warning;
     let page = if luminance(fill) > 0.18 {
@@ -338,25 +302,12 @@ mod tests {
     use super::*;
 
     #[gpui_kit::test]
-    fn locked_rows_stand_out_and_stay_readable(cx: &mut gpui_kit::TestAppContext) {
+    fn the_locked_badge_stays_readable(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
             cx.update(|cx| {
                 set_mode(mode, cx);
                 let t = cx.theme();
-                let row = locked_row(t);
-                let page = t.background;
-                let header = blend(t.muted.opacity(0.5), page);
-                let rest = blend(row.rest, page);
-                let selected = blend(row.selected, page);
-                assert!(
-                    contrast(rest, header) >= 1.25,
-                    "{mode:?} row against header"
-                );
-                for surface in [rest, selected] {
-                    assert!(contrast(row.text, surface) >= 4.5, "{mode:?} row text");
-                    assert!(contrast(t.foreground, surface) >= 4.5, "{mode:?} title");
-                }
                 let (fill, text) = locked_badge(t);
                 assert!(contrast(text, fill) >= 4.5, "{mode:?} badge text");
             });
