@@ -3729,3 +3729,40 @@ fn no_view_names_the_workspace() {
         );
     }
 }
+
+#[gpui_kit::test]
+fn grouping_by_status_hides_the_status_column(cx: &mut TestAppContext) {
+    use crate::issues::columns::Column;
+    use crate::issues::list::GroupBy;
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, view) = open_with_settings(&dir.path().join("ui.json"), Default::default(), cx);
+    cx.run_until_parked();
+    let group = |by: GroupBy, cx: &mut TestAppContext| {
+        view.update(cx, |this, cx| {
+            this.list().update(cx, |list, cx| list.group_by(by, cx));
+        });
+        cx.run_until_parked();
+    };
+    let shown = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            header_columns(window)
+        })
+        .unwrap()
+    };
+    assert!(shown(cx).contains(&Column::Status));
+    group(GroupBy::Status, cx);
+    assert!(
+        !shown(cx).contains(&Column::Status),
+        "the groups name the status"
+    );
+    cx.read(|cx| {
+        assert!(
+            view.read(cx).current_settings(cx).hidden_columns.is_empty(),
+            "the owner's column choice stays as it was"
+        );
+    });
+    group(GroupBy::None, cx);
+    assert!(shown(cx).contains(&Column::Status));
+}

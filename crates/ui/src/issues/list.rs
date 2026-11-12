@@ -626,7 +626,7 @@ impl IssueList {
     /// The width at which this list shows every column and fits most of
     /// its titles. The task view beside it grows only past this width.
     pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
-        columns::comfortable_width_for(&self.demand(cx), rem_size, &self.hidden_columns)
+        columns::comfortable_width_for(&self.demand(cx), rem_size, &self.layout_hidden())
     }
 
     /// What the titles and labels on the list ask of the columns.
@@ -727,6 +727,17 @@ impl IssueList {
     /// Collapse all, or expand all when every group is closed, like the
     /// button in VS Code's explorer. Only shown while the list is grouped.
     /// Whether the list is wide enough to show `column`.
+    /// The columns the layout leaves out: the owner's hidden columns, and
+    /// the status while the groups already name it. The status comes back
+    /// on its own under another grouping, and the owner's setting stays.
+    fn layout_hidden(&self) -> Vec<Column> {
+        let mut hidden = self.hidden_columns.clone();
+        if self.group == GroupBy::Status && !hidden.contains(&Column::Status) {
+            hidden.push(Column::Status);
+        }
+        hidden
+    }
+
     fn shows(&self, column: Column) -> bool {
         self.layout.columns.contains(&column)
     }
@@ -1291,7 +1302,7 @@ impl IssueList {
         // other columns, the list draws again with them.
         let width = self.width.clone();
         let entity = cx.entity_id();
-        let hidden = self.hidden_columns.clone();
+        let hidden = self.layout_hidden();
         let demand = self.demand(cx);
         gpui_kit::canvas(
             move |bounds, _, cx| {
@@ -1560,7 +1571,7 @@ impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rem_size = window.rem_size();
         let demand = self.demand(cx);
-        self.layout = columns::plan(self.width.get(), rem_size, &self.hidden_columns, &demand);
+        self.layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
         let measure = self.measure_width(rem_size, cx);
         let filter_bar = self.render_filter_bar(window, cx);
         let header = self.render_column_header(cx);
