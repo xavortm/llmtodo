@@ -10,8 +10,9 @@
 //! keeps current, and asks for each change with a `ViewEvent`.
 
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, h_flex,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex,
     input::{InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, StepAction},
     switch::Switch,
     v_flex,
@@ -72,15 +73,17 @@ pub enum Row {
     DarkMode,
     Zoom,
     OpenLast,
+    Mascot,
 }
 
-const ROWS: [Row; 6] = [
+const ROWS: [Row; 7] = [
     Row::HideClosed,
     Row::HideClosedDays,
     Row::Vim,
     Row::DarkMode,
     Row::Zoom,
     Row::OpenLast,
+    Row::Mascot,
 ];
 
 impl Row {
@@ -92,6 +95,7 @@ impl Row {
             Self::DarkMode => "settings-row-dark",
             Self::Zoom => "settings-row-zoom",
             Self::OpenLast => "settings-row-open-last",
+            Self::Mascot => "settings-row-mascot",
         }
     }
 
@@ -103,6 +107,15 @@ impl Row {
             Self::DarkMode => "Dark mode",
             Self::Zoom => "Zoom",
             Self::OpenLast => "Open the last view at start",
+            Self::Mascot => "Sudo the cat",
+        }
+    }
+
+    /// The icon before the title. Most rows have none.
+    fn icon(self) -> Option<IconName> {
+        match self {
+            Self::Mascot => Some(IconName::Cat),
+            _ => None,
         }
     }
 
@@ -367,6 +380,7 @@ impl SettingsView {
                     cx,
                 );
             }
+            Row::Mascot => self.write(ViewEvent::SetMascot(!values.mascot), window, cx),
             Row::HideClosedDays if !values.hide_closed => {}
             Row::HideClosedDays => self.days.update(cx, |state, cx| state.focus(window, cx)),
             Row::Zoom => self.zoom.update(cx, |state, cx| state.focus(window, cx)),
@@ -402,6 +416,9 @@ impl SettingsView {
             .into(),
             Row::Vim => "Off: the description editor types as usual".into(),
             Row::OpenLast => "Off: the app always opens All issues".into(),
+            Row::Mascot => "Your pixel pet in the sidebar. It works while an agent works, \
+                 and sleeps when nothing happens"
+                .into(),
             Row::DarkMode | Row::Zoom => return None,
         };
         Some(text)
@@ -468,6 +485,7 @@ impl SettingsView {
             Row::DarkMode => switch(values.theme == "dark"),
             Row::Zoom => self.number_field(row, &self.zoom, "%", false, window, cx),
             Row::OpenLast => switch(values.open_last_view),
+            Row::Mascot => switch(values.mascot),
         }
     }
 
@@ -511,6 +529,9 @@ impl SettingsView {
                         this.selected = ix;
                         this.activate(row, window, cx);
                     }))
+            })
+            .when_some(row.icon(), |this, icon| {
+                this.child(Icon::new(icon).small().flex_none().text_color(muted))
             })
             .child(
                 v_flex()

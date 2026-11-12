@@ -11,7 +11,7 @@ use gpui_kit::{
 
 use super::behaviour::{Act, Behaviour, ENTER_DELAY_MS, Facing, ROAM_MS, WATCH_MS};
 use super::sprites::{AnimId, sprites};
-use super::{CAT_ID, Mascot, quads};
+use super::{CAT_ID, Mascot, STRIP_ID, quads};
 use crate::model::data::{Analyzing, Catalog, Issue};
 use crate::settings::{SettingsStore, UiSettings};
 use crate::shell::workspace::Workspace;
@@ -902,4 +902,76 @@ fn the_cat_ends_its_walk_in_at_the_left_edge(cx: &mut TestAppContext) {
     let cat = behaviour(&view, cx);
     assert_eq!(cat.x(), cat.edges().0);
     assert_eq!(cat.edges().0, 2 - i32::from(sprites().cols.0));
+}
+
+// The Settings switch -------------------------------------------------------
+
+fn strip_drawn(handle: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(STRIP_ID).is_some()
+    })
+    .unwrap()
+}
+
+fn set_mascot(view: &Entity<Workspace>, on: bool, cx: &mut TestAppContext) {
+    view.update(cx, |this, cx| this.set_mascot(on, cx));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn turning_the_cat_off_hides_it_and_stops_its_timer(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    assert!(ticking(&view, cx));
+    assert!(strip_drawn(handle, cx));
+
+    set_mascot(&view, false, cx);
+    assert!(!ticking(&view, cx));
+    assert!(!strip_drawn(handle, cx), "the strip takes no space");
+    let hidden = step(&view, cx);
+    wait(cx, 2_000);
+    assert_eq!(step(&view, cx), hidden, "no frames while off");
+
+    // The sidebar closing and opening again does not wake the cat.
+    press(handle, "cmd-b", cx);
+    press(handle, "cmd-b", cx);
+    assert!(!ticking(&view, cx));
+    assert!(!strip_drawn(handle, cx));
+}
+
+#[gpui_kit::test]
+fn turning_the_cat_on_again_starts_a_walk_in(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    set_mascot(&view, false, cx);
+    set_mascot(&view, true, cx);
+    assert!(ticking(&view, cx));
+    assert!(strip_drawn(handle, cx));
+    assert_eq!(act(&view, cx), Act::Away, "the walk-in starts out of view");
+    settle(handle, &view, cx);
+    assert!(behaviour(&view, cx).visible());
+}
+
+#[gpui_kit::test]
+fn a_cat_saved_off_stays_off_at_start(cx: &mut TestAppContext) {
+    let settings = UiSettings {
+        mascot: false,
+        ..Default::default()
+    };
+    let (handle, view) = window_with(settings, cx);
+    press(handle, "cmd-b", cx);
+    assert!(!ticking(&view, cx));
+    assert!(!strip_drawn(handle, cx));
+    assert!(!cx.read(|cx| view.read(cx).current_settings(cx).mascot));
+}
+
+#[gpui_kit::test]
+fn turning_the_cat_on_with_the_sidebar_hidden_waits_for_the_sidebar(cx: &mut TestAppContext) {
+    let (handle, view) = open_settled(cx);
+    set_mascot(&view, false, cx);
+    press(handle, "cmd-b", cx);
+    set_mascot(&view, true, cx);
+    assert!(!ticking(&view, cx));
+    press(handle, "cmd-b", cx);
+    assert!(ticking(&view, cx));
+    assert_eq!(act(&view, cx), Act::Away);
 }

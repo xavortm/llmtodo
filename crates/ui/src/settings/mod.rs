@@ -57,6 +57,8 @@ pub struct UiSettings {
     pub last_task: Option<String>,
     /// Columns the owner hid in the issue list, by `Column::setting` name.
     pub hidden_columns: Vec<String>,
+    /// Sudo, the pixel cat under the sidebar.
+    pub mascot: bool,
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -84,6 +86,7 @@ impl Default for UiSettings {
             open_last_view: true,
             last_task: None,
             hidden_columns: Vec::new(),
+            mascot: true,
         }
     }
 }
@@ -183,5 +186,11 @@ mod tests {
         assert!(store.load().vim_editor);
         assert!(store.load().open_last_view);
         assert!(store.load().hidden_columns.is_empty());
+        assert!(store.load().mascot, "the cat is on for old files");
+    }
+
+    #[test]
+    fn the_cat_is_on_by_default() {
+        assert!(UiSettings::default().mascot);
     }
 }

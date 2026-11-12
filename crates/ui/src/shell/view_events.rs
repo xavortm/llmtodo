@@ -87,6 +87,7 @@ pub enum ViewEvent {
     SetVimEditor(bool),
     SetDark(bool),
     SetOpenLastView(bool),
+    SetMascot(bool),
     SetZoom(f32),
 }
 

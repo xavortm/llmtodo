@@ -193,8 +193,11 @@ pub struct Workspace {
     focus: FocusHandle,
     store: Entity<IssueStore>,
     sidebar: Entity<Sidebar>,
-    /// The cat under the sidebar. It shows and ticks only with the sidebar.
+    /// The cat under the sidebar. It shows and ticks only with the sidebar,
+    /// and only while `mascot_on`.
     mascot: Entity<Mascot>,
+    /// The Settings switch for the cat.
+    mascot_on: bool,
     list: Entity<IssueList>,
     task: Entity<TaskView>,
     palette: Entity<Palette>,
@@ -507,6 +510,7 @@ impl Workspace {
             store: issues,
             sidebar,
             mascot,
+            mascot_on: true,
             list,
             task,
             palette,
@@ -1292,6 +1296,7 @@ impl Workspace {
         self.layout.split_sizes = (settings.split_side, settings.split_stacked);
         self.window_frame = settings.window;
         self.layout.sidebar_open = settings.sidebar_open;
+        self.mascot_on = settings.mascot;
         self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
         self.hide_closed_days = settings.hide_closed_days.clamp(1, MAX_HIDE_DAYS);
@@ -1392,6 +1397,7 @@ impl Workspace {
                 .iter()
                 .map(|c| c.setting().to_string())
                 .collect(),
+            mascot: self.mascot_on,
         }
     }
 
@@ -2045,9 +2051,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Runs the cat's timer only while the sidebar is on screen.
+    /// Runs the cat's timer only while the sidebar is on screen and the
+    /// cat is on.
     fn sync_mascot(&mut self, cx: &mut Context<Self>) {
-        let shown = self.sidebar_shown();
+        let shown = self.mascot_on && self.sidebar_shown();
         self.mascot
             .update(cx, |mascot, cx| mascot.set_shown(shown, cx));
     }
@@ -2185,6 +2192,15 @@ impl Workspace {
             }
             cx.notify();
         });
+        self.persist(cx);
+    }
+
+    /// The Settings switch for the cat. Off, the cat and its strip leave
+    /// the sidebar. On again, it walks in as when the sidebar opens.
+    pub fn set_mascot(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.mascot_on = on;
+        self.sync_mascot(cx);
+        cx.notify();
         self.persist(cx);
     }
 

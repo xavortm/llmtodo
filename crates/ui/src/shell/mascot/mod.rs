@@ -8,8 +8,9 @@
 //! one exception to the rule that every clickable element shows both.
 //!
 //! The mascot is its own entity, so a new frame notifies only this view.
-//! Its timer runs only while the sidebar is on screen: the workspace calls
-//! `set_shown`.
+//! Its timer runs only while the sidebar is on screen and the Settings
+//! switch is on: the workspace calls `set_shown`. With the switch off, the
+//! workspace does not draw the strip at all.
 
 pub mod behaviour;
 pub mod sprites;
@@ -44,6 +45,9 @@ const INSET: i32 = 2;
 const PRESSED_SCALE: f32 = 0.98;
 
 pub const CAT_ID: &str = "mascot-cat";
+
+/// The strip under the sidebar that holds the cat.
+pub const STRIP_ID: &str = "mascot";
 
 /// Whether an agent works on any task not in the Trash: it holds a claim,
 /// or an Analyzing mark that has not expired at `now`.
@@ -210,7 +214,8 @@ impl Render for Mascot {
         let visible = self.behaviour.visible();
         let drawn = if self.pressed { PRESSED_SCALE } else { 1. };
         div()
-            .id("mascot")
+            .id(STRIP_ID)
+            .test_support()
             .relative()
             .w_full()
             .h(frame)

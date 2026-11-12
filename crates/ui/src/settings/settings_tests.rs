@@ -173,6 +173,11 @@ fn a_click_on_a_switch_row_applies_and_saves_at_once(cx: &mut TestAppContext) {
     click(handle, "settings-row-open-last", cx);
     assert!(!store.load().open_last_view);
 
+    click(handle, "settings-row-mascot", cx);
+    assert!(!store.load().mascot);
+    click(handle, "settings-row-mascot", cx);
+    assert!(store.load().mascot);
+
     assert_eq!(
         cx.read(|cx| view.read(cx).current_settings(cx).theme),
         "dark"
