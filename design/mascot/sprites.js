@@ -31,6 +31,7 @@
       D: "#6b7189", // laptop base
       C: "#ffffff", // laptop logo
       Z: "#7d84a0", // sleep z
+      H: "#d3d7e2", // ground shadow under a jump
     },
     // White cat on a dark background. The outline is white too, so the cat
     // is a clean white shape. Grey inner lines keep the face and legs clear.
@@ -51,6 +52,7 @@
       D: "#343749",
       C: "#bfe8ff",
       Z: "#9aa6c7",
+      H: "#2c2e3b",
     },
   };
 
@@ -137,6 +139,8 @@
     tailRight: ["......K.", ".....KWK", "....KWK.", "...KWK..", ...BASE_SIT_TAIL],
     tailHalfL: ["...K....", "..KWK...", "...KWK..", "...KWK..", ...BASE_SIT_TAIL],
     tailLeft: ["..K.....", ".KWK....", "..KWK...", "...KWK..", ...BASE_SIT_TAIL],
+    // Startled: the tail puffs up and stands straight.
+    tailPuff: ["...KK...", "..KWWK..", ".KWWWWK.", "..KWWK..", ...BASE_SIT_TAIL],
     // Side view, facing right.
     bodySide: [
       "..KKKKKKKKKKKK..",
@@ -196,6 +200,8 @@
     blink: ["Q", [2, 7], [3, 7], [4, 7], [8, 7], [9, 7], [10, 7]],
     sleep: ["Q", [2, 6], [3, 7], [4, 6], [8, 6], [9, 7], [10, 6]],
     happy: ["Q", [3, 6], [2, 7], [4, 7], [9, 6], [8, 7], [10, 7]],
+    // Startled: tall, wide-open eyes.
+    wide: ["E", [3, 5], [3, 6], [3, 7], [9, 5], [9, 6], [9, 7]],
   };
 
   const toGrid = (rows) => rows.map((r) => r.split(""));
@@ -363,6 +369,69 @@
     ]);
   }
 
+  // Startle ----------------------------------------------------------------
+  // The sleeping cat wakes with a jolt, jumps straight up, and lands sitting.
+  // It then hands over to the watch animation.
+
+  // Short lines that flash around the head. "top" is the head's top row,
+  // "cx" its centre column.
+  function shock(top, cx) {
+    const g = Array.from({ length: SIZE }, () => Array(SIZE).fill("."));
+    const put = (x, y) => { if (x >= 0 && x < SIZE && y >= 0 && y < SIZE) g[y][x] = "Z"; };
+    put(cx, top - 3); put(cx, top - 2);
+    put(cx - 8, top); put(cx - 9, top - 1);
+    put(cx + 8, top); put(cx + 9, top - 1);
+    return { g, x: 0, y: 0 };
+  }
+
+  // A flat shadow on the ground, centred under the cat.
+  function shadow(width) {
+    const g = Array.from({ length: SIZE }, () => Array(SIZE).fill("."));
+    const from = 15 - (width >> 1);
+    for (let x = from; x < from + width; x++) g[30][x] = "H";
+    return { g, x: 0, y: 0 };
+  }
+
+  // Still curled up, but the head snaps up with wide eyes.
+  function jolt() {
+    return compose([
+      { g: "bodySleepA", x: 3, y: 22 },
+      { g: "tailSleep", x: 1, y: 27 },
+      { g: head({ eyes: "wide" }), x: 16, y: 16 },
+      shock(16, 22),
+    ]);
+  }
+
+  // The sitting cat, "dy" pixels above the ground and "dx" right of its
+  // sitting spot. The sleeping head lies further right, so the jump starts
+  // there and drifts back. In the air the paws hang below the body.
+  // "squash" drops the head 1px as it lands.
+  function hop({ dy = 0, dx = 0, eyes = "wide", puff = true, lines = false, squash = false, shade = 0 } = {}) {
+    const layers = [];
+    if (shade) layers.push({ ...shadow(shade), x: dx });
+    layers.push({ g: puff ? "tailPuff" : WIGGLE[0], x: 21 + dx, y: 23 - dy });
+    if (dy >= 3) {
+      layers.push({ g: "paw", x: 10 + dx, y: 29 - dy });
+      layers.push({ g: "paw", x: 17 + dx, y: 29 - dy });
+    }
+    layers.push({ g: "bodySit", x: 8 + dx, y: 18 - dy });
+    layers.push({ g: head({ eyes }), x: 9 + dx, y: 9 - dy + (squash ? 1 : 0) });
+    if (lines) layers.push({ ...shock(9 - dy, 15), x: dx });
+    return compose(layers);
+  }
+
+  const STARTLE = [
+    [jolt(), 260],
+    [hop({ dy: 4, dx: 4, lines: true, shade: 9 }), 70],
+    [hop({ dy: 7, dx: 2, lines: true, shade: 7 }), 150],
+    [hop({ dy: 4, dx: 1, shade: 9 }), 70],
+    [hop({ squash: true }), 90],
+    [hop(), 240],
+    [hop({ puff: false }), 220],
+    [hop({ puff: false, eyes: "blink" }), 100],
+    [hop({ puff: false, eyes: "open" }), 200],
+  ];
+
   // Animations ------------------------------------------------------------
   // Each animation keeps its unique frames once, plus a timeline of
   // { i: frame index, ms: duration }. The timeline is what a player loops.
@@ -419,6 +488,13 @@
     sleep: anim(Array.from({ length: 16 }, (_, f) => [sleep(f), 160])),
     walkRight: anim(walkFrames.map((g) => [g, 90])),
     walkLeft: anim(walkFrames.map((g) => [flip(g), 90])),
+    // The startle plays once, from sleep into watch. It does not loop.
+    // A first click on the sleeping cat shows "jolt" for 1 s. A second
+    // click in that time plays "jump". A click within 3 s after the cat
+    // dozed off again plays the whole "startle" at once.
+    startle: anim(STARTLE),
+    jolt: anim([[STARTLE[0][0], 1000]]),
+    jump: anim(STARTLE.slice(1)),
   };
 
   function hexToRgba(hex) {
