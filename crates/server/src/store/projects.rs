@@ -380,10 +380,7 @@ pub async fn delete_milestone(c: &mut SqliteConnection, id: &str) -> ApiResult<(
 mod tests {
     #[test]
     fn slugify() {
-        assert_eq!(
-            super::slugify("Notebook — Web App!"),
-            "notebook-web-app"
-        );
+        assert_eq!(super::slugify("Notebook — Web App!"), "notebook-web-app");
         assert_eq!(super::slugify("  GardenPlanner "), "gardenplanner");
     }
 }

@@ -114,7 +114,14 @@ pub async fn backup(pool: &SqlitePool, data_dir: &Path, reason: &str) -> anyhow:
     std::fs::create_dir_all(&dir)?;
     let stamp = Timestamp::now().strftime("%Y%m%dT%H%M%S%.3fZ");
     let path = dir.join(format!("llmtodo-{reason}-{stamp}.db"));
-    vacuum_into(pool, &path).await?;
+    // The copy gets its real name only once it is whole. A copy cut short by
+    // a crash keeps the `.partial` name, so it never counts as a backup.
+    let partial = path.with_extension("db.partial");
+    vacuum_into(pool, &partial).await?;
+    if let Err(e) = std::fs::rename(&partial, &path) {
+        std::fs::remove_file(&partial).ok();
+        return Err(e).context("name the backup");
+    }
     trim_backups(&dir, reason)?;
     tracing::info!(path = %path.display(), "backup written");
     Ok(path)
@@ -127,11 +134,18 @@ pub async fn vacuum_into(pool: &SqlitePool, path: &Path) -> anyhow::Result<()> {
 
 pub async fn vacuum_into_conn(conn: &mut SqliteConnection, path: &Path) -> anyhow::Result<()> {
     let target = path.to_str().context("backup path is not UTF-8")?;
-    sqlx::query("VACUUM INTO ?")
+    let done = sqlx::query("VACUUM INTO ?")
         .bind(target)
         .execute(&mut *conn)
-        .await
-        .context("VACUUM INTO")?;
+        .await;
+    if let Err(e) = done {
+        // A failed copy, such as on a full disk, can leave part of a file.
+        std::fs::remove_file(path).ok();
+        let mut journal = path.as_os_str().to_owned();
+        journal.push("-journal");
+        std::fs::remove_file(journal).ok();
+        return Err(e).context("VACUUM INTO");
+    }
     Ok(())
 }
 
@@ -163,6 +177,7 @@ pub fn newest_daily_backup(data_dir: &Path) -> Option<std::time::SystemTime> {
             e.file_name()
                 .to_string_lossy()
                 .starts_with("llmtodo-daily-")
+                && e.file_name().to_string_lossy().ends_with(".db")
         })
         .filter_map(|e| e.metadata().ok()?.modified().ok())
         .max()

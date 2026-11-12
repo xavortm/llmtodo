@@ -363,6 +363,7 @@ pub async fn poll(st: &AppState, api: &impl GithubApi) -> ApiResult<GithubReport
         let commits = &commit_walk.items;
 
         let mut w = Write::begin(st, &ctx).await?;
+        let changes_before = w.changes().await?;
         for pr in prs {
             report.pull_requests_seen += 1;
             let branch = pr["head"]["ref"].as_str().unwrap_or_default();
@@ -428,6 +429,11 @@ pub async fn poll(st: &AppState, api: &impl GithubApi) -> ApiResult<GithubReport
                     report.attached += 1;
                 }
             }
+        }
+        // A poll that changed nothing but its poll time leaves the unpushed
+        // count alone, so an idle server has nothing to push.
+        if w.changes().await? == changes_before {
+            w.skip_sync_count();
         }
         // Move the poll time only when both walks reached the last poll, so
         // a cut-short walk is read again next time.

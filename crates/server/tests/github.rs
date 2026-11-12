@@ -177,9 +177,17 @@ async fn pull_requests_attach_and_move_issues() {
     assert_eq!(moved["actor"]["name"], "github");
 
     // The next poll sends the ETag and gets 304, so nothing changes.
+    let dirty = || async {
+        llmtodo_server::db::get_setting(&running.state.pool(), "sync_dirty")
+            .await
+            .unwrap()
+    };
+    let before = dirty().await;
     let r = poll(&running.state, &api).await.unwrap();
     assert_eq!(r.pull_requests_seen, 0);
     assert!(r.moves.is_empty());
+    // LLM-181: a poll that changed nothing adds no unpushed write.
+    assert_eq!(dirty().await, before);
     running.stop().await.unwrap();
 }
 

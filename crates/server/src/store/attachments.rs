@@ -96,13 +96,20 @@ pub async fn update_title_metadata(
     metadata: String,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE attachments SET title = coalesce(?, title), metadata = CASE WHEN ? = '{}' THEN metadata ELSE ? END WHERE id = ?")
-        .bind(title)
-        .bind(&metadata)
-        .bind(&metadata)
-        .bind(id)
-        .execute(&mut *c)
-        .await?;
+    // Skips the row when nothing differs, so a PR read again counts as no
+    // change.
+    sqlx::query(
+        "UPDATE attachments SET title = coalesce(?1, title),
+             metadata = CASE WHEN ?2 = '{}' THEN metadata ELSE ?2 END
+         WHERE id = ?3
+           AND (title IS NOT coalesce(?1, title)
+                OR metadata IS NOT CASE WHEN ?2 = '{}' THEN metadata ELSE ?2 END)",
+    )
+    .bind(title)
+    .bind(&metadata)
+    .bind(id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 

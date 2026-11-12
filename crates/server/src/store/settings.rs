@@ -11,6 +11,14 @@ pub async fn model_prices_raw(c: &mut SqliteConnection) -> ApiResult<Option<Stri
     )
 }
 
+/// Rows that inserts, updates and deletes changed on this connection since
+/// it opened.
+pub async fn total_changes(c: &mut SqliteConnection) -> ApiResult<i64> {
+    Ok(sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(&mut *c)
+        .await?)
+}
+
 pub async fn bump_sync_dirty(c: &mut SqliteConnection) -> ApiResult<()> {
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES ('sync_dirty', '1')

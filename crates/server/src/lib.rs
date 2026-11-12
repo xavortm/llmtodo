@@ -162,6 +162,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         shutdown: Notify::new(),
         is_primary: AtomicBool::new(is_primary),
         writes: Default::default(),
+        write_queue: Default::default(),
         route_log: Default::default(),
     }));
 
@@ -221,6 +222,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
 /// day, because the server may not run every day.
 async fn backup_loop(state: AppState) {
     let day = Duration::from_secs(24 * 3600);
+    let mut failures = 0u32;
     loop {
         let due = match db::newest_daily_backup(&state.data_dir) {
             None => Duration::ZERO,
@@ -234,16 +236,32 @@ async fn backup_loop(state: AppState) {
             Ok(mut c) => store::issues::count_all(&mut c).await.unwrap_or(0),
             Err(_) => 0,
         };
-        if (has_data > 0 || due.is_zero())
-            && let Err(e) = db::backup(&state.pool(), &state.data_dir, "daily").await
-        {
-            tracing::warn!(error = %e, "daily backup failed");
+        if has_data > 0 || due.is_zero() {
+            match db::backup(&state.pool(), &state.data_dir, "daily").await {
+                Ok(_) => failures = 0,
+                Err(e) => {
+                    failures = failures.saturating_add(1);
+                    tracing::warn!(error = %e, failures, "daily backup failed");
+                }
+            }
         }
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+            _ = tokio::time::sleep(backup_retry_delay(failures)) => {}
             _ = state.shutdown.notified() => return,
         }
     }
+}
+
+/// The pause before the backup loop looks again. A failed backup copies the
+/// whole database, so each failure in a row doubles the pause, from 2 minutes
+/// up to 6 hours.
+fn backup_retry_delay(failures: u32) -> Duration {
+    let minute = Duration::from_secs(60);
+    if failures == 0 {
+        return minute;
+    }
+    let cap = Duration::from_secs(6 * 3600);
+    minute.saturating_mul(1u32 << failures.min(16)).min(cap)
 }
 
 /// Logs to stderr and to daily files in `logs/` of the data folder.
@@ -275,4 +293,24 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
     });
     running.wait().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_backup_backs_off_up_to_six_hours() {
+        let mins = |f| backup_retry_delay(f).as_secs() / 60;
+        assert_eq!(
+            mins(0),
+            1,
+            "after a success the loop looks again each minute"
+        );
+        assert_eq!(mins(1), 2);
+        assert_eq!(mins(2), 4);
+        assert_eq!(mins(5), 32);
+        assert_eq!(mins(9), 360);
+        assert_eq!(mins(u32::MAX), 360);
+    }
 }

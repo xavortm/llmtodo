@@ -13,7 +13,7 @@ use llmtodo_api_types::{
     WsMessage,
 };
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use tokio::sync::{Notify, OwnedRwLockReadGuard, RwLock, broadcast};
+use tokio::sync::{Notify, OwnedMutexGuard, OwnedRwLockReadGuard, RwLock, broadcast};
 
 use crate::error::{ApiError, ApiResult};
 use crate::store;
@@ -37,6 +37,11 @@ pub struct Inner {
     /// Each write holds a read guard for its whole transaction. Sync pull
     /// takes the write guard, so it waits for writes in flight to finish.
     pub writes: Arc<RwLock<()>>,
+    /// Writers queue here before they take a pool connection. SQLite runs
+    /// one write at a time, so a writer that waited on `BEGIN IMMEDIATE`
+    /// instead would hold a connection idle, and a burst of writes would
+    /// take every connection from the readers.
+    pub write_queue: Arc<tokio::sync::Mutex<()>>,
     /// Each request's method and route, such as `GET /v1/issues/{issue}`,
     /// while a test records them. None, and free, otherwise.
     pub route_log: std::sync::Mutex<Option<Vec<String>>>,
@@ -126,6 +131,12 @@ pub struct Write<'a> {
     /// Issues in the order the write touched them. The first one gets the
     /// write's token usage.
     touched: Vec<String>,
+    /// False when the write changed only bookkeeping, such as a GitHub
+    /// poll's poll time. Commit then leaves `sync_dirty` alone.
+    count_for_sync: bool,
+    /// This write's place at the head of `write_queue`. Dropped right after
+    /// the transaction ends.
+    queue: OwnedMutexGuard<()>,
     /// Dropped after the transaction ends.
     _guard: OwnedRwLockReadGuard<()>,
 }
@@ -140,6 +151,7 @@ impl<'a> Write<'a> {
                 "this machine is not the primary copy; run `llmtodo sync pull` to take over",
             ));
         }
+        let queue = state.write_queue.clone().lock_owned().await;
         let tx = state.pool().begin_with("BEGIN IMMEDIATE").await?;
         Ok(Self {
             tx,
@@ -147,8 +159,21 @@ impl<'a> Write<'a> {
             state: state.clone(),
             seqs: Vec::new(),
             touched: Vec::new(),
+            count_for_sync: true,
+            queue,
             _guard: guard,
         })
+    }
+
+    /// Marks this write as bookkeeping only, so a sync push need not carry it.
+    pub fn skip_sync_count(&mut self) {
+        self.count_for_sync = false;
+    }
+
+    /// Rows changed on this write's connection so far. Compare two readings
+    /// to learn whether a step changed anything.
+    pub async fn changes(&mut self) -> ApiResult<i64> {
+        store::settings::total_changes(&mut self.tx).await
     }
 
     /// The connection, for queries.
@@ -226,8 +251,12 @@ impl<'a> Write<'a> {
         }
         // Counts writes since the last sync push. Push clears it only when
         // the count still equals the one inside its copy.
-        store::settings::bump_sync_dirty(&mut self.tx).await?;
+        if self.count_for_sync {
+            store::settings::bump_sync_dirty(&mut self.tx).await?;
+        }
         self.tx.commit().await?;
+        // The next writer may start now. Sending events needs no write.
+        drop(self.queue);
         if let Some(&mine) = self.seqs.iter().max() {
             // Writes commit in seq order, because each holds the write lock.
             // They can reach this point out of order, so each one sends
