@@ -471,6 +471,7 @@ impl Workspace {
                 let open = task.read(cx).detail().map(|d| d.issue);
                 if open != this.history_for {
                     this.history_for = open;
+                    this.request(backend::Request::Open { id: open });
                     this.request_history(cx);
                 }
             }),
@@ -616,12 +617,24 @@ impl Workspace {
         self.backend = Some(backend);
         self.set_connection(Connection::Connecting, cx);
         self.message = "Connecting to the llmtodo server".into();
+        // The thread starts with no open task.
+        self.request(backend::Request::Open {
+            id: self.history_for,
+        });
         self._events = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
-                if this
-                    .update(cx, |this, cx| this.apply_event(event, cx))
-                    .is_err()
-                {
+                // Apply every event that already waits in one update, so the
+                // store's observers run once per burst, not once per event.
+                let mut batch = vec![event];
+                while let Ok(more) = events.try_recv() {
+                    batch.push(more);
+                }
+                let applied = this.update(cx, |this, cx| {
+                    for event in batch {
+                        this.apply_event(event, cx);
+                    }
+                });
+                if applied.is_err() {
                     break;
                 }
             }
@@ -899,7 +912,8 @@ impl Workspace {
             let wants_text = store
                 .get(id)
                 .is_some_and(|i| !i.description_loaded && asked != Some(id));
-            if store.git(id).is_some() && !wants_text {
+            let stale = store.take_stale_detail(id);
+            if store.git(id).is_some() && !wants_text && !stale {
                 return (None, false);
             }
             if store.git(id).is_none() {

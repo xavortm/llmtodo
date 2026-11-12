@@ -72,16 +72,16 @@ fn open_with_relations(
     run(handle, view, &format!("open {}", key.to_lowercase()), cx);
     let id = cx.read(|cx| view.read(cx).store().read(cx).by_key(key).unwrap().id);
     view.update(cx, |this, cx| {
-        this.apply_event(
-            crate::model::backend::Event::Relations {
+        this.store().update(cx, |store, cx| {
+            store.set_relations(
                 id,
-                relations: vec![
+                vec![
                     relation("blocked-by", "LLM-101", "Done", "completed"),
                     relation("blocks", "LLM-106", "Todo", "unstarted"),
                 ],
-            },
-            cx,
-        );
+            );
+            cx.notify();
+        });
     });
     cx.run_until_parked();
 }

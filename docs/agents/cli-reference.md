@@ -88,6 +88,7 @@ Read an issue with its comments, relations and work log
 
 List issues that match filters. Sorted by priority, then last update
 
+- `--key <keys>` (repeatable): Only this issue, by key. Repeat for several. Unknown keys are skipped. Skips the default project from `.llmtodo.toml`
 - `--team <team>` (repeatable)
 - `--project <project>` (repeatable)
 - `--all-projects` (one of: true, false): Search every project. Skips the default project from `.llmtodo.toml`
@@ -557,6 +558,7 @@ Create a team with the default statuses
 Save the filters of `issue query` under a name
 
 - `<name>`
+- `--key <keys>` (repeatable): Only this issue, by key. Repeat for several. Unknown keys are skipped. Skips the default project from `.llmtodo.toml`
 - `--team <team>` (repeatable)
 - `--project <project>` (repeatable)
 - `--all-projects` (one of: true, false): Search every project. Skips the default project from `.llmtodo.toml`
@@ -586,6 +588,7 @@ Save the filters of `issue query` under a name
 - `<target>`
 - `--name <name>`
 - `--replace-query` (one of: true, false): Replace the saved filters with these
+- `--key <keys>` (repeatable): Only this issue, by key. Repeat for several. Unknown keys are skipped. Skips the default project from `.llmtodo.toml`
 - `--team <team>` (repeatable)
 - `--project <project>` (repeatable)
 - `--all-projects` (one of: true, false): Search every project. Skips the default project from `.llmtodo.toml`

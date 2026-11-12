@@ -264,6 +264,7 @@ pub async fn restore(w: &mut Write<'_>, r: &str, req: RestoreRequest) -> ApiResu
 
 /// Filters set in `extra` narrow the saved `base` query.
 fn merge_query(mut base: IssueQuery, extra: IssueQuery) -> IssueQuery {
+    base.keys.extend(extra.keys);
     base.teams.extend(extra.teams);
     base.projects.extend(extra.projects);
     base.filter.narrow(extra.filter);

@@ -33,12 +33,24 @@ impl Workspace {
                 self.loaded_tracker(cx);
             }
             backend::Event::Catalog(data) => self.apply_catalog(catalog_of(&data), cx),
-            backend::Event::Issue(issue) => {
+            backend::Event::Issue(issue) => self.receive_rows(vec![*issue], cx),
+            backend::Event::Issues(issues) => self.receive_rows(issues, cx),
+            backend::Event::IssueDetail(parts) => {
+                let backend::DetailParts {
+                    issue,
+                    relations,
+                    reviews,
+                    git,
+                } = *parts;
                 let issue = Issue::from_api(&issue, &self.store.read(cx).catalog);
-                // A change to the open task adds to its history.
-                let open = Some(issue.id) == self.history_for;
+                let id = issue.id;
+                self.store.update(cx, |store, cx| {
+                    store.set_detail(id, relations, reviews, git);
+                    cx.notify();
+                });
                 self.receive_issue(issue, cx);
-                if open {
+                // A change to the open task adds to its history.
+                if Some(id) == self.history_for {
                     self.request_history(cx);
                 }
             }
@@ -74,24 +86,6 @@ impl Workspace {
             backend::Event::ViewFailed { name, message } => {
                 self.message = format!("View {name}: {message}").into();
             }
-            backend::Event::Git { id, git } => {
-                self.store.update(cx, |store, cx| {
-                    store.set_git(id, *git);
-                    cx.notify();
-                });
-            }
-            backend::Event::Reviews { id, reviews } => {
-                self.store.update(cx, |store, cx| {
-                    store.set_reviews(id, reviews);
-                    cx.notify();
-                });
-            }
-            backend::Event::Relations { id, relations } => {
-                self.store.update(cx, |store, cx| {
-                    store.set_relations(id, relations);
-                    cx.notify();
-                });
-            }
             backend::Event::Dependents(issues) => {
                 self.store.update(cx, |store, cx| {
                     for api in &issues {
@@ -114,6 +108,27 @@ impl Workspace {
             } => self.on_write_failed(key, kind, message, stale, cx),
         }
         cx.notify();
+    }
+
+    /// Puts in list copies of issues. They carry no detail, so the detail
+    /// the store holds for them may be old now.
+    fn receive_rows(&mut self, rows: Vec<llmtodo_client::types::Issue>, cx: &mut Context<Self>) {
+        let issues: Vec<Issue> = {
+            let catalog = &self.store.read(cx).catalog;
+            rows.iter().map(|i| Issue::from_api(i, catalog)).collect()
+        };
+        self.store.update(cx, |store, _| {
+            for issue in &issues {
+                store.mark_detail_stale(issue.id);
+            }
+        });
+        let open = issues.iter().any(|i| Some(i.id) == self.history_for);
+        for issue in issues {
+            self.receive_issue(issue, cx);
+        }
+        if open {
+            self.request_history(cx);
+        }
     }
 
     /// An answer about another tracker's teams.

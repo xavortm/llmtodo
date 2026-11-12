@@ -512,6 +512,7 @@ async fn push_filters(
     me: &Actor,
     q: &IssueQuery,
 ) -> ApiResult<()> {
+    push_key_filter(b, conn, q).await?;
     push_org_filters(b, conn, q).await?;
     filter::push(b, conn, me, &q.filter).await?;
     push_link_filters(b, conn, q).await?;
@@ -524,6 +525,31 @@ async fn push_filters(
             .push("))");
     }
     push_field_filters(b, q)?;
+    Ok(())
+}
+
+/// Keeps only the issues named in `q.keys`. A key that names no issue is
+/// skipped, so a list of keys from live events never fails on one that
+/// went away.
+async fn push_key_filter(
+    b: &mut QueryBuilder<Sqlite>,
+    conn: &mut SqliteConnection,
+    q: &IssueQuery,
+) -> ApiResult<()> {
+    if q.keys.is_empty() {
+        return Ok(());
+    }
+    let mut ids = Vec::with_capacity(q.keys.len());
+    for k in &q.keys {
+        match resolve_id(conn, k).await {
+            Ok(id) => ids.push(id),
+            Err(e) if e.code == llmtodo_api_types::ErrorCode::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    b.push(" AND i.id IN (SELECT value FROM json_each(")
+        .push_bind(serde_json::to_string(&ids)?)
+        .push("))");
     Ok(())
 }
 

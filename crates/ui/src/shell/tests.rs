@@ -2260,13 +2260,10 @@ fn the_git_panel_shows_branch_pr_and_commits(cx: &mut TestAppContext) {
         repo_url: None,
     };
     view.update(cx, |this, cx| {
-        this.apply_event(
-            crate::model::backend::Event::Git {
-                id,
-                git: Box::new(git),
-            },
-            cx,
-        )
+        this.store().update(cx, |store, cx| {
+            store.set_git(id, git);
+            cx.notify();
+        })
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -2302,13 +2299,10 @@ fn an_open_commit_list_keeps_its_toggle_and_the_preview_in_reach(cx: &mut TestAp
         ..Default::default()
     };
     view.update(cx, |this, cx| {
-        this.apply_event(
-            crate::model::backend::Event::Git {
-                id,
-                git: Box::new(git),
-            },
-            cx,
-        )
+        this.store().update(cx, |store, cx| {
+            store.set_git(id, git);
+            cx.notify();
+        })
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -2366,13 +2360,10 @@ fn commit_hashes_link_to_the_remote(cx: &mut TestAppContext) {
             ..Default::default()
         };
         view.update(cx, |this, cx| {
-            this.apply_event(
-                crate::model::backend::Event::Git {
-                    id,
-                    git: Box::new(git),
-                },
-                cx,
-            )
+            this.store().update(cx, |store, cx| {
+                store.set_git(id, git);
+                cx.notify();
+            })
         });
     };
     send(Some("https://github.com/o/r"), cx);

@@ -96,9 +96,14 @@ pub enum Request {
     },
     /// Load everything again.
     Reload,
-    /// Send a fresh copy of one issue, trashed or not.
+    /// Send a fresh copy of one issue, trashed or not, with its detail.
     Fetch {
         key: String,
+    },
+    /// The task the panel shows, or none. Live refreshes fetch the full
+    /// detail and run git only for this one.
+    Open {
+        id: Option<IssueId>,
     },
     /// Send the IDs of the issues a saved view holds.
     ViewIssues {
@@ -148,26 +153,14 @@ pub enum Event {
     /// Statuses, labels, teams, projects, views or documents changed. No
     /// issues come with it: the app maps the issues it holds again.
     Catalog(Box<CatalogData>),
-    /// A fresh copy of one issue, after a live event or a write.
+    /// A fresh list copy of one issue, after a write that returns no
+    /// detail.
     Issue(Box<Issue>),
-    /// The git panel of one issue, with its commits read from the local
-    /// repo. It follows the issue's own event.
-    Git {
-        id: IssueId,
-        git: Box<IssueGit>,
-    },
-    /// The relations of one issue, for the dependency section. It follows
-    /// the issue's own event.
-    Relations {
-        id: IssueId,
-        relations: Vec<Relation>,
-    },
-    /// The review answers of one issue, oldest first. It follows the
-    /// issue's own event.
-    Reviews {
-        id: IssueId,
-        reviews: Vec<llmtodo_api_types::ReviewAnswer>,
-    },
+    /// Fresh list copies of the issues live events touched, with their
+    /// text. The open task comes as [`Event::IssueDetail`] instead.
+    Issues(Vec<Issue>),
+    /// One issue with everything the task panel shows, in one event.
+    IssueDetail(Box<DetailParts>),
     /// Fresh copies of the tasks that wait for a task that changed. They
     /// come without descriptions: only depth and open blockers apply.
     Dependents(Vec<Issue>),
@@ -239,6 +232,18 @@ pub enum Event {
         /// The description changed on the server since the owner opened it.
         stale: bool,
     },
+}
+
+/// The parts of an issue's detail that the app keeps.
+#[derive(Debug, Clone)]
+pub struct DetailParts {
+    pub issue: Issue,
+    /// The relations, for the dependency section.
+    pub relations: Vec<Relation>,
+    /// The review answers, oldest first.
+    pub reviews: Vec<llmtodo_api_types::ReviewAnswer>,
+    /// The git panel, with its commits read from the local repo.
+    pub git: IssueGit,
 }
 
 /// Where the data folder is, and which binary starts a server.
@@ -428,6 +433,7 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                     Some(Request::Fetch { key }) => {
                         state.pending.keys.insert(key);
                     }
+                    Some(Request::Open { id }) => state.open = id,
                     Some(Request::ViewIssues { name } | Request::DeleteView { name }) => {
                         send(&events, Event::ViewFailed {
                             name,
@@ -475,6 +481,8 @@ struct State {
     connected: bool,
     /// When this thread last started a server, until a session connects.
     spawned_at: Option<Instant>,
+    /// The task the panel shows. Only it gets its full detail and git.
+    open: Option<IssueId>,
 }
 
 impl State {
@@ -550,7 +558,7 @@ async fn session(
         // First connect, or a new database with fewer events.
         _ => state.pending.reload = true,
     }
-    flush(&client, &mut state.pending, events).await?;
+    flush(&client, &mut state.pending, state.open, events).await?;
     state.last_seq = Some(hello_seq);
 
     loop {
@@ -573,8 +581,10 @@ async fn session(
                         return Err(e);
                     }
                 }
+                Some(Request::Open { id }) => state.open = id,
                 Some(Request::Write { key, write, kind }) => {
-                    if let Err(e) = apply_write(&client, &key, write, kind, events).await {
+                    let open = state.open;
+                    if let Err(e) = apply_write(&client, &key, write, kind, open, events).await {
                         state.pending.keys.insert(key);
                         return Err(e);
                     }
@@ -637,7 +647,7 @@ async fn session(
                 Some(Request::Create(c)) => match client.create_issue(&c).await {
                     Ok(detail) => {
                         let (id, key) = (detail.issue.id, detail.issue.key.to_string());
-                        send_issue_and_git(detail, events).await;
+                        send_detail(detail, events).await;
                         send(events, Event::Created { id, key });
                     }
                     Err(ClientError::Unreachable(e)) => {
@@ -677,7 +687,7 @@ async fn session(
                 }
             },
             _ = &mut settle, if !state.pending.is_empty() => {
-                flush(&client, &mut state.pending, events).await?;
+                flush(&client, &mut state.pending, state.open, events).await?;
             }
         }
     }
@@ -781,7 +791,12 @@ async fn catch_up(client: &Client, after: i64, pending: &mut Pending) -> Result<
 
 /// Sends what `pending` asks for. Work is removed only once it is done, so
 /// a failure partway leaves the rest for the next connect.
-async fn flush(client: &Client, pending: &mut Pending, events: &Events) -> Result<(), String> {
+async fn flush(
+    client: &Client,
+    pending: &mut Pending,
+    open: Option<IssueId>,
+    events: &Events,
+) -> Result<(), String> {
     if pending.reload {
         snapshot(client, events).await?;
         pending.reload = false;
@@ -794,9 +809,10 @@ async fn flush(client: &Client, pending: &mut Pending, events: &Events) -> Resul
         catalog(client, events).await?;
         pending.catalog = false;
     }
-    while let Some(key) = pending.keys.first().cloned() {
-        refresh(client, &key, events).await?;
-        pending.keys.remove(&key);
+    if !pending.keys.is_empty() {
+        let keys: Vec<String> = pending.keys.iter().cloned().collect();
+        refresh_rows(client, keys, open, events).await?;
+        pending.keys.clear();
     }
     while let Some(key) = pending.dependents_of.first().cloned() {
         dependents(client, &key, events).await?;
@@ -956,33 +972,19 @@ fn local_host() -> Option<String> {
     .clone()
 }
 
-/// Sends the issue, then its git panel. The commits come from each session's
-/// worktree, or from the project folder once a worktree is gone. Git runs
-/// off the async runtime.
-async fn send_issue_and_git(detail: IssueDetail, events: &Events) {
-    let id = detail.issue.id;
-    send(events, Event::Issue(Box::new(detail.issue.clone())));
+/// Sends the issue with its relations, reviews and git panel, as one
+/// event. The commits come from each session's worktree, or from the
+/// project folder once a worktree is gone. Git runs off the async runtime.
+async fn send_detail(detail: IssueDetail, events: &Events) {
+    let detail = with_commits(detail).await;
     send(
         events,
-        Event::Relations {
-            id,
-            relations: detail.relations.clone(),
-        },
-    );
-    send(
-        events,
-        Event::Reviews {
-            id,
-            reviews: detail.reviews.clone(),
-        },
-    );
-    let git = with_commits(detail).await.git;
-    send(
-        events,
-        Event::Git {
-            id,
-            git: Box::new(git),
-        },
+        Event::IssueDetail(Box::new(DetailParts {
+            issue: detail.issue,
+            relations: detail.relations,
+            reviews: detail.reviews,
+            git: detail.git,
+        })),
     );
 }
 
@@ -1007,11 +1009,12 @@ async fn with_commits(detail: IssueDetail) -> IssueDetail {
     .unwrap_or(plain)
 }
 
-/// Sends a fresh copy of one issue. An unknown key is skipped.
+/// Sends a fresh copy of one issue with its detail. An unknown key is
+/// skipped.
 async fn refresh(client: &Client, key: &str, events: &Events) -> Result<(), String> {
     match client.issue(key).await {
         Ok(detail) => {
-            send_issue_and_git(detail, events).await;
+            send_detail(detail, events).await;
             Ok(())
         }
         Err(ClientError::Unreachable(e)) => Err(e),
@@ -1019,11 +1022,55 @@ async fn refresh(client: &Client, key: &str, events: &Events) -> Result<(), Stri
     }
 }
 
+/// Sends fresh list copies of the issues `keys` name, live or trashed, in
+/// one query each. They carry their text, so the inbox reads new questions.
+/// The open task gets its full detail instead. Unknown keys are skipped.
+async fn refresh_rows(
+    client: &Client,
+    keys: Vec<String>,
+    open: Option<IssueId>,
+    events: &Events,
+) -> Result<(), String> {
+    let live = IssueQuery {
+        keys,
+        include_description: true,
+        order: Some(IssueOrder::Id),
+        ..Default::default()
+    };
+    let trash = IssueQuery {
+        trashed: true,
+        ..live.clone()
+    };
+    let (mut rows, trashed) =
+        match tokio::try_join!(client.query_all(&live), client.query_all(&trash)) {
+            Ok(found) => found,
+            Err(ClientError::Unreachable(e)) => return Err(e),
+            Err(_) => return Ok(()),
+        };
+    rows.extend(trashed);
+    let mut open_key = None;
+    rows.retain(|issue| {
+        let is_open = Some(issue.id) == open;
+        if is_open {
+            open_key = Some(issue.key.to_string());
+        }
+        !is_open
+    });
+    if !rows.is_empty() {
+        send(events, Event::Issues(rows));
+    }
+    if let Some(key) = open_key {
+        refresh(client, &key, events).await?;
+    }
+    Ok(())
+}
+
 async fn apply_write(
     client: &Client,
     key: &str,
     write: Write,
     kind: WriteKind,
+    open: Option<IssueId>,
     events: &Events,
 ) -> Result<(), String> {
     let mut detail = None;
@@ -1062,9 +1109,10 @@ async fn apply_write(
     match result {
         Ok(issue) => {
             let version = issue.description_version;
+            // Only the open task needs its detail and a git run.
             match detail {
-                Some(d) => send_issue_and_git(d, events).await,
-                None => send(events, Event::Issue(Box::new(issue))),
+                Some(d) if Some(d.issue.id) == open => send_detail(d, events).await,
+                _ => send(events, Event::Issue(Box::new(issue))),
             }
             send(
                 events,
@@ -1094,7 +1142,7 @@ async fn apply_write(
                 primary(client, events).await?;
             }
             // Undo the app's early change with the server's copy.
-            refresh(client, key, events).await
+            refresh_rows(client, vec![key.to_string()], open, events).await
         }
     }
 }

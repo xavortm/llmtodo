@@ -163,6 +163,10 @@ pub fn parse_options(raw: &[String]) -> CliResult<Vec<llmtodo_core::QuestionOpti
 
 #[derive(Args, Default)]
 pub struct QueryArgs {
+    /// Only this issue, by key. Repeat for several. Unknown keys are
+    /// skipped. Skips the default project from `.llmtodo.toml`.
+    #[arg(long = "key")]
+    pub keys: Vec<String>,
     #[arg(long)]
     pub team: Vec<String>,
     #[arg(long)]
@@ -234,6 +238,7 @@ impl QueryArgs {
         // Duplicate search always spans every project, so an agent finds a
         // duplicate that lives outside the repo's default project.
         let use_default = self.project.is_empty()
+            && self.keys.is_empty()
             && !self.all_projects
             && self.similar.is_none()
             && self.view.is_none()
@@ -252,6 +257,7 @@ impl QueryArgs {
             );
         }
         IssueQuery {
+            keys: self.keys,
             teams: self.team,
             projects,
             filter: IssueFilter {

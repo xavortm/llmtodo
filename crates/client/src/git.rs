@@ -273,6 +273,35 @@ pub fn origin_url(repo: &Path) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
+/// How long a remembered `origin` URL stays good. The app reads the git
+/// panel on many refreshes, and a remote rarely changes.
+const ORIGIN_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// [`origin_url`], remembered per repo folder for [`ORIGIN_TTL`], so a
+/// burst of refreshes runs git for it once.
+pub fn origin_url_cached(repo: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    type Cache = HashMap<PathBuf, (Instant, Option<String>)>;
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    let fresh = |at: &Instant| at.elapsed() < ORIGIN_TTL;
+    if let Ok(cache) = CACHE.lock()
+        && let Some((at, url)) = cache.as_ref().and_then(|c| c.get(repo))
+        && fresh(at)
+    {
+        return url.clone();
+    }
+    let url = origin_url(repo);
+    if let Ok(mut cache) = CACHE.lock() {
+        let cache = cache.get_or_insert_with(HashMap::new);
+        cache.retain(|_, (at, _)| fresh(at));
+        cache.insert(repo.to_path_buf(), (Instant::now(), url.clone()));
+    }
+    url
+}
+
 /// Fills each work session's commits, and the issue's git commits, from
 /// local repos. Only sessions that ran on `host` count. A session reads its
 /// own worktree, or `fallback` when that folder is gone, such as after the
@@ -299,7 +328,7 @@ pub fn fill_commits(d: &mut IssueDetail, host: Option<&str>, fallback: Option<&P
                     s.started_at.as_second(),
                 );
                 if web.is_none() && !s.commits.is_empty() {
-                    web = origin_url(repo).as_deref().and_then(repo_web_url);
+                    web = origin_url_cached(repo).as_deref().and_then(repo_web_url);
                 }
             }
             for c in &s.commits {
@@ -315,7 +344,7 @@ pub fn fill_commits(d: &mut IssueDetail, host: Option<&str>, fallback: Option<&P
     d.git.commits = all;
     d.git.repo_url = web.or_else(|| {
         fallback
-            .and_then(origin_url)
+            .and_then(origin_url_cached)
             .as_deref()
             .and_then(repo_web_url)
     });
@@ -451,6 +480,32 @@ mod tests {
         git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
         let web = origin_url(repo.path()).as_deref().and_then(repo_web_url);
         assert_eq!(web.as_deref(), Some("https://github.com/o/r"));
+    }
+
+    #[test]
+    fn the_cached_origin_url_runs_git_once_per_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(repo.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:o/one.git"]);
+        let first = origin_url_cached(repo.path());
+        assert_eq!(first.as_deref(), Some("git@github.com:o/one.git"));
+        // A second read inside the time limit does not run git again.
+        git(&["remote", "set-url", "origin", "git@github.com:o/two.git"]);
+        assert_eq!(origin_url_cached(repo.path()), first);
+        assert_eq!(
+            origin_url(repo.path()).as_deref(),
+            Some("git@github.com:o/two.git")
+        );
     }
 
     #[test]

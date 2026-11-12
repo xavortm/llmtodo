@@ -16,7 +16,7 @@ use llmtodo_client::types::{
 };
 use serde_json::json;
 
-use crate::model::backend::{Backend, Event, Target, Write, WriteKind};
+use crate::model::backend::{Backend, Event, Request, Target, Write, WriteKind};
 use crate::shell::icons::HasIcon as _;
 
 struct Live {
@@ -184,13 +184,14 @@ fn save(text: &str, version: i64) -> Write {
 /// LLM-1's description and version in a snapshot or a fetched copy.
 fn llm_1_text(event: &Event) -> Option<(String, i64)> {
     let issue = match event {
-        Event::Issue(i) => (**i).clone(),
         Event::Snapshot(s) => s
             .issues
             .iter()
             .find(|i| i.key.to_string() == "LLM-1")?
             .clone(),
-        _ => return None,
+        _ => issues_in(event)
+            .into_iter()
+            .find(|i| i.key.to_string() == "LLM-1")?,
     };
     (issue.key.to_string() == "LLM-1").then(|| {
         (
@@ -222,10 +223,20 @@ async fn start(dir: &Path) -> llmtodo_server::Running {
     llmtodo_server::start(config()).await.unwrap()
 }
 
+/// The one fresh issue copy an event carries, from a write, a fetch or a
+/// live refresh of one issue.
 fn issue_event(event: &Event) -> Option<llmtodo_client::types::Issue> {
+    let mut issues = issues_in(event);
+    (issues.len() == 1).then(|| issues.remove(0))
+}
+
+/// Every fresh issue copy an event carries. Snapshots do not count.
+fn issues_in(event: &Event) -> Vec<llmtodo_client::types::Issue> {
     match event {
-        Event::Issue(issue) => Some((**issue).clone()),
-        _ => None,
+        Event::Issue(issue) => vec![(**issue).clone()],
+        Event::Issues(issues) => issues.clone(),
+        Event::IssueDetail(parts) => vec![parts.issue.clone()],
+        _ => Vec::new(),
     }
 }
 
@@ -233,7 +244,6 @@ fn issue_event(event: &Event) -> Option<llmtodo_client::types::Issue> {
 /// reaches that server.
 #[test]
 fn a_read_only_backend_reads_but_cannot_write() {
-    use crate::model::backend::Request;
     let live = Live::new();
     let (backend, mut events) = live.read_only_backend();
     let snapshot = live.wait(&mut events, "snapshot", |e| match e {
@@ -426,9 +436,8 @@ fn backend_catches_up_after_a_reconnect() {
         matches!(e, Event::Connected { .. }).then_some(())
     });
     let next = live.wait(&mut events, "catch-up", |e| match e {
-        Event::Issue(i) => Some(Ok(i.claim.clone())),
         Event::Snapshot(_) => Some(Err(())),
-        _ => None,
+        e => issue_event(e).map(|i| Ok(i.claim)),
     });
     let claim = next
         .expect("caught up from the activity log, not a full reload")
@@ -618,9 +627,8 @@ fn backend_keeps_events_that_arrive_before_a_disconnect() {
         matches!(e, Event::Connected { .. }).then_some(())
     });
     let claim = live.wait(&mut events, "the claim", |e| match e {
-        Event::Issue(i) => i.claim.clone(),
         Event::Snapshot(s) => s.issues[0].claim.clone(),
-        _ => None,
+        e => issue_event(e).and_then(|i| i.claim),
     });
     assert_eq!(claim.session_id, "agent-3");
 }
@@ -666,7 +674,7 @@ fn backend_sends_the_git_panel_after_a_claim_ends() {
         .unwrap();
     backend.fetch("LLM-1");
     let git = live.wait(&mut events, "git panel", |e| match e {
-        Event::Git { git, .. } => Some((**git).clone()),
+        Event::IssueDetail(parts) => Some(parts.git.clone()),
         _ => None,
     });
     assert_eq!(git.branch.as_deref(), Some("main"));
@@ -748,7 +756,6 @@ fn backend_fails_a_save_whose_request_is_cut_and_refetches() {
 
 #[test]
 fn backend_loads_the_trash_and_saved_views_and_reads_a_view() {
-    use crate::model::backend::Request;
     use llmtodo_client::types::{CreateView, IssueQuery};
 
     let live = Live::new();
@@ -828,7 +835,6 @@ fn backend_loads_the_trash_and_saved_views_and_reads_a_view() {
 
 #[test]
 fn backend_creates_an_issue_and_names_it() {
-    use crate::model::backend::Request;
     use llmtodo_client::types::CreateIssue;
 
     let live = Live::new();
@@ -857,9 +863,8 @@ fn backend_creates_an_issue_and_names_it() {
         "From the app",
         vec!["Area/app".into()],
     ))));
-    let issue = live.wait(&mut events, "the new issue", |e| match e {
-        Event::Issue(i) if i.title == "From the app" => Some((**i).clone()),
-        _ => None,
+    let issue = live.wait(&mut events, "the new issue", |e| {
+        issue_event(e).filter(|i| i.title == "From the app")
     });
     assert_eq!(issue.key.to_string(), "LLM-2");
     assert_eq!(issue.status.name, "In Progress");
@@ -924,8 +929,6 @@ fn backend_says_when_this_machine_stops_being_the_primary() {
 
 #[test]
 fn backend_sends_an_issues_history() {
-    use crate::model::backend::Request;
-
     let live = Live::new();
     let (backend, mut events) = live.backend();
     live.wait(&mut events, "a snapshot", |e| {
@@ -951,8 +954,6 @@ fn backend_sends_an_issues_history() {
 
 #[test]
 fn backend_sends_the_agent_sessions_with_the_history() {
-    use crate::model::backend::Request;
-
     let live = Live::new();
     live.rt
         .block_on(
@@ -980,7 +981,6 @@ fn backend_sends_the_agent_sessions_with_the_history() {
 
 #[test]
 fn backend_reads_and_saves_a_document_on_its_version() {
-    use crate::model::backend::Request;
     use llmtodo_client::types::CreateDocument;
 
     let live = Live::new();
@@ -1145,7 +1145,7 @@ fn backend_sends_open_questions_with_the_snapshot() {
 }
 
 /// LLM-138: the owner approves a ticket in User review. The thread sends
-/// the closed issue, then its review rounds, then the write's result.
+/// the closed issue with its review rounds, then the write's result.
 #[test]
 fn backend_sends_a_review_answer_and_the_rounds() {
     let live = Live::new();
@@ -1173,9 +1173,12 @@ fn backend_sends_a_review_answer_and_the_rounds() {
             .unwrap();
     });
     let (backend, mut events) = live.backend();
-    live.wait(&mut events, "snapshot", |e| {
-        matches!(e, Event::Snapshot(_)).then_some(())
+    let id = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => Some(s.issues[0].id),
+        _ => None,
     });
+    // The panel shows LLM-1, so the write's answer carries its rounds.
+    backend.request(Request::Open { id: Some(id) });
     backend.write(
         "LLM-1",
         Write::Review(llmtodo_api_types::SubmitReview {
@@ -1184,18 +1187,64 @@ fn backend_sends_a_review_answer_and_the_rounds() {
         }),
         WriteKind::Review,
     );
-    let issue = live.wait(&mut events, "the closed issue", |e| {
-        issue_event(e).filter(|i| i.status.name == "Done")
-    });
-    assert_eq!(issue.waiting_on, None);
-    let reviews = live.wait(&mut events, "the rounds", |e| match e {
-        Event::Reviews { reviews, .. } => Some(reviews.clone()),
+    // One event carries the closed issue and its rounds.
+    let parts = live.wait(&mut events, "the closed issue", |e| match e {
+        Event::IssueDetail(parts) if parts.issue.status.name == "Done" => Some(parts.clone()),
         _ => None,
     });
+    assert_eq!(parts.issue.waiting_on, None);
+    let reviews = parts.reviews;
     assert_eq!(reviews.len(), 1);
     assert_eq!(reviews[0].feedback, "Good.");
     live.wait(&mut events, "the write's result", |e| match e {
         Event::WriteDone { kind, .. } => (*kind == WriteKind::Review).then_some(()),
         _ => None,
     });
+}
+
+/// LLM-171: a live event on a task the panel does not show sends one list
+/// copy with its text, and no detail or git panel. Once the panel shows it,
+/// the same kind of event brings its full detail in one event.
+#[test]
+fn only_the_open_task_gets_its_detail_on_live_events() {
+    let live = Live::new();
+    let agent = live.client(Some("agent-171"));
+    let (backend, mut events) = live.backend();
+    let id = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => Some(s.issues[0].id),
+        _ => None,
+    });
+    let set_text = |text: &str| UpdateIssue {
+        description: BodyChange {
+            body: Some(text.into()),
+            force: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    live.rt
+        .block_on(agent.update_issue("LLM-1", &set_text("Not open.\n")))
+        .unwrap();
+    let row = live.wait(&mut events, "the list copy", |e| match e {
+        Event::IssueDetail(_) => Some(Err("a detail for a task that is not open")),
+        Event::Issues(rows) => Some(Ok(rows.clone())),
+        _ => None,
+    });
+    let rows = row.unwrap();
+    assert_eq!(rows.len(), 1);
+    // The text comes along, so the inbox sees new questions.
+    assert_eq!(rows[0].description.as_deref(), Some("Not open.\n"));
+
+    backend.request(Request::Open { id: Some(id) });
+    live.rt
+        .block_on(agent.update_issue("LLM-1", &set_text("Open now.\n")))
+        .unwrap();
+    let parts = live.wait(&mut events, "the detail", |e| match e {
+        Event::Issues(_) => Some(Err("a list copy for the open task")),
+        Event::IssueDetail(parts) => Some(Ok(parts.clone())),
+        _ => None,
+    });
+    let parts = parts.unwrap();
+    assert_eq!(parts.issue.description.as_deref(), Some("Open now.\n"));
 }

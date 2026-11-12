@@ -849,6 +849,75 @@ async fn team_move_keeps_old_key() {
 }
 
 #[tokio::test]
+async fn a_query_by_keys_returns_only_those_issues() {
+    let t = T::new().await;
+    t.ok(
+        &owner(),
+        "POST",
+        "/v1/teams",
+        json!({ "key": "WEB", "name": "Web" }),
+    )
+    .await;
+    let a = t.issue("One", json!({ "team": "ALX" })).await;
+    let b = t.issue("Two", json!({ "team": "ALX" })).await;
+    t.issue("Three", json!({ "team": "ALX" })).await;
+    // An old key still names its issue after a team move.
+    t.ok(
+        &owner(),
+        "PATCH",
+        &format!("/v1/issues/{b}"),
+        json!({ "team": "WEB" }),
+    )
+    .await;
+    let keys = |v: &Value| -> Vec<String> {
+        let mut k: Vec<String> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["key"].as_str().unwrap().to_string())
+            .collect();
+        k.sort();
+        k
+    };
+    let page = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "keys": [a, b, "ALX-99"], "include_description": true }),
+        )
+        .await;
+    assert_eq!(keys(&page), ["ALX-1", "WEB-1"]);
+    // Only unknown keys: an empty page, not an error.
+    let page = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "keys": ["ALX-99"] }),
+        )
+        .await;
+    assert!(keys(&page).is_empty());
+    // The trash filter still applies.
+    t.ok(&owner(), "DELETE", &format!("/v1/issues/{a}"), Value::Null)
+        .await;
+    let live = t
+        .ok(&owner(), "POST", "/v1/issues/query", json!({ "keys": [a] }))
+        .await;
+    assert!(keys(&live).is_empty());
+    let trash = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "keys": [a], "trashed": true }),
+        )
+        .await;
+    assert_eq!(keys(&trash), ["ALX-1"]);
+    t.stop().await;
+}
+
+#[tokio::test]
 async fn guards_and_prune() {
     let t = T::new().await;
     let res = t

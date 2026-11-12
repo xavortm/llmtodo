@@ -919,6 +919,10 @@ pub struct UpdateIssue {
 /// Filters for an issue list. Every filter that is set must match.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct IssueQuery {
+    /// Only these issues, by key, old key or ID. Unknown ones are skipped,
+    /// so one query refreshes many rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub teams: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

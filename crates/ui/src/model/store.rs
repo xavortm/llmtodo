@@ -59,6 +59,10 @@ pub struct IssueStore {
     /// The review answers per issue. Like the git panel, only a
     /// single-issue fetch carries them.
     reviews: HashMap<IssueId, Vec<ReviewAnswer>>,
+    /// Issues whose git panel, relations or reviews may be old: a list copy
+    /// came after them. Only the open task gets its detail on live events,
+    /// so a task that opens again fetches it when it is here.
+    stale_detail: std::collections::HashSet<IssueId>,
     pub catalog: Catalog,
     pub connection: Connection,
     /// The issues of the saved view the list shows, as the server sent
@@ -133,6 +137,7 @@ impl IssueStore {
             relations: HashMap::new(),
             questions: HashMap::new(),
             reviews: HashMap::new(),
+            stale_detail: Default::default(),
             catalog: Catalog::default(),
             connection: Connection::Connecting,
             view: None,
@@ -270,18 +275,43 @@ impl IssueStore {
         self.relations.get(&id).map(Vec::as_slice)
     }
 
+    /// Tests put in relations as a fetch would.
+    #[cfg(test)]
     pub fn set_relations(&mut self, id: IssueId, relations: Vec<Relation>) {
         self.relations.insert(id, relations);
+    }
+
+    /// Marks the detail of `id` as possibly old, when the store holds one.
+    pub fn mark_detail_stale(&mut self, id: IssueId) {
+        if self.git.contains_key(&id) {
+            self.stale_detail.insert(id);
+        }
+    }
+
+    /// Whether the detail of `id` may be old. Returns true once, and the
+    /// caller fetches it.
+    pub fn take_stale_detail(&mut self, id: IssueId) -> bool {
+        self.stale_detail.remove(&id)
+    }
+
+    /// Puts in the relations, reviews and git panel of one fetch.
+    pub fn set_detail(
+        &mut self,
+        id: IssueId,
+        relations: Vec<Relation>,
+        reviews: Vec<ReviewAnswer>,
+        git: IssueGit,
+    ) {
+        self.relations.insert(id, relations);
+        self.reviews.insert(id, reviews);
+        self.git.insert(id, git);
+        self.stale_detail.remove(&id);
     }
 
     /// The review answers of an issue, oldest first, once a fetch brought
     /// them.
     pub fn reviews(&self, id: IssueId) -> &[ReviewAnswer] {
         self.reviews.get(&id).map_or(&[], Vec::as_slice)
-    }
-
-    pub fn set_reviews(&mut self, id: IssueId, reviews: Vec<ReviewAnswer>) {
-        self.reviews.insert(id, reviews);
     }
 
     /// The open issues in a review status that wait on the owner, oldest first.
@@ -394,5 +424,33 @@ impl IssueStore {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u128) -> IssueId {
+        IssueId::from_u128(n)
+    }
+
+    /// LLM-171: a list copy makes a held detail old, so the task fetches it
+    /// once when it opens again. A fetch makes it fresh.
+    #[test]
+    fn a_list_copy_marks_a_held_detail_as_old_once() {
+        let mut store = IssueStore::new();
+        // No detail held: nothing to refetch.
+        store.mark_detail_stale(id(1));
+        assert!(!store.take_stale_detail(id(1)));
+
+        store.set_detail(id(1), Vec::new(), Vec::new(), IssueGit::default());
+        store.mark_detail_stale(id(1));
+        assert!(store.take_stale_detail(id(1)));
+        assert!(!store.take_stale_detail(id(1)));
+
+        store.mark_detail_stale(id(1));
+        store.set_detail(id(1), Vec::new(), Vec::new(), IssueGit::default());
+        assert!(!store.take_stale_detail(id(1)));
     }
 }
