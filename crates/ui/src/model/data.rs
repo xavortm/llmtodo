@@ -312,31 +312,35 @@ pub struct Label {
     pub color: LabelColor,
 }
 
-/// A calendar date in local time.
+/// A date and time in local time, to the minute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
     pub year: i16,
     pub month: i8,
     pub day: i8,
+    pub hour: i8,
+    pub minute: i8,
 }
 
 impl Date {
     pub fn from_timestamp(ts: jiff::Timestamp) -> Self {
-        let d = ts.to_zoned(jiff::tz::TimeZone::system()).date();
+        let t = ts.to_zoned(jiff::tz::TimeZone::system()).datetime();
         Self {
-            year: d.year(),
-            month: d.month(),
-            day: d.day(),
+            year: t.year(),
+            month: t.month(),
+            day: t.day(),
+            hour: t.hour(),
+            minute: t.minute(),
         }
     }
 
-    /// `Nov 3`, the short form the list shows.
+    /// `Nov 3 14:05`, the short form the list shows.
     pub fn short(self) -> String {
         const MONTHS: [&str; 12] = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
         let month = MONTHS[(self.month.clamp(1, 12) - 1) as usize];
-        format!("{month} {}", self.day)
+        format!("{month} {} {:02}:{:02}", self.day, self.hour, self.minute)
     }
 }
 
@@ -867,5 +871,22 @@ mod tests {
         assert_eq!(find("todo").as_deref(), Some("Todo"));
         assert_eq!(find("started").as_deref(), Some("In Progress"));
         assert_eq!(find("nope"), None);
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::Date;
+
+    #[test]
+    fn the_short_form_has_the_hour_and_minute() {
+        let d = Date {
+            year: 2026,
+            month: 11,
+            day: 3,
+            hour: 9,
+            minute: 5,
+        };
+        assert_eq!(d.short(), "Nov 3 09:05");
     }
 }

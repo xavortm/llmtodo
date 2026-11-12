@@ -38,6 +38,31 @@ pub fn issue_menu(
         let current_waiting = issue.waiting_on;
         let statuses = store.read(cx).catalog.team_statuses(&issue.team).to_vec();
         let labels = store.read(cx).catalog.labels.clone();
+        // A ticket in a review status gets Approve at the top, for quick
+        // access. An approved ticket that waits on an agent to merge its PR
+        // has its answer already.
+        let approvable =
+            issue.status.review && !deleted && issue.waiting_on != Some(WaitingOn::Agent);
+        let approve_events = events.clone();
+        let menu = if approvable {
+            menu.item(
+                PopupMenuItem::new("Approve")
+                    .icon(Icon::new(IconName::Check))
+                    .on_click(move |_, window, cx| {
+                        approve_events.emit(
+                            ViewEvent::AnswerReview {
+                                issue: id,
+                                verdict: llmtodo_api_types::ReviewVerdict::Approved,
+                            },
+                            window,
+                            cx,
+                        );
+                    }),
+            )
+            .separator()
+        } else {
+            menu
+        };
         let menu = menu
             .submenu("Status", window, cx, move |menu, _, _| {
                 statuses.iter().cloned().fold(menu, |menu, status| {

@@ -125,7 +125,8 @@ impl Column {
             Column::Status => Some(rems(5.)),
             Column::Key => Some(rems(4.)),
             Column::Title => None,
-            // As wide as the Added column: the title gets the room.
+            // The narrowest the labels get: `plan` widens them when the
+            // list has room.
             Column::Labels => Some(rems(4.)),
             // An icon and two digits.
             Column::Deps => Some(rems(2.25)),
@@ -135,7 +136,8 @@ impl Column {
             Column::Cost => Some(rems(3.5)),
             // Six monospace characters, such as 12h 05m.
             Column::Time => Some(rems(3.5)),
-            Column::Added => Some(rems(4.)),
+            // Twelve monospace characters, such as Nov 12 14:05.
+            Column::Added => Some(rems(5.5)),
         }
     }
 
@@ -476,8 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn the_labels_column_starts_as_wide_as_the_added_column() {
-        assert_eq!(Column::Labels.width(), Column::Added.width());
+    fn the_labels_column_starts_at_its_minimum() {
         assert_eq!(plan_at(2000., &Demand::default()).labels, rems(4.));
     }
 
@@ -487,30 +488,30 @@ mod tests {
         assert_eq!(visible(None, px(REM), &[], &Demand::default()), Column::ALL);
         assert_eq!(at(2000.), Column::ALL);
         // 16 for the padding, and
-        // 16 + 80 + 80 + 64 + 160 + 64 + 36 + 20 + 32 + 56 + 56 + 64, and
+        // 16 + 80 + 80 + 64 + 160 + 64 + 36 + 20 + 32 + 56 + 56 + 88, and
         // 11 gaps of 8.
-        assert_eq!(at(832.), Column::ALL);
+        assert_eq!(at(856.), Column::ALL);
         // The labels hide first, then the time and the cost.
         assert_eq!(
-            at(831.),
+            at(855.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Time, Added
             ]
         );
         assert_eq!(
-            at(759.),
+            at(783.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Added
             ]
         );
         assert_eq!(
-            at(695.),
+            at(719.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Added
             ]
         );
         assert_eq!(
-            at(631.),
+            at(655.),
             [Check, Llm, Status, Key, Title, Deps, Waiting, Assignee]
         );
         assert_eq!(at(559.), [Check, Llm, Status, Key, Title, Deps, Waiting]);
@@ -526,15 +527,15 @@ mod tests {
         use Column::*;
         // Most titles have 50 characters: 360 px instead of the 160 minimum.
         let at = |width: f32| plan_at(width, &Demand::titles(50)).columns;
-        assert_eq!(at(1032.), Column::ALL);
+        assert_eq!(at(1056.), Column::ALL);
         let no_labels = [
             Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Time, Added,
         ];
-        assert_eq!(at(1031.), no_labels);
+        assert_eq!(at(1055.), no_labels);
         // The other columns still wait for the title's minimum.
-        assert_eq!(at(760.), no_labels);
+        assert_eq!(at(784.), no_labels);
         assert_eq!(
-            at(759.),
+            at(783.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Added
             ]
@@ -548,7 +549,7 @@ mod tests {
         let demand = rows(&[(20, &[8, 8, 8]), (20, &[8, 8, 8])]);
         assert!((demand.labels - 12.35).abs() < 1e-4);
         // At the narrowest width with labels, they keep their minimum.
-        assert_eq!(plan_at(832., &demand).labels, rems(4.));
+        assert_eq!(plan_at(856., &demand).labels, rems(4.));
         // A wide list gives them every label, rounded down to a step.
         let wide = plan_at(2000., &demand);
         assert_eq!(wide.labels, rems(12.25));
@@ -563,13 +564,13 @@ mod tests {
         // Most titles want 50 characters, 360 px; most labels want 12.35
         // rem, 197.6 px.
         let demand = rows(&[(50, &[8, 8, 8][..]); 5]);
-        // The labels show from 1032 px, at their minimum: the title has
+        // The labels show from 1056 px, at their minimum: the title has
         // what most titles need.
-        assert_eq!(plan_at(1032., &demand).labels, rems(4.));
+        assert_eq!(plan_at(1056., &demand).labels, rems(4.));
         // Every extra pixel then goes to the labels, up to what most rows
-        // need: 1032 - 64 + 197.6.
-        assert_eq!(plan_at(1100., &demand).labels, rems(8.25));
-        assert_eq!(plan_at(1166., &demand).labels, rems(12.25));
+        // need: 1056 - 64 + 197.6.
+        assert_eq!(plan_at(1124., &demand).labels, rems(8.25));
+        assert_eq!(plan_at(1190., &demand).labels, rems(12.25));
     }
 
     #[test]
@@ -581,7 +582,7 @@ mod tests {
         let demand = rows(&list);
         // Both the title and the labels grow, the title faster, until the
         // labels hit their cap.
-        let a = plan_at(1100., &demand).labels.0;
+        let a = plan_at(1124., &demand).labels.0;
         let b = plan_at(1400., &demand).labels.0;
         assert!(a < b, "{a} < {b}");
         let huge = plan_at(4000., &demand).labels;
@@ -605,11 +606,11 @@ mod tests {
         assert_eq!(visible(None, px(REM), &hidden, &none), without);
         assert_eq!(visible(Some(px(2000.)), px(REM), &hidden, &none), without);
         // The narrower row has more room, so the cost column stays longer.
-        // 832 - 64 for labels, - 64 for the key, - 16 for the box,
+        // 856 - 64 for labels, - 64 for the key, - 16 for the box,
         // - 56 for the time, - 4 gaps.
-        assert_eq!(visible(Some(px(600.)), px(REM), &hidden, &none), without);
+        assert_eq!(visible(Some(px(624.)), px(REM), &hidden, &none), without);
         assert_eq!(
-            visible(Some(px(599.)), px(REM), &hidden, &none),
+            visible(Some(px(623.)), px(REM), &hidden, &none),
             [Llm, Status, Title, Deps, Waiting, Assignee, Added],
             "the width rule hides what remains, least useful first"
         );
@@ -665,17 +666,17 @@ mod tests {
 
     #[test]
     fn the_comfortable_width_fits_most_titles_and_labels() {
-        // The frame and the fixed columns take 832 - 160 = 672 px.
+        // The frame and the fixed columns take 856 - 160 = 696 px.
         // No titles, or short ones: the title keeps its minimum, 160.
-        assert_eq!(comfortable(&[]), 832.);
-        assert_eq!(comfortable(&[5, 10]), 832.);
+        assert_eq!(comfortable(&[]), 856.);
+        assert_eq!(comfortable(&[5, 10]), 856.);
         // Four in five titles fit: 50 characters at 7.2 px each.
-        assert_eq!(comfortable(&[10, 20, 30, 50, 200]), 672. + 360.);
+        assert_eq!(comfortable(&[10, 20, 30, 50, 200]), 696. + 360.);
         // A list of very long titles stops at 36 rem, 576 px.
-        assert_eq!(comfortable(&[300, 300]), 672. + 576.);
+        assert_eq!(comfortable(&[300, 300]), 696. + 576.);
         // Labels that need 12.35 rem add 8.35 rem to the 4 rem minimum.
         let labelled = rows(&[(5, &[8, 8, 8])]);
         let width = f32::from(comfortable_width_for(&labelled, px(REM), &[]));
-        assert!((width - (832. + 8.35 * REM)).abs() < 1e-3, "{width}");
+        assert!((width - (856. + 8.35 * REM)).abs() < 1e-3, "{width}");
     }
 }

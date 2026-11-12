@@ -377,12 +377,16 @@ pub fn issues(catalog: &Catalog) -> Vec<Issue> {
                         year: 2026,
                         month: 11,
                         day: 10 - ix as i8,
+                        hour: (9 + ix % 12) as i8,
+                        minute: (ix * 7 % 60) as i8,
                     }
                 } else {
                     Date {
                         year: 2026,
                         month: 10,
                         day: 41 - ix as i8,
+                        hour: (ix * 5 % 24) as i8,
+                        minute: (ix * 13 % 60) as i8,
                     }
                 },
                 description: match ix {

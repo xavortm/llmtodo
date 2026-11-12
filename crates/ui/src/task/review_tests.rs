@@ -465,3 +465,63 @@ fn approve_in_the_panel_is_filled_while_feedback_has_focus(cx: &mut TestAppConte
         .unwrap();
     }
 }
+
+#[gpui_kit::test]
+fn the_task_menu_puts_approve_first_on_a_review_ticket(cx: &mut TestAppContext) {
+    use crate::shell::workspace::Row;
+    let (handle, view, mut requests) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    let row_of = |key: &str, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let this = view.read(cx);
+            this.rows(cx)
+                .iter()
+                .position(
+                    |r| matches!(r, Row::Issue(ix) if this.issue(*ix, cx).key.as_ref() == key),
+                )
+                .unwrap()
+        })
+    };
+    let row = row_of("LLM-105", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("row", row), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("popup-menu").click(0, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(message(&view, cx), "Approving LLM-105");
+    assert_eq!(
+        sent(&mut requests),
+        [(
+            "LLM-105".to_string(),
+            ReviewVerdict::Approved,
+            String::new()
+        )]
+    );
+
+    // Another ticket has no Approve: its first item is the Status menu.
+    let other = row_of("LLM-101", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("row", other), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("popup-menu")
+            .click(crate::shell::tests::TRASH_ITEM, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(sent(&mut requests).is_empty());
+}
