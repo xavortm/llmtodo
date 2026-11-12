@@ -1,13 +1,17 @@
-// Writes one PNG sprite sheet per animation: frames side by side, 32x32 each.
-// Usage: node design/mascot/export.mjs <out-dir> [scale]
+// Writes one PNG sprite sheet per animation and theme: unique frames side by
+// side, 32x32 each, plus timeline.json with the frame order and durations.
+// Usage: node design/mascot/export.mjs <out-dir> [scale] [--bg]
+// --bg fills the theme background, for reviewing the art.
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
 const Mascot = createRequire(import.meta.url)("./sprites.js");
-const outDir = process.argv[2] ?? "design/mascot/out";
-const scale = Number(process.argv[3] ?? 1);
+const args = process.argv.slice(2).filter((a) => a !== "--bg");
+const withBg = process.argv.includes("--bg");
+const outDir = args[0] ?? "design/mascot/out";
+const scale = Number(args[1] ?? 1);
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -46,21 +50,29 @@ function png(width, height, rgba) {
   ]);
 }
 
-mkdirSync(outDir, { recursive: true });
 const S = Mascot.SIZE;
-for (const [name, frames] of Object.entries(Mascot.ANIMS)) {
-  const w = S * frames.length * scale;
-  const h = S * scale;
-  const sheet = Buffer.alloc(w * h * 4);
-  frames.forEach(({ frame }, i) => {
-    const px = Mascot.rgba(frame);
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < S * scale; x++) {
-        const src = (Math.floor(y / scale) * S + Math.floor(x / scale)) * 4;
-        const dst = (y * w + i * S * scale + x) * 4;
-        for (let c = 0; c < 4; c++) sheet[dst + c] = px[src + c];
-      }
-  });
-  writeFileSync(join(outDir, `${name}.png`), png(w, h, sheet));
-  console.log(`${name}.png  ${frames.length} frames`);
+const timelines = {};
+for (const [theme, pal] of Object.entries(Mascot.PALETTES)) {
+  mkdirSync(join(outDir, theme), { recursive: true });
+  const bg = Buffer.from([1, 3, 5].map((o) => parseInt(pal.bg.slice(o, o + 2), 16)).concat(255));
+  for (const [name, { frames, timeline }] of Object.entries(Mascot.ANIMS)) {
+    timelines[name] = timeline;
+    const w = S * frames.length * scale;
+    const h = S * scale;
+    const sheet = Buffer.alloc(w * h * 4);
+    if (withBg) for (let p = 0; p < w * h; p++) bg.copy(sheet, p * 4);
+    frames.forEach((frame, i) => {
+      const px = Mascot.rgba(frame, theme);
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < S * scale; x++) {
+          const src = (Math.floor(y / scale) * S + Math.floor(x / scale)) * 4;
+          if (px[src + 3] === 0) continue;
+          const dst = (y * w + i * S * scale + x) * 4;
+          for (let c = 0; c < 4; c++) sheet[dst + c] = px[src + c];
+        }
+    });
+    writeFileSync(join(outDir, theme, `${name}.png`), png(w, h, sheet));
+    if (theme === "dark") console.log(`${name}: ${frames.length} unique frames, ${timeline.length} timeline steps`);
+  }
 }
+writeFileSync(join(outDir, "timeline.json"), JSON.stringify(timelines, null, 2));

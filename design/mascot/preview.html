@@ -32,7 +32,7 @@
 <main>
   <div class="bar" style="justify-content: space-between">
     <h1>llmtodo mascot</h1>
-    <button id="theme">Toggle dark</button>
+    <button id="theme">Toggle theme</button>
   </div>
 
   <section>
@@ -51,6 +51,11 @@
   </section>
 
   <section>
+    <h2>Both themes</h2>
+    <div class="sizes" id="themes"></div>
+  </section>
+
+  <section>
     <h2>Frames</h2>
     <div id="sheets" style="display: grid; gap: 14px"></div>
   </section>
@@ -58,52 +63,60 @@
 
 <script src="sprites.js"></script>
 <script>
-const { SIZE, ANIMS, rgba } = Mascot;
+const { SIZE, ANIMS, PALETTES, rgba } = Mascot;
 const $ = (id) => document.getElementById(id);
+const root = document.documentElement;
+root.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+const theme = () => root.dataset.theme;
 
-// One offscreen 32x32 canvas per frame.
+// One offscreen 32x32 canvas per frame and theme.
 const cache = new Map();
-function frameCanvas(frame) {
-  if (!cache.has(frame)) {
+function frameCanvas(frame, th = theme()) {
+  const key = th + ":" + ANIMS_INDEX.get(frame);
+  if (!cache.has(key)) {
     const c = document.createElement("canvas");
     c.width = c.height = SIZE;
-    c.getContext("2d").putImageData(new ImageData(rgba(frame), SIZE, SIZE), 0, 0);
-    cache.set(frame, c);
+    c.getContext("2d").putImageData(new ImageData(rgba(frame, th), SIZE, SIZE), 0, 0);
+    cache.set(key, c);
   }
-  return cache.get(frame);
+  return cache.get(key);
 }
-function drawScaled(canvas, frame, scale) {
+const ANIMS_INDEX = new Map();
+for (const [name, a] of Object.entries(ANIMS)) a.frames.forEach((f, i) => ANIMS_INDEX.set(f, `${name}/${i}`));
+
+function drawScaled(canvas, frame, scale, th, bg) {
   canvas.width = canvas.height = SIZE * scale;
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(frameCanvas(frame), 0, 0, SIZE * scale, SIZE * scale);
+  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+  ctx.drawImage(frameCanvas(frame, th), 0, 0, SIZE * scale, SIZE * scale);
 }
 
-// Player: loops an animation, honoring each frame's duration.
-function player(onFrame) {
+// Player: loops an animation's timeline, honoring each step's duration.
+function player(onStep) {
   let anim = null, i = 0, left = 0;
+  const steps = () => ANIMS[anim].timeline;
   return {
-    set(name) { if (anim !== name) { anim = name; i = 0; left = ANIMS[name][0].ms; onFrame(ANIMS[name][0], true); } },
+    set(name) { if (anim !== name) { anim = name; i = 0; left = steps()[0].ms; } },
     get name() { return anim; },
     tick(dt) {
       if (!anim) return;
       left -= dt;
       while (left <= 0) {
-        i = (i + 1) % ANIMS[anim].length;
-        left += ANIMS[anim][i].ms;
-        onFrame(ANIMS[anim][i], false);
+        i = (i + 1) % steps().length;
+        left += steps()[i].ms;
+        onStep();
       }
     },
-    get frame() { return ANIMS[anim][i]; },
+    get frame() { return ANIMS[anim].frames[steps()[i].i]; },
   };
 }
 
 // Stage --------------------------------------------------------------
 const stage = $("stage");
 const STAGE_W = 160;
-let catX = 64, mode = "auto", autoState = null;
-let stepped = false;
-const cat = player((_, first) => { if (!first) stepped = true; });
+let catX = 64, mode = "auto", autoState = null, stepped = 0;
+const cat = player(() => stepped++);
 
 const MODES = [["auto", "Auto"], ["watch", "Sit and watch"], ["laptop", "Laptop"], ["sleep", "Sleep"], ["walkLeft", "Walk left"], ["walkRight", "Walk right"]];
 for (const [id, label] of MODES) {
@@ -121,13 +134,12 @@ function setMode(m) {
 }
 
 function pickAuto() {
-  const r = Math.random();
-  if (r < 0.4) {
+  if (Math.random() < 0.4) {
     const target = 8 + Math.random() * (STAGE_W - SIZE - 16);
     autoState = { anim: target < catX ? "walkLeft" : "walkRight", target };
   } else {
     const anim = ["watch", "laptop", "sleep"][Math.floor(Math.random() * 3)];
-    autoState = { anim, until: performance.now() + 4000 + Math.random() * 5000 };
+    autoState = { anim, until: performance.now() + 5000 + Math.random() * 6000 };
   }
   cat.set(autoState.anim);
 }
@@ -139,73 +151,80 @@ function render() {
   stage.style.maxWidth = STAGE_W * scale + "px";
   const ctx = stage.getContext("2d");
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(frameCanvas(cat.frame.frame), Math.round(catX) * scale, 0, SIZE * scale, SIZE * scale);
+  ctx.drawImage(frameCanvas(cat.frame), Math.round(catX) * scale, 0, SIZE * scale, SIZE * scale);
 }
 
 let last = performance.now();
 function loop(now) {
   const dt = (now - last) * (+$("speed").value / 100);
   last = now;
-  if (mode === "auto") {
-    if (!autoState) pickAuto();
-    else if (autoState.until && now > autoState.until) pickAuto();
-  }
-  stepped = false;
+  if (mode === "auto" && (!autoState || (autoState.until && now > autoState.until))) pickAuto();
+  stepped = 0;
   cat.tick(dt);
-  // Walking moves 2 sprite pixels per frame.
+  // Walking moves 1 sprite pixel per frame.
   const walking = cat.name === "walkLeft" || cat.name === "walkRight";
   if (walking && stepped) {
-    catX += cat.name === "walkRight" ? 2 : -2;
+    catX += (cat.name === "walkRight" ? 1 : -1) * stepped;
     const max = STAGE_W - SIZE;
-    if (mode === "auto" && autoState.target != null && Math.abs(catX - autoState.target) <= 2) pickAuto();
-    if (catX > max) { catX = max; if (mode !== "auto") setMode("walkLeft"); else pickAuto(); }
-    if (catX < 0) { catX = 0; if (mode !== "auto") setMode("walkRight"); else pickAuto(); }
+    if (mode === "auto" && autoState.target != null && Math.abs(catX - autoState.target) <= 1) pickAuto();
+    if (catX > max) { catX = max; mode === "auto" ? pickAuto() : setMode("walkLeft"); }
+    if (catX < 0) { catX = 0; mode === "auto" ? pickAuto() : setMode("walkRight"); }
   }
   render();
+  for (const [c, s] of sizeCanvases) drawScaled(c, cat.frame, s);
+  for (const [c, th] of themeCanvases) drawScaled(c, cat.frame, 4, th, PALETTES[th].bg);
   requestAnimationFrame(loop);
 }
 
 // Real sizes: what it looks like at 1x to 4x in the app.
-const sizePlayers = [];
-for (const s of [1, 2, 3, 4]) {
+const sizeCanvases = [1, 2, 3, 4].map((s) => {
   const fig = document.createElement("figure");
   const c = document.createElement("canvas");
   fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: `${s}x · ${SIZE * s}px` }));
   $("sizes").append(fig);
-  sizePlayers.push([c, s]);
-}
+  return [c, s];
+});
 
-// Frame sheets.
-for (const [name, frames] of Object.entries(ANIMS)) {
-  const wrap = document.createElement("div");
-  wrap.append(Object.assign(document.createElement("h2"), { textContent: `${name} · ${frames.length} frames` }));
-  const row = document.createElement("div");
-  row.className = "sheet";
-  frames.forEach(({ frame, ms }, i) => {
-    const fig = document.createElement("figure");
-    const c = document.createElement("canvas");
-    drawScaled(c, frame, 3);
-    fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: `${i} · ${ms}ms` }));
-    row.append(fig);
-  });
-  wrap.append(row);
-  $("sheets").append(wrap);
-}
+// Both themes side by side, whatever the page theme is.
+const themeCanvases = Object.keys(PALETTES).map((th) => {
+  const fig = document.createElement("figure");
+  const c = document.createElement("canvas");
+  c.style.borderRadius = "6px";
+  fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: th === "light" ? "Light theme · black cat" : "Dark theme · white cat" }));
+  $("themes").append(fig);
+  return [c, th];
+});
 
-function sizesLoop() {
-  for (const [c, s] of sizePlayers) drawScaled(c, cat.frame.frame, s);
-  requestAnimationFrame(sizesLoop);
+// Frame sheets: each animation's unique frames, redrawn on theme change.
+function drawSheets() {
+  $("sheets").replaceChildren();
+  for (const [name, { frames, timeline }] of Object.entries(ANIMS)) {
+    const total = timeline.reduce((n, s) => n + s.ms, 0);
+    const wrap = document.createElement("div");
+    wrap.append(Object.assign(document.createElement("h2"), { textContent: `${name} · ${frames.length} frames · ${timeline.length} steps · ${(total / 1000).toFixed(1)}s loop` }));
+    const row = document.createElement("div");
+    row.className = "sheet";
+    frames.forEach((frame, i) => {
+      const fig = document.createElement("figure");
+      const c = document.createElement("canvas");
+      drawScaled(c, frame, 3);
+      fig.append(c, Object.assign(document.createElement("figcaption"), { textContent: i }));
+      row.append(fig);
+    });
+    wrap.append(row);
+    $("sheets").append(wrap);
+  }
 }
 
 $("theme").onclick = () => {
-  const root = document.documentElement;
-  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  root.dataset.theme = theme() === "dark" ? "light" : "dark";
+  drawSheets();
 };
 
+drawSheets();
 setMode("auto");
 pickAuto();
 requestAnimationFrame(loop);
-requestAnimationFrame(sizesLoop);
 </script>
 </body>
 </html>
