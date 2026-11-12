@@ -362,6 +362,10 @@ const PING_EVERY: Duration = if cfg!(test) {
 /// The wait before a retry after the first failure.
 const FIRST_DELAY: Duration = Duration::from_millis(250);
 const MAX_DELAY: Duration = Duration::from_secs(5);
+/// Before the first connect, this many retries stay at [`FIRST_DELAY`], so
+/// a server that is still starting is found within about 3 seconds. Later
+/// retries back off like after a drop.
+const QUICK_TRIES: u32 = 12;
 
 /// How long to wait after starting a server before starting another one.
 /// The started server may still be getting ready, and a second one would
@@ -372,25 +376,35 @@ const SPAWN_AGAIN_AFTER: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 struct Backoff {
     delay: Duration,
+    /// Quick retries left before the first connect.
+    quick_left: u32,
 }
 
 impl Default for Backoff {
     fn default() -> Self {
-        Self { delay: FIRST_DELAY }
+        Self {
+            delay: FIRST_DELAY,
+            quick_left: QUICK_TRIES,
+        }
     }
 }
 
 impl Backoff {
     /// The wait before the next try. A session that connected starts over
-    /// at the first delay. Failed tries double the wait, but only after a
-    /// first connect, so a server that is still starting is found quickly.
+    /// at the first delay. Failed tries double the wait up to
+    /// [`MAX_DELAY`]. Before the first connect, the first [`QUICK_TRIES`]
+    /// stay quick, so a server that is still starting is found soon.
     fn next(&mut self, connected: bool, connected_once: bool) -> Duration {
         if connected {
             self.delay = FIRST_DELAY;
         }
         let wait = self.delay;
-        if !connected && connected_once {
-            self.delay = (self.delay * 2).min(MAX_DELAY);
+        if !connected {
+            if !connected_once && self.quick_left > 0 {
+                self.quick_left -= 1;
+            } else {
+                self.delay = (self.delay * 2).min(MAX_DELAY);
+            }
         }
         wait
     }
@@ -407,7 +421,9 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                 if events.is_closed() {
                     return;
                 }
-                send(&events, Event::Offline { reason });
+                if let Some(event) = state.offline(reason) {
+                    send(&events, event);
+                }
             }
         }
         let delay = backoff.next(state.connected, state.connected_once);
@@ -483,9 +499,25 @@ struct State {
     spawned_at: Option<Instant>,
     /// The task the panel shows. Only it gets its full detail and git.
     open: Option<IssueId>,
+    /// The reason the app was last told the server is offline, until a
+    /// session connects.
+    offline_reason: Option<String>,
 }
 
 impl State {
+    /// The offline event for a failed try, or none when the app already
+    /// shows this reason. Each event makes the app redraw.
+    fn offline(&mut self, reason: String) -> Option<Event> {
+        if self.connected {
+            self.offline_reason = None;
+        }
+        if self.offline_reason.as_ref() == Some(&reason) {
+            return None;
+        }
+        self.offline_reason = Some(reason.clone());
+        Some(Event::Offline { reason })
+    }
+
     /// The binary to start a server with on this try. The thread starts at
     /// most one server per [`SPAWN_AGAIN_AFTER`], so retries before the
     /// first connect do not start a new process each time.
@@ -1156,6 +1188,37 @@ mod tests {
         let pages = vec![("LLM-1", 1), ("LLM-2", 1), ("LLM-1", 2), ("LLM-3", 1)];
         let kept = last_copy_of_each(pages, |p| p.0);
         assert_eq!(kept, [("LLM-2", 1), ("LLM-1", 2), ("LLM-3", 1)]);
+    }
+
+    #[test]
+    fn backoff_stays_quick_for_a_few_tries_and_then_slows_down() {
+        let mut b = Backoff::default();
+        // A server that is still starting is found quickly.
+        for _ in 0..QUICK_TRIES {
+            assert_eq!(b.next(false, false), FIRST_DELAY);
+        }
+        // With no server at all, the wait grows to the longest one and
+        // stays there, instead of 4 tries a second forever.
+        let waits: Vec<Duration> = (0..8).map(|_| b.next(false, false)).collect();
+        assert_eq!(waits[0], FIRST_DELAY);
+        assert_eq!(waits[1], FIRST_DELAY * 2);
+        assert!(waits.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(*waits.last().unwrap(), MAX_DELAY);
+        // The first connect still starts over.
+        assert_eq!(b.next(true, true), FIRST_DELAY);
+    }
+
+    #[test]
+    fn the_app_hears_an_offline_reason_once() {
+        let mut state = State::default();
+        assert!(state.offline("refused".into()).is_some());
+        assert!(state.offline("refused".into()).is_none());
+        assert!(state.offline("timed out".into()).is_some());
+        // After a connect, the same reason counts as news again.
+        state.connected = true;
+        assert!(state.offline("timed out".into()).is_some());
+        state.connected = false;
+        assert!(state.offline("timed out".into()).is_none());
     }
 
     #[test]
