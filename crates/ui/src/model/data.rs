@@ -180,6 +180,64 @@ impl Claim {
     pub fn age(&self, now: jiff::Timestamp) -> String {
         claim_age(now.duration_since(self.claimed_at))
     }
+
+    /// What the Locked badge shows: the agent's model, such as `Opus 5.5`,
+    /// else how long the task has been claimed.
+    pub fn badge(&self, now: jiff::Timestamp) -> String {
+        match &self.actor {
+            Assignee::Agent(Agent {
+                model: Some(model), ..
+            }) if !model.trim().is_empty() => short_model(model),
+            _ => self.age(now),
+        }
+    }
+}
+
+/// A model's short name for the app, such as `Opus 5.5` for both
+/// `opus-5.5` and `claude-opus-5-5`. A date or a context tag after the
+/// version, such as `-20261001` or `[1m]`, is left out. A model of an
+/// unknown family stays as it is, with its first letter in upper case.
+pub fn short_model(raw: &str) -> String {
+    const FAMILIES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+    let raw = raw.trim();
+    let base = raw.split('[').next().unwrap_or(raw).to_ascii_lowercase();
+    let parts: Vec<&str> = base.split(['-', '_', ' ', '/']).collect();
+    let Some(at) = parts.iter().position(|p| FAMILIES.contains(p)) else {
+        let mut chars = raw.chars();
+        return match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => String::new(),
+        };
+    };
+    // A version part is a short number, such as `5` or `5.5`. A date has
+    // more digits.
+    let is_version = |p: &&&str| {
+        !p.is_empty() && p.len() <= 4 && p.chars().all(|c| c.is_ascii_digit() || c == '.')
+    };
+    let after: Vec<&str> = parts[at + 1..]
+        .iter()
+        .take_while(is_version)
+        .copied()
+        .collect();
+    // An older name puts the version first, as in `claude-3-5-sonnet`.
+    let version = if after.is_empty() {
+        let before: Vec<&str> = parts[..at]
+            .iter()
+            .rev()
+            .take_while(is_version)
+            .copied()
+            .collect();
+        before.into_iter().rev().collect::<Vec<_>>().join(".")
+    } else {
+        after.join(".")
+    };
+    let family = parts[at];
+    let name = format!("{}{}", family[..1].to_ascii_uppercase(), &family[1..]);
+    if version.is_empty() {
+        name
+    } else {
+        format!("{name} {version}")
+    }
 }
 
 /// An agent that reads or fills in a task without a claim. It never makes
@@ -878,6 +936,49 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn models_get_short_names() {
+        for (raw, short) in [
+            ("opus-5.5", "Opus 5.5"),
+            ("claude-opus-5-5", "Opus 5.5"),
+            ("claude-sonnet-5-5", "Sonnet 5.5"),
+            ("claude-haiku-5-5-20261001", "Haiku 5.5"),
+            ("claude-fable-5-2", "Fable 5.2"),
+            ("claude-opus-5-5[1m]", "Opus 5.5"),
+            ("Opus 5.5", "Opus 5.5"),
+            ("claude-3-5-sonnet-20241022", "Sonnet 3.5"),
+            ("opus", "Opus"),
+            ("gpt-5", "Gpt-5"),
+            ("", ""),
+        ] {
+            assert_eq!(short_model(raw), short, "{raw}");
+        }
+    }
+
+    #[test]
+    fn the_locked_badge_shows_the_model_else_the_age() {
+        let now = jiff::Timestamp::now();
+        let agent = |model: Option<&str>| {
+            Assignee::Agent(Agent {
+                name: "claude-code/opus-5.5/high".into(),
+                harness: Some("claude-code".into()),
+                model: model.map(Into::into),
+                effort: None,
+            })
+        };
+        let claim = |actor| Claim {
+            actor,
+            session: "s".into(),
+            worktree: None,
+            branch: None,
+            pane: None,
+            claimed_at: now - jiff::SignedDuration::from_mins(12),
+        };
+        assert_eq!(claim(agent(Some("opus-5.5"))).badge(now), "Opus 5.5");
+        assert_eq!(claim(agent(None)).badge(now), "12m");
+        assert_eq!(claim(Assignee::Person("Ana".into())).badge(now), "12m");
+    }
 
     #[test]
     fn hex_colors_map_to_the_nearest_token() {

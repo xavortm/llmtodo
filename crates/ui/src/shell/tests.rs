@@ -3848,3 +3848,50 @@ fn grouping_by_status_hides_the_status_column(cx: &mut TestAppContext) {
     group(GroupBy::None, cx);
     assert!(shown(cx).contains(&Column::Status));
 }
+
+/// LLM-183: the Locked badge shows the model, and the longest one fits.
+#[gpui_kit::test]
+fn the_locked_badge_shows_the_model_and_it_fits(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let id = view.update(cx, |this, cx| {
+        let mut issue = this.issue_by_key("LLM-102", cx).clone();
+        let mut claim = crate::model::demo::claude_claim("LLM-102");
+        if let crate::model::data::Assignee::Agent(agent) = &mut claim.actor {
+            agent.model = Some("claude-sonnet-5-5".into());
+        }
+        issue.claim = Some(claim);
+        let id = issue.id;
+        this.upsert_issue(issue, cx);
+        id
+    });
+    let claim = cx.read(|cx| view.read(cx).claim_of("LLM-102", cx).cloned().unwrap());
+    assert_eq!(claim.badge(jiff::Timestamp::now()), "Sonnet 5.5");
+    // The badge grows in on a spring.
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let part = crate::shell::widgets::issue_part;
+        let badge = window.find(part("llm-locked", id)).bounds();
+        let text = window.find(part("llm-age", id)).bounds();
+        let natural = window.text_system().layout_line(
+            "Sonnet 5.5",
+            window.rem_size() * 0.75,
+            &[window.text_style().to_run("Sonnet 5.5".len())],
+            None,
+        );
+        // The text box ends inside the badge's padding, and it is as wide
+        // as the text needs, so nothing is cut off.
+        assert!(text.right() <= badge.right(), "{text:?} in {badge:?}");
+        assert!(
+            text.size.width + gpui_kit::px(0.5) >= natural.width,
+            "the text is cut off: {:?} < {:?}",
+            text.size.width,
+            natural.width
+        );
+    })
+    .unwrap();
+}

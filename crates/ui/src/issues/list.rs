@@ -885,7 +885,7 @@ impl IssueList {
                 let (bg, fg) = crate::shell::theme::locked_badge(theme);
                 (
                     Some(IconName::Lock),
-                    claim.age(now),
+                    claim.badge(now),
                     crate::shell::tooltip::Card::claim(claim, now),
                     bg,
                     fg,
@@ -911,13 +911,13 @@ impl IssueList {
                 .flex()
                 .items_center()
                 .overflow_hidden()
-                // The full badge is `w_20`, 5 rem, the column's width.
-                .w(gpui_kit::rems(5. * progress))
+                // The full badge is as wide as the column.
+                .w(gpui_kit::rems(columns::LLM_BADGE_REM * progress))
                 .opacity(progress)
                 .child(
                     h_flex()
                         .flex_none()
-                        .w_20()
+                        .w(gpui_kit::rems(columns::LLM_BADGE_REM))
                         .h_5()
                         .gap_1()
                         .px_1p5()
@@ -930,6 +930,8 @@ impl IssueList {
                             div()
                                 .id(widgets::issue_part("llm-age", issue.id))
                                 .test_support()
+                                .min_w_0()
+                                .truncate()
                                 .child(age),
                         ),
                 )
