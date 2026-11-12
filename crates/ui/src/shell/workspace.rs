@@ -3974,6 +3974,22 @@ impl Workspace {
         cx.notify();
     }
 
+    /// LLM-190: copies the keys of several tasks, one per line, in the
+    /// order of `ids`.
+    pub fn copy_keys(&mut self, ids: &[IssueId], cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let keys: Vec<String> = ids
+            .iter()
+            .filter_map(|id| store.get(*id).map(|i| i.key.to_string()))
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(keys.join("\n")));
+        self.message = format!("Copied {} IDs", keys.len()).into();
+        cx.notify();
+    }
+
     /// Moves an issue to the Trash. Nothing is lost: `:restore` brings back
     /// the last one, so no confirmation is needed.
     pub fn delete_issue(&mut self, id: IssueId, cx: &mut Context<Self>) {

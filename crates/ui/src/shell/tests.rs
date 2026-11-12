@@ -761,6 +761,68 @@ fn task_id_copies_by_click_and_palette(cx: &mut TestAppContext) {
     assert_eq!(copied.as_deref(), Some("LLM-104"));
 }
 
+fn marked_keys(view: &Entity<Workspace>, cx: &TestAppContext) -> Vec<String> {
+    cx.read(|cx| {
+        let this = view.read(cx);
+        this.marked(cx)
+            .into_iter()
+            .map(|id| this.issue(id, cx).key.to_string())
+            .collect()
+    })
+}
+
+/// Marks tasks with `x` from the top, then clicks the ID in `row`.
+fn mark_then_click_key(handle: AnyWindowHandle, marks: usize, row: usize, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for _ in 0..marks {
+            window.press("x", cx);
+        }
+        window.render_frame(cx);
+        window.click(("row-key", row), cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_click_on_a_marked_id_copies_every_marked_id(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    // LLM-101 to LLM-103 are marked. The click is on LLM-102.
+    mark_then_click_key(handle, 3, 1, cx);
+
+    let copied = cx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(copied.as_deref(), Some("LLM-101\nLLM-102\nLLM-103"));
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Copied 3 IDs"));
+    // The click does not reach the row, so the marks stay.
+    assert_eq!(marked_keys(&view, cx), ["LLM-101", "LLM-102", "LLM-103"]);
+}
+
+#[gpui_kit::test]
+fn a_click_on_an_id_outside_the_marks_copies_only_that_id(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    // LLM-101 and LLM-102 are marked. The click is on LLM-104.
+    mark_then_click_key(handle, 2, 3, cx);
+
+    let copied = cx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(copied.as_deref(), Some("LLM-104"));
+    cx.read(|cx| {
+        assert_eq!(view.read(cx).message(), "Copied LLM-104");
+        assert_eq!(view.read(cx).selected(cx), 3);
+    });
+    // As before LLM-190, the click also reaches the row and ends the marks.
+    assert!(marked_keys(&view, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_click_on_the_only_marked_id_copies_only_that_id(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    mark_then_click_key(handle, 1, 0, cx);
+
+    let copied = cx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(copied.as_deref(), Some("LLM-101"));
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Copied LLM-101"));
+}
+
 #[gpui_kit::test]
 fn label_command_toggles_a_label(cx: &mut TestAppContext) {
     let (handle, view) = open(cx);

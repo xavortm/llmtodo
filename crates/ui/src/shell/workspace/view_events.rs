@@ -97,12 +97,20 @@ impl Workspace {
     }
 
     /// LLM-153: a status, label or delete from the row menu or a drop
-    /// applies to every marked task when `id` is one of them. Returns
+    /// applies to every marked task when `id` is one of them. LLM-190: so
+    /// does Copy ID, from the menu or a click on a task's ID. Returns
     /// whether it ran that way.
     fn run_on_marks(&mut self, id: IssueId, action: &IssueAction, cx: &mut Context<Self>) -> bool {
         let marked = self.marked(cx);
         if marked.len() < 2 || !marked.contains(&id) {
             return false;
+        }
+        if matches!(action, IssueAction::CopyKey) {
+            self.copy_keys(&marked, cx);
+            // A click on a row's ID reaches the row next, and the row's
+            // plain click would end the multi-selection.
+            cx.stop_propagation();
+            return true;
         }
         let (verb, arg) = match action {
             IssueAction::SetStatus(status) => ("status", status.name.to_string()),
