@@ -117,9 +117,14 @@ impl Assignee {
 
     /// The name that groups issues and that `:assign` takes.
     pub fn name(&self) -> SharedString {
+        self.name_ref().clone()
+    }
+
+    /// The same name, borrowed.
+    pub fn name_ref(&self) -> &SharedString {
         match self {
-            Self::Person(name) => name.clone(),
-            Self::Agent(agent) => agent.name.clone(),
+            Self::Person(name) => name,
+            Self::Agent(agent) => &agent.name,
         }
     }
 
@@ -248,7 +253,7 @@ pub fn shorten_home(path: &str) -> String {
 /// Label colors. Each maps to a theme token, so themes can restyle them and
 /// the contrast check in `theme.rs` covers them. Labels are the one place
 /// the monochrome theme allows color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LabelColor {
     Gray,
     Red,

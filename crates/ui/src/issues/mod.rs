@@ -21,4 +21,6 @@ mod create_tests;
 #[cfg(test)]
 mod deps_tests;
 #[cfg(test)]
+mod render_cost_tests;
+#[cfg(test)]
 mod scroll_tests;

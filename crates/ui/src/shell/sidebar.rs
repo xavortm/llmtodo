@@ -148,35 +148,67 @@ impl Sidebar {
         self.cursor = rows.len().saturating_sub(1);
         rows.last().map_or(Scope::All, |r| r.scope.clone())
     }
+}
 
-    /// Open issues per scope, for the counts on the right. The Trash
-    /// counts every issue in it. A saved view counts only once the server
-    /// sent its issues, so only the active view has a count.
-    fn open_counts(&self, rows: &[Row], cx: &App) -> HashMap<Scope, usize> {
-        let store = self.store.read(cx);
+/// The counts on the right of the sidebar rows: open issues per scope,
+/// every issue in the Trash, and open questions for the inbox. One pass
+/// over the issues finds them all. A saved view counts only once the
+/// server sent its issues, so only the active view has a count.
+#[derive(Debug, Default)]
+pub struct ScopeCounts<'a> {
+    all: usize,
+    trash: usize,
+    teams: HashMap<&'a str, usize>,
+    projects: HashMap<&'a str, usize>,
+    /// The view the server sent, and its open issues.
+    view: Option<(&'a str, usize)>,
+    questions: usize,
+}
+
+impl<'a> ScopeCounts<'a> {
+    pub fn of(store: &'a IssueStore) -> Self {
         let view = store.view.as_ref();
-        // A project under several teams counts once.
-        let mut unique: Vec<&Scope> = Vec::new();
-        for row in rows {
-            if !unique.contains(&&row.scope) {
-                unique.push(&row.scope);
-            }
-        }
-        let mut counts: HashMap<Scope, usize> = HashMap::new();
+        let mut counts = Self {
+            view: view.map(|v| (v.name.as_ref(), 0)),
+            questions: crate::inbox::open_count(store),
+            ..Self::default()
+        };
         for issue in store.iter() {
-            for scope in &unique {
-                let counted = **scope == Scope::Trash || !issue.status.is_closed();
-                if counted && scope.matches(issue, view) {
-                    *counts.entry((*scope).clone()).or_default() += 1;
-                }
+            if issue.deleted {
+                counts.trash += 1;
+                continue;
             }
-        }
-        // The inbox counts open questions, not issues.
-        let questions = crate::inbox::open_count(store);
-        if questions > 0 {
-            counts.insert(Scope::Inbox, questions);
+            if issue.status.is_closed() {
+                continue;
+            }
+            counts.all += 1;
+            *counts.teams.entry(issue.team.as_ref()).or_default() += 1;
+            if let Some(project) = &issue.project {
+                *counts.projects.entry(project.as_ref()).or_default() += 1;
+            }
+            if let (Some(members), Some((_, n))) = (view, counts.view.as_mut())
+                && members.ids.contains(&issue.id)
+            {
+                *n += 1;
+            }
         }
         counts
+    }
+
+    /// The count a row of `scope` shows. Zero shows nothing.
+    pub fn get(&self, scope: &Scope) -> usize {
+        match scope {
+            Scope::All => self.all,
+            Scope::Trash => self.trash,
+            Scope::Inbox => self.questions,
+            Scope::Team(key) => self.teams.get(key.as_ref()).copied().unwrap_or(0),
+            Scope::Project(slug) => self.projects.get(slug.as_ref()).copied().unwrap_or(0),
+            Scope::View(name) => match self.view {
+                Some((view, n)) if view == name.as_ref() => n,
+                _ => 0,
+            },
+            Scope::Document(_) | Scope::Settings => 0,
+        }
     }
 }
 
@@ -184,9 +216,11 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
-        let catalog = self.store.read(cx).catalog.clone();
-        let rows = scopes(&catalog);
-        let counts = self.open_counts(&rows, cx);
+        // Borrowed for the whole render: the store does not change during it.
+        let store = self.store.read(cx);
+        let catalog = &store.catalog;
+        let rows = scopes(catalog);
+        let counts = ScopeCounts::of(store);
         let active_row = self.active_row(&rows);
         let sidebar = cx.entity().downgrade();
         let focused = self.focus.is_focused(window);
@@ -208,10 +242,7 @@ impl Render for Sidebar {
             .text_color(theme.sidebar_foreground);
         // The trackers, when the app knows more than one. A click opens
         // one. They are not scopes, so j / k never switch the data.
-        let (trackers, open) = {
-            let store = self.store.read(cx);
-            (store.trackers.clone(), store.tracker)
-        };
+        let (trackers, open) = (store.trackers.clone(), store.tracker);
         if trackers.len() > 1 {
             column = column.child(
                 div()
@@ -296,8 +327,8 @@ impl Render for Sidebar {
             }
             let team = matches!(scope, Scope::Team(_));
             let active = active_row == Some(ix);
-            let count = counts.get(&scope).copied().unwrap_or(0);
-            let name = scope.name(&catalog);
+            let count = counts.get(&scope);
+            let name = scope.name(catalog);
             let events = self.events.clone();
             let sidebar = sidebar.clone();
             let target = scope.clone();

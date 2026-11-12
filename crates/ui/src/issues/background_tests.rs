@@ -170,3 +170,30 @@ fn a_live_update_during_a_keystroke_still_selects_the_first_match(cx: &mut TestA
     });
     assert_eq!(Some(row), first);
 }
+
+#[gpui_kit::test]
+fn a_burst_of_changes_runs_one_more_build_not_one_each(cx: &mut TestAppContext) {
+    let (_, view) = open(cx, true);
+    let started =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).list().read(cx).background_builds);
+    let before = started(cx);
+    for query in ["n", "nu", "num", "numb", "number 2"] {
+        list_do(&view, cx, |list, cx| list.set_query(query, cx));
+    }
+    assert_eq!(started(cx), before + 1, "one build at a time");
+    cx.run_until_parked();
+    assert_eq!(
+        started(cx),
+        before + 2,
+        "one more for the changes meanwhile"
+    );
+    assert!(!building(&view, cx));
+    let titles: Vec<String> = cx.read(|cx| {
+        let this = view.read(cx);
+        (0..this.visible_count(cx))
+            .map(|n| this.visible_issue(n, cx).title.to_string())
+            .collect()
+    });
+    assert!(!titles.is_empty());
+    assert!(titles.iter().all(|t| t.contains("number 2")), "{titles:?}");
+}

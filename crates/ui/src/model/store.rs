@@ -151,6 +151,11 @@ impl IssueStore {
         self.index.get(&id).map(|&ix| &*self.issues[ix])
     }
 
+    /// A shared copy of one issue. It costs one counter bump.
+    pub fn get_shared(&self, id: IssueId) -> Option<Arc<Issue>> {
+        self.index.get(&id).map(|&ix| self.issues[ix].clone())
+    }
+
     /// Changes one issue in place. Returns None when the store lacks it.
     /// New text counts as held text, and its questions replace the old.
     pub fn modify<R>(&mut self, id: IssueId, f: impl FnOnce(&mut Issue) -> R) -> Option<R> {

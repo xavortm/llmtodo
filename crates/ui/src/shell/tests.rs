@@ -2655,7 +2655,7 @@ fn claimed_row_shows_its_age(cx: &mut TestAppContext) {
     assert_eq!(claim.age(jiff::Timestamp::now()), "1h 05m");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let badge = gpui_kit::SharedString::from(format!("llm-age-{id}"));
+        let badge = crate::shell::widgets::issue_part("llm-age", id);
         assert!(window.try_find(badge).is_some());
     })
     .unwrap();
@@ -2702,16 +2702,16 @@ fn llm_status_column_shows_locked_and_analyzing(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let find = |s: String| window.try_find(SharedString::from(s));
-        assert!(find(format!("llm-locked-{locked}")).is_some());
-        assert!(find(format!("llm-analyzing-{locked}")).is_none());
-        assert!(find(format!("llm-analyzing-{reading}")).is_some());
-        assert!(find(format!("llm-locked-{reading}")).is_none());
-        assert!(find(format!("llm-analyzing-{expired}")).is_none());
+        let find = |name, id| window.try_find(crate::shell::widgets::issue_part(name, id));
+        assert!(find("llm-locked", locked).is_some());
+        assert!(find("llm-analyzing", locked).is_none());
+        assert!(find("llm-analyzing", reading).is_some());
+        assert!(find("llm-locked", reading).is_none());
+        assert!(find("llm-analyzing", expired).is_none());
         // The header names the column, and the badge stays in its cell.
         let header = window.within("column-header").find("col-llm").bounds();
         let badge = window
-            .find(SharedString::from(format!("llm-analyzing-{reading}")))
+            .find(crate::shell::widgets::issue_part("llm-analyzing", reading))
             .bounds();
         assert!(badge.left() >= header.left() - px(0.5));
         assert!(badge.right() <= header.right() + px(0.5));
@@ -2819,7 +2819,7 @@ fn wait_command_sets_and_clears_waiting_on(cx: &mut TestAppContext) {
     let waiting = |cx: &mut TestAppContext| {
         cx.read(|cx| view.read(cx).issue_by_key("LLM-101", cx).waiting_on)
     };
-    let row_mark = gpui_kit::SharedString::from(format!("waiting-{id}"));
+    let row_mark = crate::shell::widgets::issue_part("waiting", id);
     let detail_mark = gpui_kit::SharedString::from(format!("detail-waiting-{id}"));
     assert_eq!(waiting(cx), None);
 
@@ -3304,7 +3304,7 @@ fn lock_badge_shows_a_wrapped_card(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_secs(2));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.hover(gpui_kit::SharedString::from(format!("llm-locked-{id}")), cx);
+        window.hover(crate::shell::widgets::issue_part("llm-locked", id), cx);
     })
     .unwrap();
     cx.executor()

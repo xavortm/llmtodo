@@ -63,21 +63,28 @@ pub fn link(id: impl Into<ElementId>, href: impl Into<SharedString>, cx: &App) -
 
 /// The label tags of an issue, in label order.
 pub fn tags(issue: &Issue, cx: &App) -> impl Iterator<Item = gpui_kit::Div> + use<> {
-    let radius = cx.theme().radius;
-    let tags: Vec<_> = issue
-        .labels
-        .iter()
-        .map(|label| (label.name.clone(), label_color(label.color, cx)))
-        .collect();
-    tags.into_iter().map(move |(name, color)| {
-        div()
-            .px_1p5()
-            .rounded(radius)
-            .text_xs()
-            .text_color(color)
-            .bg(color.opacity(0.12))
-            .child(name)
-    })
+    let tags: Vec<_> = issue.labels.iter().map(|label| tag(label, cx)).collect();
+    tags.into_iter()
+}
+
+/// One label's tag.
+pub fn tag(label: &crate::model::data::Label, cx: &App) -> gpui_kit::Div {
+    let color = label_color(label.color, cx);
+    div()
+        .px_1p5()
+        .rounded(cx.theme().radius)
+        .text_xs()
+        .text_color(color)
+        .bg(color.opacity(0.12))
+        .child(label.name.clone())
+}
+
+/// The ID of one part of one issue's row, such as `issue_part("waiting",
+/// id)`. It costs no allocation, unlike a formatted name, and tests find
+/// the element with the same call. It takes the low 64 bits of the ID,
+/// which are random in the server's IDs.
+pub fn issue_part(name: &'static str, id: crate::model::data::IssueId) -> ElementId {
+    ElementId::NamedInteger(SharedString::new_static(name), id.as_uuid().as_u64_pair().1)
 }
 
 /// A task ID. A click copies it, so it gets its own hover and pressed

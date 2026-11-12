@@ -212,7 +212,7 @@ fn the_box_marks_a_row_and_a_second_click_clears_it(cx: &mut TestAppContext) {
             // The box shows when the row is hovered.
             window.hover(("row", row), cx);
             window.render_frame(cx);
-            window.click(format!("row-check-{row}"), cx);
+            window.click(("row-check", row), cx);
             window.render_frame(cx);
         })
         .unwrap();

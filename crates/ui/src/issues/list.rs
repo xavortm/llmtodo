@@ -157,7 +157,8 @@ pub struct IssueList {
     width: Rc<Cell<Option<Pixels>>>,
     /// The columns that fit that width and the labels width, set at each
     /// render.
-    layout: columns::Layout,
+    /// Shared with every row, so a row does not copy the column list.
+    layout: std::rc::Rc<columns::Layout>,
     /// The columns the owner hid from the column heading menu.
     pub hidden_columns: Vec<Column>,
     /// What the titles and labels of `visible` ask of the columns. The
@@ -171,8 +172,14 @@ pub struct IssueList {
     build_task: Option<Task<()>>,
     /// The selection rule for the build on its way.
     pending_keep: Option<Keep>,
-    /// Counts builds, so only the newest result lands.
-    generation: u64,
+    /// Builds the rows again when the next task gets old enough to hide.
+    hide_timer: Option<Task<()>>,
+    /// Set when the rows changed while a background build was on its way.
+    /// Its result is then thrown away, and one more build starts.
+    stale: bool,
+    /// How many background builds started, for tests.
+    #[cfg(test)]
+    pub(crate) background_builds: usize,
 }
 
 /// Where the selection goes once new rows land.
@@ -238,13 +245,21 @@ impl IssueList {
             anchor: None,
             scroll: UniformListScrollHandle::new(),
             width: Rc::default(),
-            layout: columns::plan(None, gpui_kit::px(16.), &[], &columns::Demand::default()),
+            layout: std::rc::Rc::new(columns::plan(
+                None,
+                gpui_kit::px(16.),
+                &[],
+                &columns::Demand::default(),
+            )),
             hidden_columns: Vec::new(),
             demand: Cell::new(None),
             background_from: rows::BACKGROUND_FROM,
             build_task: None,
             pending_keep: None,
-            generation: 0,
+            hide_timer: None,
+            stale: false,
+            #[cfg(test)]
+            background_builds: 0,
         }
     }
 
@@ -300,17 +315,24 @@ impl IssueList {
     /// With more, it runs on a background task on a snapshot of the store,
     /// and the list shows the old rows until the result lands.
     ///
-    /// A newer call cancels a build still on its way, so a stale result
-    /// never lands. The selection rule of the cancelled call carries over
-    /// when it is the stronger one: see `Keep::then`. The selection is read
-    /// when the result lands, by stable ID, so a move made meanwhile counts.
+    /// One background build runs at a time. A call while one is on its way
+    /// marks the rows stale. The build's result is then thrown away, and one
+    /// more build starts on a new snapshot, however many calls came. The
+    /// selection rule of the skipped calls carries over when it is the
+    /// stronger one: see `Keep::then`. The selection is read when the
+    /// result lands, by stable ID, so a move made meanwhile counts.
     fn recompute(&mut self, keep: Keep, cx: &mut Context<Self>) {
-        self.generation += 1;
         let keep = match self.pending_keep.take() {
             Some(pending) => pending.then(keep),
             None => keep,
         };
         let store = self.store.read(cx);
+        if self.build_task.is_some() && store.len() >= self.background_from {
+            self.pending_keep = Some(keep);
+            self.stale = true;
+            return;
+        }
+        self.stale = false;
         let now = jiff::Timestamp::now();
         let cutoff = self.hide_closed_after.map(|days| hide_cutoff(days, now));
         let query = self.query.resolve(&store.catalog);
@@ -346,8 +368,11 @@ impl IssueList {
             labels: store.catalog.labels.clone(),
         };
         let issues = store.snapshot();
-        let generation = self.generation;
         self.pending_keep = Some(keep);
+        #[cfg(test)]
+        {
+            self.background_builds += 1;
+        }
         self.build_task = Some(cx.spawn(async move |this, cx| {
             let built = cx
                 .background_spawn(async move {
@@ -355,18 +380,37 @@ impl IssueList {
                 })
                 .await;
             this.update(cx, |list, cx| {
-                if list.generation != generation {
-                    return;
-                }
                 list.build_task = None;
                 let keep = list
                     .pending_keep
                     .take()
                     .unwrap_or(Keep::Current { scroll: false });
-                list.apply(built, keep, cx);
+                if list.stale {
+                    list.recompute(keep, cx);
+                } else {
+                    list.apply(built, keep, cx);
+                }
             })
             .ok();
         }));
+    }
+
+    /// Builds the rows again when the next shown task gets old enough for
+    /// "Hide old closed tasks", so it hides without any write. A new build
+    /// replaces the timer.
+    fn schedule_hide(&mut self, at: Option<jiff::Timestamp>, cx: &mut Context<Self>) {
+        self.hide_timer = at.map(|at| {
+            let wait: std::time::Duration = jiff::Timestamp::now()
+                .duration_until(at)
+                .try_into()
+                .unwrap_or_default();
+            // A little late, so the task is past the cutoff when it runs.
+            let wait = wait + std::time::Duration::from_secs(1);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |list, cx| list.refilter(cx)).ok();
+            })
+        });
     }
 
     /// Puts in a finished build and places the selection.
@@ -375,6 +419,7 @@ impl IssueList {
         let old_row = self.selected;
         self.visible = built.visible;
         self.hidden_closed = built.hidden_closed;
+        self.schedule_hide(built.next_hide, cx);
         self.rows = built.rows;
         self.demand.set(None);
         let kept_row = |list: &Self, cx: &App| match &held {
@@ -438,12 +483,15 @@ impl IssueList {
     /// scopes, sorting and grouping read only the fields compared here, so
     /// a new description or cost needs no refilter. A claim or a mark counts
     /// only while the list reads the LLM status. With "Hide old closed
-    /// tasks" on, a refilter also hides tasks that just got too old, so
-    /// every change keeps doing one.
+    /// tasks" on, a change counts when it hides or shows the task. A timer
+    /// builds the rows again when the next task gets old enough to hide.
     pub fn needs_refilter(&self, old: &Issue, new: &Issue) -> bool {
         let now = jiff::Timestamp::now();
-        self.hide_closed_after.is_some()
-            || (self.reads_llm_status() && old.llm_rank(now) != new.llm_rank(now))
+        let cutoff = self.hide_closed_after.map(|days| hide_cutoff(days, now));
+        // A new close time moves the hide timer too.
+        cutoff.is_some_and(|c| {
+            old.closed_before(c) != new.closed_before(c) || old.closed_at != new.closed_at
+        }) || (self.reads_llm_status() && old.llm_rank(now) != new.llm_rank(now))
             || old.deleted != new.deleted
             || old.key != new.key
             || old.title != new.title
@@ -807,10 +855,15 @@ impl IssueList {
         let state = issue.llm_status(now);
         let spring = cx.theme().motion_tokens().spring_control;
         // Keyed by ID, so a team move does not restart the animation.
-        let id: SharedString = issue.id.to_string().into();
         let target = if state.is_some() { 1.0_f32 } else { 0.0 };
-        let progress: f32 =
-            gpui_kit::base::spring((id.clone(), "llm"), target, spring, window, cx).clamp(0., 1.);
+        let progress: f32 = gpui_kit::base::spring(
+            widgets::issue_part("llm", issue.id),
+            target,
+            spring,
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
         if progress <= 0.001 {
             return None;
         }
@@ -826,7 +879,7 @@ impl IssueList {
                 crate::shell::tooltip::Card::default(),
                 theme.muted,
                 theme.muted_foreground,
-                "ending",
+                "llm-ending",
             ),
             Some(LlmStatus::Locked(claim)) => {
                 let (bg, fg) = crate::shell::theme::locked_badge(theme);
@@ -836,7 +889,7 @@ impl IssueList {
                     crate::shell::tooltip::Card::claim(claim, now),
                     bg,
                     fg,
-                    "locked",
+                    "llm-locked",
                 )
             }
             // Analyzing stays monochrome: only Locked has the owner's color.
@@ -846,13 +899,13 @@ impl IssueList {
                 crate::shell::tooltip::Card::analyzing(mark, now),
                 theme.muted,
                 theme.muted_foreground,
-                "analyzing",
+                "llm-analyzing",
             ),
         };
         let age: SharedString = age.into();
         Some(
             div()
-                .id(SharedString::from(format!("llm-{kind}-{id}")))
+                .id(widgets::issue_part(kind, issue.id))
                 .test_support()
                 .h_5()
                 .flex()
@@ -875,7 +928,7 @@ impl IssueList {
                         .children(icon.map(|icon| Icon::new(icon).xsmall()))
                         .child(
                             div()
-                                .id(SharedString::from(format!("llm-age-{id}")))
+                                .id(widgets::issue_part("llm-age", issue.id))
                                 .test_support()
                                 .child(age),
                         ),
@@ -1052,7 +1105,7 @@ impl IssueList {
                 }
             });
         let target = h_flex()
-            .id(SharedString::from(format!("row-check-{row}")))
+            .id(("row-check", row))
             .test_support()
             .group(CHECK_GROUP)
             .size_full()
@@ -1090,12 +1143,12 @@ impl IssueList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(issue) = self.store.read(cx).get(id).cloned() else {
+        // A shared copy: one counter bump, not a copy of the issue.
+        let Some(issue) = self.store.read(cx).get_shared(id) else {
             return div().id(("row", row)).h_7().into_any_element();
         };
         let selected = row == self.selected;
         let closed = issue.status.is_closed();
-        let tags: Vec<_> = widgets::tags(&issue, cx).collect();
         let layout = self.layout.clone();
         let llm = Self::render_llm_badge(&issue, window, cx);
         let marked = self.marked.contains(&issue.id);
@@ -1170,13 +1223,12 @@ impl IssueList {
             // As many tags as fit, then "+N" for the rest. The last tag
             // shown is cut off if it must be.
             .when(self.shows(Column::Labels), |this| {
-                let name_chars: Vec<usize> = issue
-                    .labels
-                    .iter()
-                    .map(|label| label.name.chars().count())
-                    .collect();
-                let fit = columns::labels_that_fit(&name_chars, layout.labels);
-                let rest = tags.len() - fit;
+                let fit = columns::labels_that_fit(
+                    issue.labels.iter().map(|label| label.name.chars().count()),
+                    layout.labels,
+                );
+                let rest = issue.labels.len() - fit;
+                let tags = issue.labels.iter().take(fit).map(|l| widgets::tag(l, cx));
                 this.child(cell_with(
                     Column::Labels,
                     &layout,
@@ -1184,7 +1236,7 @@ impl IssueList {
                         .w_full()
                         .min_w_0()
                         .gap_1()
-                        .children(tags.into_iter().take(fit).enumerate().map(|(ix, tag)| {
+                        .children(tags.enumerate().map(|(ix, tag)| {
                             if ix + 1 == fit {
                                 tag.min_w_0().truncate()
                             } else {
@@ -1215,7 +1267,7 @@ impl IssueList {
                         .w_full()
                         .justify_center()
                         .children(widgets::waiting_on(
-                            SharedString::from(format!("waiting-{}", issue.id)).into(),
+                            widgets::issue_part("waiting", issue.id),
                             issue.waiting_on,
                             cx,
                         )),
@@ -1555,7 +1607,10 @@ impl Render for IssueList {
         crate::render_count::bump::<Self>();
         let rem_size = window.rem_size();
         let demand = self.demand(cx);
-        self.layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
+        let layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
+        if *self.layout != layout {
+            self.layout = std::rc::Rc::new(layout);
+        }
         let measure = self.measure_width(rem_size, cx);
         let filter_bar = self.render_filter_bar(window, cx);
         let header = self.render_column_header(cx);

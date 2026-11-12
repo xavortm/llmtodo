@@ -234,18 +234,38 @@ impl Filter {
     }
 }
 
+/// Whether `haystack`, lowercased, contains `needle`, which is lowercase
+/// already. ASCII text, the common case, is lowercased into a buffer that
+/// each thread keeps, so a keystroke does not allocate a copy of every
+/// title. Other text is lowercased the usual way, with the full Unicode
+/// rules.
+pub(crate) fn contains_lowercase(haystack: &str, needle: &str) -> bool {
+    thread_local! {
+        static BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    if !haystack.is_ascii() {
+        return haystack.to_lowercase().contains(needle);
+    }
+    BUFFER.with_borrow_mut(|buffer| {
+        buffer.clear();
+        buffer.push_str(haystack);
+        buffer.make_ascii_lowercase();
+        buffer.contains(needle)
+    })
+}
+
 impl ResolvedFilter {
     /// Whether `issue` passes at `now`. A pure function, so the list can
     /// run it off the main thread.
     pub fn matches(&self, issue: &Issue, now: jiff::Timestamp) -> bool {
         let text = self.text.as_str();
         let text_ok = text.is_empty()
-            || issue.title.to_lowercase().contains(text)
-            || issue.key.to_lowercase().contains(text)
+            || contains_lowercase(&issue.title, text)
+            || contains_lowercase(&issue.key, text)
             || issue
                 .labels
                 .iter()
-                .any(|l| l.name.to_lowercase().contains(text));
+                .any(|l| contains_lowercase(&l.name, text));
         text_ok && self.shared.matches(&IssueAt { issue, now })
     }
 }
@@ -253,6 +273,25 @@ impl ResolvedFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_lowercase_matches_like_lowercasing_first() {
+        for (hay, needle) in [
+            ("Fix the List", "the l"),
+            ("LLM-12", "llm-1"),
+            ("LLM-12", "llm-13"),
+            ("ab", "abc"),
+            ("Straße", "straße"),
+            ("ÉCOLE", "école"),
+            ("x", ""),
+        ] {
+            assert_eq!(
+                contains_lowercase(hay, needle),
+                hay.to_lowercase().contains(needle),
+                "{hay:?} {needle:?}"
+            );
+        }
+    }
 
     fn demo() -> (Catalog, Vec<Issue>) {
         let catalog = crate::model::demo::catalog();

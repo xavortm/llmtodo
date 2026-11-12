@@ -417,20 +417,34 @@ fn labels_rem(name_chars: &[usize]) -> f32 {
 /// How many of the labels, with names `name_chars` characters long, fit in
 /// a labels column `room` wide. When some do not fit, the cell ends with
 /// "+N" for the rest, and this leaves room for it. One label always shows,
-/// cut off if it must be.
-pub fn labels_that_fit(name_chars: &[usize], room: Rems) -> usize {
+/// cut off if it must be. Each row calls it, so it allocates nothing.
+pub fn labels_that_fit<I>(name_chars: I, room: Rems) -> usize
+where
+    I: IntoIterator,
+    I::Item: std::borrow::Borrow<usize>,
+    I::IntoIter: Clone,
+{
+    use std::borrow::Borrow as _;
     let room = room.0;
-    // The width of the first `k` tags and the gaps after each of them.
-    let tags = |k: usize| -> f32 { name_chars[..k].iter().map(|c| tag_rem(*c) + TAG_GAP).sum() };
-    let n = name_chars.len();
-    if labels_rem(name_chars) <= room {
+    let chars = name_chars.into_iter().map(|c| *c.borrow());
+    let n = chars.clone().count();
+    let all: f32 = chars.clone().map(tag_rem).sum::<f32>() + TAG_GAP * n.saturating_sub(1) as f32;
+    if all <= room {
         return n;
     }
-    let more = |rest: usize| format!("+{rest}").len() as f32 * TAG_CHAR;
-    (1..n)
-        .rev()
-        .find(|k| tags(*k) + more(n - k) <= room)
-        .unwrap_or(1)
+    // The width of "+N": the plus sign and the digits of N.
+    let more = |rest: usize| (2 + rest.checked_ilog10().unwrap_or(0)) as f32 * TAG_CHAR;
+    // The most tags, short of all of them, whose widths and gaps leave
+    // room for "+N".
+    let mut fit = 1;
+    let mut used = 0.;
+    for (k, c) in (1..n).zip(chars) {
+        used += tag_rem(c) + TAG_GAP;
+        if used + more(n - k) <= room {
+            fit = k;
+        }
+    }
+    fit
 }
 
 /// The frame of a header or issue row: its height, side padding and the
@@ -553,7 +567,7 @@ mod tests {
         // A wide list gives them every label, rounded down to a step.
         let wide = plan_at(2000., &demand);
         assert_eq!(wide.labels, rems(12.25));
-        assert_eq!(labels_that_fit(&[8, 8, 8], rems(12.35)), 3);
+        assert_eq!(labels_that_fit([8, 8, 8], rems(12.35)), 3);
         // In between, they grow with the list.
         let some = plan_at(900., &demand).labels.0;
         assert!(some > 4. && some < 12.25, "{some}");
@@ -637,18 +651,18 @@ mod tests {
     fn as_many_labels_show_as_fit() {
         let room = rems(4.);
         // No labels, one short label, or one that fills the cell.
-        assert_eq!(labels_that_fit(&[], room), 0);
-        assert_eq!(labels_that_fit(&[3], room), 1);
-        assert_eq!(labels_that_fit(&[8], room), 1);
+        assert_eq!(labels_that_fit([0usize; 0], room), 0);
+        assert_eq!(labels_that_fit([3], room), 1);
+        assert_eq!(labels_that_fit([8], room), 1);
         // Two tiny labels fit side by side.
-        assert_eq!(labels_that_fit(&[2, 2], room), 2);
+        assert_eq!(labels_that_fit([2, 2], room), 2);
         // A third does not: one shows, and "+2" takes the rest of the room.
-        assert_eq!(labels_that_fit(&[2, 2, 2], room), 1);
+        assert_eq!(labels_that_fit([2, 2, 2], room), 1);
         // A long first label still shows, cut off, before "+1".
-        assert_eq!(labels_that_fit(&[20], room), 1);
-        assert_eq!(labels_that_fit(&[20, 3], room), 1);
+        assert_eq!(labels_that_fit([20], room), 1);
+        assert_eq!(labels_that_fit([20, 3], room), 1);
         // A wider column fits them all.
-        assert_eq!(labels_that_fit(&[2, 2, 2], rems(8.)), 3);
+        assert_eq!(labels_that_fit([2, 2, 2], rems(8.)), 3);
     }
 
     #[test]
