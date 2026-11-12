@@ -212,24 +212,24 @@
   // air. On the ground the paw moves back 1px per frame. The cat moves
   // forward 1px per frame, so a planted paw stays still on the floor.
   const FRONT_LEG = [
-    [[2, 2], [2, 2], [2, 2], [3, 2], [3, 2], [4, 1], [4, 2]], // 0 paw lands ahead
-    [[2, 2], [2, 2], [2, 2], [3, 2], [3, 1], [3, 1], [3, 2]], // 1
-    [[2, 2], [2, 2], [2, 2], [2, 2], [2, 1], [2, 1], [2, 2]], // 2 under the shoulder
-    [[2, 2], [2, 2], [2, 2], [1, 2], [1, 1], [1, 1], [1, 2]], // 3 pushes off
-    [[2, 2], [2, 2], [2, 2], [3, 1], [2, 1], [1, 2], null], //   4 wrist curls, paw lifts
-    [[2, 2], [2, 2], [2, 2], [3, 1], [3, 1], [2, 2], null], //   5 swings under
-    [[2, 2], [2, 2], [2, 2], [3, 2], [4, 1], [3, 2], null], //   6
-    [[2, 2], [3, 2], [3, 2], [4, 1], [4, 2], [5, 2], null], //   7 reaches forward
+    [[2, 2], [3, 2], [4, 2]], // 0 paw lands ahead
+    [[2, 2], [2, 2], [3, 2]], // 1
+    [[2, 2], [2, 2], [2, 2]], // 2 under the shoulder
+    [[2, 2], [1, 2], [1, 2]], // 3 pushes off
+    [[2, 2], [1, 2], null], //   4 paw lifts behind
+    [[2, 2], [2, 2], null], //   5 swings under
+    [[2, 2], [3, 2], null], //   6
+    [[2, 3], [4, 2], null], //   7 reaches forward
   ];
   const HIND_LEG = [
-    [[2, 3], [2, 3], [2, 3], [3, 2], [3, 1], [4, 1], [4, 2]], // 0 paw lands ahead
-    [[2, 3], [2, 3], [2, 3], [2, 2], [2, 1], [3, 1], [3, 2]], // 1
-    [[2, 3], [2, 3], [2, 3], [2, 2], [1, 1], [2, 1], [2, 2]], // 2 hock bends back
-    [[2, 3], [2, 3], [2, 3], [1, 2], [0, 1], [0, 1], [0, 2]], // 3 pushes off
-    [[2, 3], [2, 3], [2, 3], [2, 2], [1, 1], [0, 2], null], //   4 paw flicks back
-    [[2, 3], [2, 3], [2, 3], [2, 2], [2, 1], [2, 2], null], //   5 tucked
-    [[2, 3], [2, 3], [2, 3], [3, 2], [3, 1], [3, 2], null], //   6
-    [[2, 3], [2, 3], [2, 3], [3, 2], [4, 1], [4, 2], null], //   7 reaches forward
+    [[2, 3], [3, 2], [4, 2]], // 0 paw lands ahead
+    [[2, 3], [2, 2], [3, 2]], // 1
+    [[2, 3], [2, 2], [2, 2]], // 2
+    [[2, 3], [1, 2], [1, 2]], // 3 pushes off
+    [[2, 3], [0, 2], null], //   4 paw flicks back
+    [[2, 3], [2, 2], null], //   5 tucked
+    [[2, 3], [3, 2], null], //   6
+    [[2, 3], [4, 2], null], //   7 reaches forward
   ];
 
   // Wraps fill cells in a 1px outline and returns a full-frame layer.
@@ -259,14 +259,14 @@
     const cells = [];
     poses[((phase % 8) + 8) % 8].forEach((span, r) => {
       if (!span) return;
-      for (let c = 0; c < span[1]; c++) cells.push([x + span[0] + c, 22 + r]);
+      for (let c = 0; c < span[1]; c++) cells.push([x + span[0] + c, 26 + r]);
     });
     return { g: outline(cells, fill, { capTop: false }), x: 0, y: 0 };
   }
 
   // The tail rises from the back. A wave runs from the base to the tip,
   // so the tip swings most. The base stays thick, the tip curls forward.
-  const TAIL_PATH = [[7, 18], [6, 17], [5, 16], [4, 15], [4, 14], [4, 13], [4, 12], [4, 11], [4, 10], [5, 9], [6, 9]];
+  const TAIL_PATH = [[7, 22], [6, 21], [5, 20], [4, 19], [4, 18], [4, 17], [4, 16], [4, 15], [4, 14], [5, 13], [6, 13]];
   function walkTail(f) {
     const cells = [];
     let prevX = null;
@@ -288,10 +288,10 @@
       walkTail(f),
       leg(HIND_LEG, f - 4, 8, "S"),
       leg(FRONT_LEG, f - 6, 16, "S"),
-      { g: "bodySide", x: 6, y: 16 },
+      { g: "bodySide", x: 6, y: 20 },
       leg(HIND_LEG, f, 5, "W"),
       leg(FRONT_LEG, f - 2, 13, "W"),
-      { g: head({ eyes: "right" }), x: 15, y: 9 },
+      { g: head({ eyes: "right" }), x: 15, y: 13 },
     ]);
   }
 
