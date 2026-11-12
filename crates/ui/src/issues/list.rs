@@ -155,13 +155,15 @@ pub struct IssueList {
     scroll: UniformListScrollHandle,
     /// The list's own width after the last layout.
     width: Rc<Cell<Option<Pixels>>>,
-    /// The columns that fit that width, set at each render.
-    columns: Vec<Column>,
+    /// The columns that fit that width and the labels width, set at each
+    /// render.
+    layout: columns::Layout,
     /// The columns the owner hid from the column heading menu.
     pub hidden_columns: Vec<Column>,
-    /// `columns::chars_that_fit` for `visible`. The workspace asks on each
-    /// frame, and the answer changes only when `visible` is computed again.
-    title_chars: Cell<Option<usize>>,
+    /// What the titles and labels of `visible` ask of the columns. The
+    /// workspace asks on each frame, and the answer changes only when
+    /// `visible` is computed again.
+    demand: Cell<Option<columns::Demand>>,
     /// From this many issues, builds run on a background task.
     background_from: usize,
     /// The build on a background task, if one is on its way. Dropping it
@@ -234,9 +236,9 @@ impl IssueList {
             anchor: None,
             scroll: UniformListScrollHandle::new(),
             width: Rc::default(),
-            columns: Column::ALL.to_vec(),
+            layout: columns::plan(None, gpui_kit::px(16.), &[], &columns::Demand::default()),
             hidden_columns: Vec::new(),
-            title_chars: Cell::new(None),
+            demand: Cell::new(None),
             background_from: rows::BACKGROUND_FROM,
             build_task: None,
             pending_keep: None,
@@ -372,7 +374,7 @@ impl IssueList {
         self.visible = built.visible;
         self.hidden_closed = built.hidden_closed;
         self.rows = built.rows;
-        self.title_chars.set(None);
+        self.demand.set(None);
         let kept_row = |list: &Self, cx: &App| match &held {
             Some(Row::Issue(id)) => list.row_of(*id).or_else(|| list.header_of_issue(*id, cx)),
             Some(Row::Header { title, .. }) => list.header_row(title),
@@ -624,23 +626,26 @@ impl IssueList {
     /// The width at which this list shows every column and fits most of
     /// its titles. The task view beside it grows only past this width.
     pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
-        let chars = self.title_chars(cx);
-        columns::comfortable_width_for(chars, rem_size, &self.hidden_columns)
+        columns::comfortable_width_for(&self.demand(cx), rem_size, &self.hidden_columns)
     }
 
-    /// The title length that most titles on the list fit in, from
-    /// `columns::chars_that_fit`.
-    pub(crate) fn title_chars(&self, cx: &App) -> usize {
-        self.title_chars.get().unwrap_or_else(|| {
+    /// What the titles and labels on the list ask of the columns.
+    pub(crate) fn demand(&self, cx: &App) -> columns::Demand {
+        self.demand.get().unwrap_or_else(|| {
             let store = self.store.read(cx);
-            let chars = columns::chars_that_fit(
-                self.visible
-                    .iter()
-                    .filter_map(|id| store.get(*id))
-                    .map(|issue| issue.title.chars().count()),
-            );
-            self.title_chars.set(Some(chars));
-            chars
+            let rows: Vec<(usize, Vec<usize>)> = self
+                .visible
+                .iter()
+                .filter_map(|id| store.get(*id))
+                .map(|issue| {
+                    let names = issue.labels.iter().map(|l| l.name.chars().count());
+                    (issue.title.chars().count(), names.collect())
+                })
+                .collect();
+            let demand =
+                columns::Demand::measure(rows.iter().map(|(t, names)| (*t, names.as_slice())));
+            self.demand.set(Some(demand));
+            demand
         })
     }
 
@@ -723,7 +728,7 @@ impl IssueList {
     /// button in VS Code's explorer. Only shown while the list is grouped.
     /// Whether the list is wide enough to show `column`.
     fn shows(&self, column: Column) -> bool {
-        self.columns.contains(&column)
+        self.layout.columns.contains(&column)
     }
 
     /// Hides `column`, or shows it again. The title always shows.
@@ -1078,6 +1083,7 @@ impl IssueList {
         let selected = row == self.selected;
         let closed = issue.status.is_closed();
         let tags: Vec<_> = widgets::tags(&issue, cx).collect();
+        let layout = self.layout.clone();
         let llm = Self::render_llm_badge(&issue, window, cx);
         let claimed = issue.claim.is_some();
         let marked = self.marked.contains(&issue.id);
@@ -1144,19 +1150,24 @@ impl IssueList {
             .hover(move |s| s.bg(hover))
             .active(move |s| s.bg(pressed))
             .when(self.shows(Column::Check), |this| {
-                this.child(cell_with(Column::Check, check))
+                this.child(cell_with(Column::Check, &layout, check))
             })
             .when(self.shows(Column::Llm), |this| {
-                this.child(cell_with(Column::Llm, div().children(llm)))
+                this.child(cell_with(Column::Llm, &layout, div().children(llm)))
             })
             .when(self.shows(Column::Status), |this| {
-                this.child(cell_with(Column::Status, status_cell(&issue, muted, cx)))
+                this.child(cell_with(
+                    Column::Status,
+                    &layout,
+                    status_cell(&issue, muted, cx),
+                ))
             })
             .when(self.shows(Column::Key), |this| {
-                this.child(cell_with(Column::Key, key))
+                this.child(cell_with(Column::Key, &layout, key))
             })
             .child(cell_with(
                 Column::Title,
+                &layout,
                 div()
                     .w_full()
                     .truncate()
@@ -1171,10 +1182,11 @@ impl IssueList {
                     .iter()
                     .map(|label| label.name.chars().count())
                     .collect();
-                let fit = columns::labels_that_fit(&name_chars);
+                let fit = columns::labels_that_fit(&name_chars, layout.labels);
                 let rest = tags.len() - fit;
                 this.child(cell_with(
                     Column::Labels,
+                    &layout,
                     h_flex()
                         .w_full()
                         .min_w_0()
@@ -1200,11 +1212,12 @@ impl IssueList {
                 ))
             })
             .when(self.shows(Column::Deps), |this| {
-                this.child(cell_with(Column::Deps, div().children(deps)))
+                this.child(cell_with(Column::Deps, &layout, div().children(deps)))
             })
             .when(self.shows(Column::Waiting), |this| {
                 this.child(cell_with(
                     Column::Waiting,
+                    &layout,
                     h_flex()
                         .w_full()
                         .justify_center()
@@ -1216,11 +1229,16 @@ impl IssueList {
                 ))
             })
             .when(self.shows(Column::Assignee), |this| {
-                this.child(cell_with(Column::Assignee, assignee_cell(&issue, muted)))
+                this.child(cell_with(
+                    Column::Assignee,
+                    &layout,
+                    assignee_cell(&issue, muted),
+                ))
             })
             .when(self.shows(Column::Cost), |this| {
                 this.child(cell_with(
                     Column::Cost,
+                    &layout,
                     right_mono_text(muted, cx)
                         .children(issue.cost.map(crate::model::data::format_cost)),
                 ))
@@ -1228,6 +1246,7 @@ impl IssueList {
             .when(self.shows(Column::Time), |this| {
                 this.child(cell_with(
                     Column::Time,
+                    &layout,
                     right_mono_text(muted, cx).children(
                         issue
                             .active_seconds
@@ -1238,6 +1257,7 @@ impl IssueList {
             .when(self.shows(Column::Added), |this| {
                 this.child(cell_with(
                     Column::Added,
+                    &layout,
                     right_mono_text(muted, cx).child(issue.added.short()),
                 ))
             })
@@ -1272,12 +1292,12 @@ impl IssueList {
         let width = self.width.clone();
         let entity = cx.entity_id();
         let hidden = self.hidden_columns.clone();
-        let chars = self.title_chars(cx);
+        let demand = self.demand(cx);
         gpui_kit::canvas(
             move |bounds, _, cx| {
                 let old = width.replace(Some(bounds.size.width));
-                if columns::visible(old, rem_size, &hidden, chars)
-                    != columns::visible(Some(bounds.size.width), rem_size, &hidden, chars)
+                if columns::plan(old, rem_size, &hidden, &demand)
+                    != columns::plan(Some(bounds.size.width), rem_size, &hidden, &demand)
                 {
                     cx.notify(entity);
                 }
@@ -1402,6 +1422,7 @@ impl IssueList {
             )
         };
         let muted = theme.muted_foreground;
+        let layout = self.layout.clone();
         let label = move |text: &'static str| div().px_1().text_color(muted).child(text);
         // The same frame and cells as an issue row. The bottom line sits on
         // a wrapper.
@@ -1409,54 +1430,60 @@ impl IssueList {
             .h_full()
             .text_xs()
             .when(self.shows(Column::Check), |this| {
-                this.child(cell_with(Column::Check, div()))
+                this.child(cell_with(Column::Check, &layout, div()))
             })
             .when(self.shows(Column::Llm), |this| {
                 this.child(cell_with(
                     Column::Llm,
+                    &layout,
                     sort_header("sort-llm", "LLM", "LLM status", SortKey::Llm),
                 ))
             })
             .when(self.shows(Column::Status), |this| {
                 this.child(cell_with(
                     Column::Status,
+                    &layout,
                     sort_header("sort-status", "Status", "status", SortKey::Status),
                 ))
             })
             .when(self.shows(Column::Key), |this| {
                 this.child(cell_with(
                     Column::Key,
+                    &layout,
                     sort_header("sort-key", "Key", "key", SortKey::Key),
                 ))
             })
-            .child(cell_with(Column::Title, label("Title")))
+            .child(cell_with(Column::Title, &layout, label("Title")))
             .when(self.shows(Column::Labels), |this| {
-                this.child(cell_with(Column::Labels, label("Labels")))
+                this.child(cell_with(Column::Labels, &layout, label("Labels")))
             })
             .when(self.shows(Column::Deps), |this| {
-                this.child(cell_with(Column::Deps, div()))
+                this.child(cell_with(Column::Deps, &layout, div()))
             })
             .when(self.shows(Column::Waiting), |this| {
-                this.child(cell_with(Column::Waiting, div()))
+                this.child(cell_with(Column::Waiting, &layout, div()))
             })
             .when(self.shows(Column::Assignee), |this| {
-                this.child(cell_with(Column::Assignee, div()))
+                this.child(cell_with(Column::Assignee, &layout, div()))
             })
             .when(self.shows(Column::Cost), |this| {
                 this.child(cell_with(
                     Column::Cost,
+                    &layout,
                     h_flex().w_full().justify_end().child(label("Cost")),
                 ))
             })
             .when(self.shows(Column::Time), |this| {
                 this.child(cell_with(
                     Column::Time,
+                    &layout,
                     h_flex().w_full().justify_end().child(label("Time")),
                 ))
             })
             .when(self.shows(Column::Added), |this| {
                 this.child(cell_with(
                     Column::Added,
+                    &layout,
                     h_flex().w_full().justify_end().child(sort_header(
                         "sort-added",
                         "Added",
@@ -1532,8 +1559,8 @@ impl IssueList {
 impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rem_size = window.rem_size();
-        let chars = self.title_chars(cx);
-        self.columns = columns::visible(self.width.get(), rem_size, &self.hidden_columns, chars);
+        let demand = self.demand(cx);
+        self.layout = columns::plan(self.width.get(), rem_size, &self.hidden_columns, &demand);
         let measure = self.measure_width(rem_size, cx);
         let filter_bar = self.render_filter_bar(window, cx);
         let header = self.render_column_header(cx);

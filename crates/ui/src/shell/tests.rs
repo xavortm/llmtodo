@@ -3183,10 +3183,10 @@ fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let width = window.find("column-header").bounds().size.width;
         let open = shown(window);
-        let chars = view.read(cx).list().read(cx).title_chars(cx);
+        let demand = view.read(cx).list().read(cx).demand(cx);
         assert_eq!(
             open,
-            columns::visible(Some(width), window.rem_size(), &[], chars)
+            columns::visible(Some(width), window.rem_size(), &[], &demand)
         );
         assert!(
             !open.contains(&Column::Added),
