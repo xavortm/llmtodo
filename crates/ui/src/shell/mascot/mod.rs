@@ -1,7 +1,11 @@
 //! The pixel cat at the bottom of the sidebar. It types on a laptop while
-//! an agent works on a task and sleeps when nothing goes on. A hover or a
-//! click makes it sit and watch, then walk or nap. `behaviour.rs` holds
-//! those rules, and `sprites.rs` the art.
+//! an agent works on a task, and a double click walks it to the other side.
+//! It sleeps when nothing goes on, and a hover or a click makes it sit and
+//! watch, then walk or nap. `behaviour.rs` holds those rules, and
+//! `sprites.rs` the art.
+//!
+//! The cat has no hover or pressed style. The owner asked for that, as the
+//! one exception to the rule that every clickable element shows both.
 //!
 //! The mascot is its own entity, so a new frame notifies only this view.
 //! Its timer runs only while the sidebar is on screen: the workspace calls
@@ -20,9 +24,9 @@ use std::time::Duration;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
-    Bounds, Context, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, Render, StatefulInteractiveElement as _, Styled as _, Task, Window, canvas, div, point,
-    px, rems, size,
+    Bounds, ClickEvent, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Task, Window,
+    canvas, div, point, prelude::FluentBuilder as _, px, rems, size,
 };
 
 use crate::model::store::IssueStore;
@@ -32,6 +36,9 @@ use sprites::{Run, sprites};
 /// One sprite pixel, in rems: 2 px at the default zoom, so the 32-pixel
 /// frame is 64 px.
 const PIXEL_REMS: f32 = 0.125;
+
+/// The gap between the cat and the sidebar's edges, in sprite pixels.
+const INSET: i32 = 2;
 
 pub const CAT_ID: &str = "mascot-cat";
 
@@ -99,6 +106,8 @@ impl Mascot {
             // Claims may have changed while the cat was off screen.
             self.behaviour
                 .set_active(agent_active(self.store.read(cx), jiff::Timestamp::now()));
+            // Every open, the start of the app too, begins with a walk-in.
+            self.behaviour.enter();
         }
         self.restart(cx);
     }
@@ -116,9 +125,10 @@ impl Mascot {
         }
     }
 
-    fn poke(&mut self, cx: &mut Context<Self>) {
-        self.behaviour.poke(sprites());
-        self.restart(cx);
+    fn click(&mut self, count: usize, cx: &mut Context<Self>) {
+        if self.behaviour.click(count, sprites()) {
+            self.restart(cx);
+        }
     }
 
     /// Draws the current step now and times the next one from now.
@@ -153,16 +163,18 @@ impl Mascot {
         }));
     }
 
-    /// Fits the walk to the strip's width from the last layout.
+    /// Fits the walk to the strip's width from the last layout. The strip
+    /// is as wide as the sidebar, so it clips the cat at the sidebar's edge.
     fn sync_range(&mut self) {
         let Some((width, pixel)) = self.measured.get() else {
             return;
         };
         let art = sprites();
         let columns = (width / pixel).floor() as i32;
-        let low = -i32::from(art.cols.0);
-        let high = columns - 1 - i32::from(art.cols.1);
-        self.behaviour.set_range(low, high);
+        let low = INSET - i32::from(art.cols.0);
+        let high = columns - 1 - INSET - i32::from(art.cols.1);
+        let away = -1 - i32::from(art.cols.1);
+        self.behaviour.set_range(low, high, away);
     }
 }
 
@@ -173,17 +185,17 @@ impl Render for Mascot {
         let runs = art.frame(self.behaviour.anim(), self.behaviour.step());
         let theme = cx.theme();
         let palette = art.palette(theme.is_dark());
-        let hover = theme.list_hover;
-        let pressed = crate::shell::theme::row_pressed(theme);
         let frame = rems(PIXEL_REMS * f32::from(art.size));
         let measured = self.measured.clone();
         let entity = cx.entity_id();
+        let visible = self.behaviour.visible();
         div()
             .id("mascot")
             .relative()
             .w_full()
             .h(frame)
             .flex_none()
+            .overflow_hidden()
             // Notes the strip's width, so the walk turns at its edges.
             .child(
                 canvas(
@@ -198,30 +210,34 @@ impl Render for Mascot {
                 .absolute()
                 .size_full(),
             )
-            .child(
-                div()
-                    .id(CAT_ID)
-                    .test_support()
-                    .absolute()
-                    .top_0()
-                    .left(rems(PIXEL_REMS * self.behaviour.x() as f32))
-                    .size(frame)
-                    .rounded(theme.radius)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .active(move |s| s.bg(pressed))
-                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                        this.set_hovered(*hovered, cx);
-                    }))
-                    .on_click(cx.listener(|this, _, _, cx| this.poke(cx)))
-                    .child(
-                        canvas(
-                            |_, _, _| {},
-                            move |bounds, _, window, _| paint_frame(runs, palette, bounds, window),
-                        )
-                        .size_full(),
-                    ),
-            )
+            // Out of view, the cat draws nothing, so it takes no hover.
+            .when(visible, |this| {
+                this.child(
+                    div()
+                        .id(CAT_ID)
+                        .test_support()
+                        .absolute()
+                        .top_0()
+                        .left(rems(PIXEL_REMS * self.behaviour.x() as f32))
+                        .size(frame)
+                        .cursor_pointer()
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            this.set_hovered(*hovered, cx);
+                        }))
+                        .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                            this.click(event.click_count(), cx);
+                        }))
+                        .child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    paint_frame(runs, palette, bounds, window)
+                                },
+                            )
+                            .size_full(),
+                        ),
+                )
+            })
     }
 }
 

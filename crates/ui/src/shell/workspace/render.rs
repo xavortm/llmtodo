@@ -191,7 +191,7 @@ impl Workspace {
                         .cached(gpui_kit::StyleRefinement::default().size_full()),
                 ),
             )
-            .child(div().flex_none().px_1().pb_1().child(self.mascot.clone()))
+            .child(div().flex_none().pb_1().child(self.mascot.clone()))
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
