@@ -7,9 +7,14 @@ use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_uuid};
 use crate::error::ApiResult;
-use crate::store::issues;
+use crate::store::{issues, teams};
 
-pub async fn relations(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Relation>> {
+/// The relations of one issue, with the statuses given.
+pub async fn relations(
+    conn: &mut SqliteConnection,
+    issue_id: &str,
+    statuses: &HashMap<String, teams::StatusRow>,
+) -> ApiResult<Vec<Relation>> {
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         "SELECT id, type, from_id, to_id, created_at FROM relations WHERE from_id = ? OR to_id = ? ORDER BY created_at",
     )
@@ -21,23 +26,9 @@ pub async fn relations(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult
         .iter()
         .map(|(_, _, f, t, _)| if f == issue_id { t.clone() } else { f.clone() })
         .collect();
-    let links: HashMap<String, IssueLink> = {
-        let loaded = issues::load(conn, &others, false).await?;
-        loaded
-            .into_iter()
-            .map(|i| {
-                (
-                    i.id.to_string(),
-                    IssueLink {
-                        key: i.key,
-                        title: i.title,
-                        status: i.status,
-                        deleted: i.deleted_at.is_some(),
-                    },
-                )
-            })
-            .collect()
-    };
+    // Short forms only: the full issue loader would also read claims,
+    // blockers and costs that a relation never shows.
+    let links: HashMap<String, IssueLink> = issues::link_map_with(conn, &others, statuses).await?;
     Ok(rows
         .into_iter()
         .filter_map(|(id, kind, from, to, created)| {

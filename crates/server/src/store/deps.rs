@@ -318,12 +318,8 @@ pub async fn tree(conn: &mut SqliteConnection, root: &str, open_only: bool) -> A
             }
         }
     }
-    let links = issues::link_map(conn, &ids).await?;
-    let statuses: HashMap<String, teams::StatusRow> = teams::statuses(conn, None)
-        .await?
-        .into_iter()
-        .map(|s| (s.id.clone(), s))
-        .collect();
+    let statuses = teams::status_map(conn).await?;
+    let links = issues::link_map_with(conn, &ids, &statuses).await?;
     let blockers = Blockers::load(conn, &ids, &statuses).await?;
     let builder = TreeBuilder {
         links: &links,

@@ -15,11 +15,8 @@ pub async fn list_projects(
     Query(p): Query<ProjectQuery>,
 ) -> ApiResult<Json<Vec<Project>>> {
     let mut c = st.pool().acquire().await?;
-    let mut out = Vec::new();
-    for row in projects::rows(&mut c, p.trashed).await? {
-        out.push(projects::to_api(&mut c, row).await?);
-    }
-    Ok(Json(out))
+    let rows = projects::rows(&mut c, p.trashed).await?;
+    Ok(Json(projects::all_to_api(&mut c, rows).await?))
 }
 
 pub async fn view_project(

@@ -3313,3 +3313,116 @@ fn an_old_saved_query_still_reads() {
     let back = serde_json::to_value(&q).unwrap();
     assert_eq!(back["statuses"], json!(["Todo"]));
 }
+
+/// LLM-180: the team and project lists load statuses, teams and repos in one
+/// query each, and each item still matches its own view.
+#[tokio::test]
+async fn catalog_lists_match_each_view() {
+    let t = T::new().await;
+    let o = owner();
+    t.ok(
+        &o,
+        "POST",
+        "/v1/teams",
+        json!({ "key": "BEE", "name": "Bee" }),
+    )
+    .await;
+    t.ok(
+        &o,
+        "PATCH",
+        "/v1/teams/BEE",
+        json!({ "pr_open_status": "In Progress" }),
+    )
+    .await;
+    for (name, teams) in [
+        ("One", json!(["ALX"])),
+        ("Two", json!(["BEE", "ALX"])),
+        ("Three", json!([])),
+    ] {
+        t.ok(
+            &o,
+            "POST",
+            "/v1/projects",
+            json!({ "name": name, "teams": teams }),
+        )
+        .await;
+    }
+    for (p, repo) in [("one", "o/a"), ("two", "o/c"), ("two", "o/b")] {
+        t.ok(
+            &o,
+            "POST",
+            &format!("/v1/projects/{p}/repos"),
+            json!({ "repo": repo }),
+        )
+        .await;
+    }
+
+    let teams = t.ok(&o, "GET", "/v1/teams", json!(null)).await;
+    assert_eq!(teams.as_array().unwrap().len(), 2);
+    for team in teams.as_array().unwrap() {
+        let key = team["key"].as_str().unwrap();
+        let one = t
+            .ok(&o, "GET", &format!("/v1/teams/{key}"), json!(null))
+            .await;
+        assert_eq!(team, &one);
+        assert!(!team["statuses"].as_array().unwrap().is_empty());
+    }
+    assert_eq!(teams[1]["pr_open_status"], "In Progress");
+
+    let projects = t.ok(&o, "GET", "/v1/projects", json!(null)).await;
+    let by_slug = |slug: &str| {
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["slug"] == slug)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_slug("one")["teams"], json!(["ALX"]));
+    assert_eq!(by_slug("one")["repos"], json!(["o/a"]));
+    assert_eq!(by_slug("two")["teams"], json!(["ALX", "BEE"]));
+    assert_eq!(by_slug("two")["repos"], json!(["o/b", "o/c"]));
+    assert_eq!(by_slug("three")["teams"], json!([]));
+    for p in projects.as_array().unwrap() {
+        let slug = p["slug"].as_str().unwrap();
+        let one = t
+            .ok(&o, "GET", &format!("/v1/projects/{slug}"), json!(null))
+            .await;
+        assert_eq!(p, &one);
+    }
+
+    // The document list sends no body, and a document view still does.
+    t.ok(
+        &o,
+        "POST",
+        "/v1/documents",
+        json!({ "project": "one", "title": "Notes", "body": "Long text.\n" }),
+    )
+    .await;
+    let docs = t.ok(&o, "GET", "/v1/documents", json!(null)).await;
+    assert!(docs[0]["body"].is_null(), "{docs}");
+    let doc = t
+        .ok(&o, "GET", "/v1/documents/one%2Fnotes", json!(null))
+        .await;
+    assert_eq!(doc["body"], "Long text.\n");
+
+    // A relation shows the other issue's short form.
+    let a = t.issue("Blocked", json!({ "team": "ALX" })).await;
+    let b = t.issue("Blocker", json!({ "team": "ALX" })).await;
+    t.ok(
+        &o,
+        "POST",
+        &format!("/v1/issues/{b}/relations"),
+        json!({ "type": "blocks", "issue": a }),
+    )
+    .await;
+    let d = t
+        .ok(&o, "GET", &format!("/v1/issues/{a}"), json!(null))
+        .await;
+    assert_eq!(d["relations"][0]["direction"], "blocked-by");
+    assert_eq!(d["relations"][0]["issue"]["key"], b);
+    assert_eq!(d["relations"][0]["issue"]["title"], "Blocker");
+    assert_eq!(d["relations"][0]["issue"]["status"]["name"], "Todo");
+    t.stop().await;
+}

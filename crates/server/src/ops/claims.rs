@@ -378,11 +378,7 @@ async fn open_blockers_warning(
     row: &IssueRow,
     warnings: &mut Vec<String>,
 ) -> ApiResult<Vec<IssueLink>> {
-    let statuses: HashMap<String, teams::StatusRow> = teams::statuses(w.c(), None)
-        .await?
-        .into_iter()
-        .map(|s| (s.id.clone(), s))
-        .collect();
+    let statuses: HashMap<String, teams::StatusRow> = teams::status_map(w.c()).await?;
     let blockers = deps::Blockers::load(w.c(), std::slice::from_ref(&row.id), &statuses).await?;
     let open_blockers = blockers.open_blockers(&row.id);
     if !open_blockers.is_empty() {

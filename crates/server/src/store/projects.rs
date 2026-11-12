@@ -59,27 +59,51 @@ pub async fn rows(
 }
 
 pub async fn to_api(conn: &mut SqliteConnection, p: ProjectRow) -> ApiResult<Project> {
-    let teams: Vec<String> = sqlx::query_scalar("SELECT t.key FROM project_teams pt JOIN teams t ON t.id = pt.team_id WHERE pt.project_id = ? ORDER BY t.key")
-        .bind(&p.id)
-        .fetch_all(&mut *conn)
-        .await?;
-    let repos: Vec<String> =
-        sqlx::query_scalar("SELECT repo FROM project_repos WHERE project_id = ? ORDER BY repo")
-            .bind(&p.id)
+    Ok(all_to_api(conn, vec![p]).await?.remove(0))
+}
+
+/// Builds every project from one query for teams and one for repos.
+pub async fn all_to_api(
+    conn: &mut SqliteConnection,
+    rows: Vec<ProjectRow>,
+) -> ApiResult<Vec<Project>> {
+    let ids = serde_json::to_string(&rows.iter().map(|p| &p.id).collect::<Vec<_>>())?;
+    let mut teams = grouped(
+        sqlx::query_as("SELECT pt.project_id, t.key FROM project_teams pt JOIN teams t ON t.id = pt.team_id WHERE pt.project_id IN (SELECT value FROM json_each(?)) ORDER BY t.key")
+            .bind(&ids)
             .fetch_all(&mut *conn)
-            .await?;
-    Ok(Project {
-        id: parse_uuid(&p.id),
-        slug: p.slug,
-        name: p.name,
-        description: p.description,
-        state: p.state.parse().unwrap_or(ProjectState::Backlog),
-        teams,
-        repos,
-        created_at: parse_ts(&p.created_at),
-        updated_at: parse_ts(&p.updated_at),
-        deleted_at: parse_ts_opt(p.deleted_at),
-    })
+            .await?,
+    );
+    let mut repos = grouped(
+        sqlx::query_as("SELECT project_id, repo FROM project_repos WHERE project_id IN (SELECT value FROM json_each(?)) ORDER BY repo")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?,
+    );
+    Ok(rows
+        .into_iter()
+        .map(|p| Project {
+            id: parse_uuid(&p.id),
+            teams: teams.remove(&p.id).unwrap_or_default(),
+            repos: repos.remove(&p.id).unwrap_or_default(),
+            slug: p.slug,
+            name: p.name,
+            description: p.description,
+            state: p.state.parse().unwrap_or(ProjectState::Backlog),
+            created_at: parse_ts(&p.created_at),
+            updated_at: parse_ts(&p.updated_at),
+            deleted_at: parse_ts_opt(p.deleted_at),
+        })
+        .collect())
+}
+
+/// Groups `(project_id, value)` pairs by project, keeping their order.
+fn grouped(pairs: Vec<(String, String)>) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for (project, value) in pairs {
+        out.entry(project).or_default().push(value);
+    }
+    out
 }
 
 #[derive(sqlx::FromRow, Clone)]

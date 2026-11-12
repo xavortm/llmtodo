@@ -12,11 +12,8 @@ use crate::store::teams;
 
 pub async fn list_teams(State(st): State<AppState>) -> ApiResult<Json<Vec<Team>>> {
     let mut c = st.pool().acquire().await?;
-    let mut out = Vec::new();
-    for t in teams::team_rows(&mut c).await? {
-        out.push(teams::to_api(&mut c, t).await?);
-    }
-    Ok(Json(out))
+    let rows = teams::team_rows(&mut c).await?;
+    Ok(Json(teams::all_to_api(&mut c, rows).await?))
 }
 
 pub async fn view_team(State(st): State<AppState>, Path(r): Path<String>) -> ApiResult<Json<Team>> {

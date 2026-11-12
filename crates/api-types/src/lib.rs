@@ -194,6 +194,9 @@ pub struct Actor {
 
 // ---------------------------------------------------------------- lists
 
+/// The most issues one page of an issue query returns.
+pub const MAX_ISSUE_PAGE: u32 = 1000;
+
 /// One page of a list. Pass `next_cursor` back as `cursor` for the next page.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Page<T> {

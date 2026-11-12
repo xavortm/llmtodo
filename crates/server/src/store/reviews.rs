@@ -1,6 +1,8 @@
 //! The owner's review answers.
 
-use llmtodo_api_types::{ReviewAnswer, ReviewVerdict};
+use std::collections::HashMap;
+
+use llmtodo_api_types::{Actor, ReviewAnswer, ReviewVerdict};
 use sqlx::SqliteConnection;
 
 use crate::db::{new_id, now, parse_ts};
@@ -16,21 +18,37 @@ struct Row {
     created_at: String,
 }
 
-/// Every answer of one issue, oldest first.
-pub async fn for_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<ReviewAnswer>> {
-    let rows: Vec<Row> = sqlx::query_as(
+async fn rows(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Row>> {
+    Ok(sqlx::query_as(
         "SELECT round, verdict, feedback, author_id, created_at FROM reviews
          WHERE issue_id = ? ORDER BY round",
     )
     .bind(issue_id)
     .fetch_all(&mut *c)
-    .await?;
+    .await?)
+}
+
+/// Every answer of one issue, oldest first.
+pub async fn for_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<ReviewAnswer>> {
+    let rows = rows(c, issue_id).await?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }
     let all = actors::all(c).await?;
-    Ok(rows
-        .into_iter()
+    Ok(answers(rows, &all))
+}
+
+/// Every answer of one issue, oldest first, with the actors given.
+pub async fn for_issue_with(
+    c: &mut SqliteConnection,
+    issue_id: &str,
+    all: &HashMap<String, Actor>,
+) -> ApiResult<Vec<ReviewAnswer>> {
+    Ok(answers(rows(c, issue_id).await?, all))
+}
+
+fn answers(rows: Vec<Row>, all: &HashMap<String, Actor>) -> Vec<ReviewAnswer> {
+    rows.into_iter()
         .map(|r| ReviewAnswer {
             round: r.round,
             verdict: r.verdict.parse().unwrap_or(ReviewVerdict::Approved),
@@ -38,7 +56,7 @@ pub async fn for_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Ve
             author: r.author_id.and_then(|a| all.get(&a).cloned()),
             created_at: parse_ts(&r.created_at),
         })
-        .collect())
+        .collect()
 }
 
 /// The highest round of an issue, or 0.

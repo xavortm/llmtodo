@@ -4,12 +4,14 @@ use llmtodo_api_types::{Attachment, AttachmentKind, GitPr, IssueDetail, IssueGit
 use sqlx::SqliteConnection;
 
 use crate::error::ApiResult;
-use crate::store::{actors, attachments, comments, issues, relations, reviews, sessions, usage};
+use crate::store::{attachments, comments, issues, relations, reviews, sessions, usage};
 
 /// One issue with everything an agent needs.
 pub async fn load(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<IssueDetail> {
-    let issue = issues::load_one(conn, issue_id, true).await?;
-    let actors = actors::all(conn).await?;
+    // One lookup of statuses and actors serves every part below.
+    let lookup = issues::Lookup::load(conn).await?;
+    let actors = &lookup.actors;
+    let issue = issues::load_one_with(conn, issue_id, true, &lookup).await?;
     let aliases: Vec<String> = sqlx::query_scalar(
         "SELECT key FROM issue_keys WHERE issue_id = ? AND key <> ? ORDER BY key",
     )
@@ -23,8 +25,8 @@ pub async fn load(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<Issu
     .bind(issue_id)
     .fetch_all(&mut *conn)
     .await?;
-    let children = issues::links(conn, &child_ids).await?;
-    let sessions = sessions::for_issue(conn, issue_id, &actors).await?;
+    let children = issues::links(conn, &child_ids, &lookup.statuses).await?;
+    let sessions = sessions::for_issue(conn, issue_id, actors).await?;
     let mut total = std::collections::BTreeMap::new();
     for ws in &sessions {
         usage::merge(&mut total, &ws.usage.by_model);
@@ -35,13 +37,13 @@ pub async fn load(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<Issu
     Ok(IssueDetail {
         aliases,
         children,
-        relations: relations::relations(conn, issue_id).await?,
+        relations: relations::relations(conn, issue_id, &lookup.statuses).await?,
         attachments,
         git,
-        comments: comments::comments(conn, issue_id, &actors).await?,
+        comments: comments::comments(conn, issue_id, actors).await?,
         sessions,
         usage: usage::summary(total, &prices),
-        reviews: reviews::for_issue(conn, issue_id).await?,
+        reviews: reviews::for_issue_with(conn, issue_id, actors).await?,
         issue,
     })
 }

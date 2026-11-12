@@ -39,13 +39,18 @@ impl DocRow {
 const D_SELECT: &str = "SELECT d.id, d.project_id, p.slug AS project_slug, d.slug, d.title, d.body, d.version, d.created_at, d.updated_at, d.deleted_at
     FROM documents d JOIN projects p ON p.id = d.project_id";
 
+/// The list columns: every column but the body, which a list never sends.
+const D_LIST: &str = "SELECT d.id, d.project_id, p.slug AS project_slug, d.slug, d.title, '' AS body, d.version, d.created_at, d.updated_at, d.deleted_at
+    FROM documents d JOIN projects p ON p.id = d.project_id";
+
+/// Lists documents with an empty body.
 pub async fn documents(
     conn: &mut SqliteConnection,
     project_id: Option<&str>,
     trashed: bool,
 ) -> ApiResult<Vec<DocRow>> {
     Ok(sqlx::query_as::<_, DocRow>(crate::sql!(
-        "{D_SELECT} WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL)) ORDER BY p.slug, d.title COLLATE NOCASE"
+        "{D_LIST} WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL)) ORDER BY p.slug, d.title COLLATE NOCASE"
     ))
     .bind(project_id)
     .bind(project_id)
@@ -55,7 +60,8 @@ pub async fn documents(
     .await?)
 }
 
-/// Documents that match an FTS5 `terms` query, best match first.
+/// Documents that match an FTS5 `terms` query, best match first, with an
+/// empty body.
 pub async fn search_documents(
     conn: &mut SqliteConnection,
     project_id: Option<&str>,
@@ -64,7 +70,7 @@ pub async fn search_documents(
 ) -> ApiResult<Vec<DocRow>> {
     Ok(sqlx::query_as::<_, DocRow>(crate::sql!(
         "WITH fts AS MATERIALIZED (SELECT entity_id, -rank AS score FROM search_fts WHERE search_fts MATCH ? AND entity_type = 'document')
-        {D_SELECT} JOIN fts ON fts.entity_id = d.id
+        {D_LIST} JOIN fts ON fts.entity_id = d.id
         WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL))
         ORDER BY fts.score DESC, p.slug, d.title COLLATE NOCASE"
     ))

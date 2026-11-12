@@ -29,6 +29,32 @@ async fn timed_list(url: &str, http: &reqwest::Client, limit: u32) -> Duration {
     best
 }
 
+/// Reads every issue in ID order, as the app's snapshot does. Returns the
+/// time and the number of pages.
+async fn timed_walk(url: &str, http: &reqwest::Client, limit: u32) -> (Duration, usize) {
+    let start = Instant::now();
+    let mut cursor: Option<String> = None;
+    let (mut pages, mut seen) = (0, 0);
+    loop {
+        let res = http
+            .post(format!("{url}/v1/issues/query"))
+            .json(&json!({ "limit": limit, "order": "id", "cursor": cursor }))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success());
+        let v: Value = res.json().await.unwrap();
+        pages += 1;
+        seen += v["items"].as_array().unwrap().len();
+        match v["next_cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    assert_eq!(seen as i64, ISSUES);
+    (start.elapsed(), pages)
+}
+
 #[tokio::test]
 #[ignore = "builds a large database"]
 async fn list_with_large_dependency_graphs() {
@@ -84,6 +110,12 @@ async fn list_with_large_dependency_graphs() {
 
     let no_usage = timed_list(&url, &http, 1000).await;
     println!("{ISSUES} issues, no usage, page of 1000: {no_usage:?}");
+    let no_usage_small = timed_list(&url, &http, 100).await;
+    println!("{ISSUES} issues, no usage, page of 100: {no_usage_small:?}");
+    for limit in [100, 1000] {
+        let (t, pages) = timed_walk(&url, &http, limit).await;
+        println!("every issue in ID order, pages of {limit}: {t:?} in {pages} pages");
+    }
 
     // Three agent sessions per issue, each with usage on two models.
     sqlx::query(

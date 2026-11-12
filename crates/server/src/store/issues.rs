@@ -200,6 +200,22 @@ pub async fn live_analyzing(
         .collect())
 }
 
+/// The statuses and actors that issue rows point at. A request that builds
+/// issues in several steps loads them once and passes them down.
+pub struct Lookup {
+    pub statuses: HashMap<String, teams::StatusRow>,
+    pub actors: HashMap<String, Actor>,
+}
+
+impl Lookup {
+    pub async fn load(conn: &mut SqliteConnection) -> ApiResult<Self> {
+        Ok(Self {
+            statuses: teams::status_map(conn).await?,
+            actors: actors::all(conn).await?,
+        })
+    }
+}
+
 /// Loads issues in the order of `ids`.
 pub async fn load(
     conn: &mut SqliteConnection,
@@ -209,16 +225,26 @@ pub async fn load(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
+    let lookup = Lookup::load(conn).await?;
+    load_with(conn, ids, with_description, &lookup).await
+}
+
+/// Loads issues in the order of `ids`, with statuses and actors given.
+pub async fn load_with(
+    conn: &mut SqliteConnection,
+    ids: &[String],
+    with_description: bool,
+    lookup: &Lookup,
+) -> ApiResult<Vec<Issue>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let rows = rows(conn, ids, with_description).await?;
-    let statuses: HashMap<String, teams::StatusRow> = teams::statuses(conn, None)
-        .await?
-        .into_iter()
-        .map(|s| (s.id.clone(), s))
-        .collect();
-    let actors = actors::all(conn).await?;
-    let claims = live_claims(conn, ids, &actors).await?;
-    let analyzing = live_analyzing(conn, ids, &actors).await?;
-    let blockers = deps::Blockers::load(conn, ids, &statuses).await?;
+    let statuses = &lookup.statuses;
+    let actors = &lookup.actors;
+    let claims = live_claims(conn, ids, actors).await?;
+    let analyzing = live_analyzing(conn, ids, actors).await?;
+    let blockers = deps::Blockers::load(conn, ids, statuses).await?;
     let mut costs = crate::store::usage::cost_by_issue(conn, ids).await?;
     let open_questions = crate::store::questions::open_counts(conn, ids).await?;
     let mut times = crate::store::usage::active_seconds_by_issue(conn, ids).await?;
@@ -295,6 +321,18 @@ pub async fn load_one(
         .ok_or_else(|| ApiError::not_found("issue", id))
 }
 
+pub async fn load_one_with(
+    conn: &mut SqliteConnection,
+    id: &str,
+    with_description: bool,
+    lookup: &Lookup,
+) -> ApiResult<Issue> {
+    load_with(conn, &[id.to_string()], with_description, lookup)
+        .await?
+        .pop()
+        .ok_or_else(|| ApiError::not_found("issue", id))
+}
+
 /// Short forms of issues, by issue ID. It runs no blocker query, so the
 /// blocker code can call it.
 pub async fn link_map(
@@ -304,11 +342,19 @@ pub async fn link_map(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let statuses: HashMap<String, teams::StatusRow> = teams::statuses(conn, None)
-        .await?
-        .into_iter()
-        .map(|s| (s.id.clone(), s))
-        .collect();
+    let statuses = teams::status_map(conn).await?;
+    link_map_with(conn, ids, &statuses).await
+}
+
+/// Short forms of issues, by issue ID, with the statuses given.
+pub async fn link_map_with(
+    conn: &mut SqliteConnection,
+    ids: &[String],
+    statuses: &HashMap<String, teams::StatusRow>,
+) -> ApiResult<HashMap<String, IssueLink>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let mut out = HashMap::with_capacity(ids.len());
     for r in rows(conn, ids, false).await? {
         let status = statuses
@@ -333,8 +379,12 @@ pub async fn link_map(
 }
 
 /// Short forms of issues, in the order of `ids`.
-pub async fn links(conn: &mut SqliteConnection, ids: &[String]) -> ApiResult<Vec<IssueLink>> {
-    let mut map = link_map(conn, ids).await?;
+pub async fn links(
+    conn: &mut SqliteConnection,
+    ids: &[String],
+    statuses: &HashMap<String, teams::StatusRow>,
+) -> ApiResult<Vec<IssueLink>> {
+    let mut map = link_map_with(conn, ids, statuses).await?;
     Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
 }
 
@@ -667,8 +717,31 @@ pub async fn query(
     me: &Actor,
     q: &IssueQuery,
 ) -> ApiResult<(Vec<(String, Option<f64>)>, Option<String>)> {
+    let (mut b, keys, limit) = build_query(conn, me, q, "").await?;
+    let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
+    let more = rows.len() as i64 > limit;
+    let rows = &rows[..rows.len().min(limit as usize)];
+    let next = match rows.last() {
+        Some(last) if more => Some(Cursor::of(last, &keys)?.encode()),
+        _ => None,
+    };
+    let mut found: Vec<(String, Option<f64>)> = Vec::with_capacity(rows.len());
+    for r in rows {
+        found.push((r.try_get("id")?, r.try_get("score")?));
+    }
+    Ok((found, next))
+}
+
+/// Builds the SQL of an issue query after `prefix`. Returns it with the sort
+/// keys and the page size.
+async fn build_query(
+    conn: &mut SqliteConnection,
+    me: &Actor,
+    q: &IssueQuery,
+    prefix: &str,
+) -> ApiResult<(QueryBuilder<Sqlite>, Vec<SortKey>, i64)> {
     let (ranked_text, ranked_similar) = search_terms(q)?;
-    let mut b: QueryBuilder<Sqlite> = QueryBuilder::new("");
+    let mut b: QueryBuilder<Sqlite> = QueryBuilder::new(prefix);
     let ranked = ranked_text.is_some() || ranked_similar.is_some();
     push_matches(&mut b, ranked_text.as_deref(), ranked_similar.as_deref());
     let keys = sort_keys(ranked, q);
@@ -685,20 +758,12 @@ pub async fn query(
     }
     b.push(") AS q");
     push_page(&mut b, &keys, after.as_ref())?;
-    let limit = q.limit.unwrap_or(100).clamp(1, 1000) as i64;
+    let limit = q
+        .limit
+        .unwrap_or(100)
+        .clamp(1, llmtodo_api_types::MAX_ISSUE_PAGE) as i64;
     b.push(" LIMIT ").push_bind(limit + 1);
-    let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
-    let more = rows.len() as i64 > limit;
-    let rows = &rows[..rows.len().min(limit as usize)];
-    let next = match rows.last() {
-        Some(last) if more => Some(Cursor::of(last, &keys)?.encode()),
-        _ => None,
-    };
-    let mut found: Vec<(String, Option<f64>)> = Vec::with_capacity(rows.len());
-    for r in rows {
-        found.push((r.try_get("id")?, r.try_get("score")?));
-    }
-    Ok((found, next))
+    Ok((b, keys, limit))
 }
 
 async fn executor_ok(
@@ -1225,6 +1290,53 @@ pub async fn set_estimate_cost(c: &mut SqliteConnection, usd: f64, id: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use llmtodo_api_types::IssueQuery;
+    use sqlx::Row as _;
+
+    async fn plan(
+        c: &mut sqlx::SqliteConnection,
+        me: &llmtodo_api_types::Actor,
+        q: IssueQuery,
+    ) -> String {
+        let (mut b, _, _) = super::build_query(c, me, &q, "EXPLAIN QUERY PLAN ")
+            .await
+            .unwrap();
+        let rows = b.build().fetch_all(&mut *c).await.unwrap();
+        rows.iter()
+            .map(|r| r.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// LLM-180: the default sort reads the issues in index order, with no
+    /// scan of the whole table and no sort, on every page.
+    #[tokio::test]
+    async fn the_default_sort_uses_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open(dir.path()).await.unwrap();
+        crate::store::actors::seed(&pool).await.unwrap();
+        let me = crate::store::actors::owner(&pool).await.unwrap();
+        let mut c = pool.acquire().await.unwrap();
+        let first = plan(&mut c, &me, IssueQuery::default()).await;
+        assert!(first.contains("USING INDEX issues_default_sort"), "{first}");
+        assert!(!first.contains("TEMP B-TREE"), "{first}");
+        let cursor = super::Cursor {
+            keys: vec![2.into(), "2026-11-12T00:00:00Z".into()],
+            id: "x".into(),
+        };
+        let next = plan(
+            &mut c,
+            &me,
+            IssueQuery {
+                cursor: Some(cursor.encode()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(next.contains("USING INDEX issues_default_sort"), "{next}");
+        assert!(!next.contains("TEMP B-TREE"), "{next}");
+    }
+
     #[test]
     fn fts_terms_quote_words() {
         assert_eq!(

@@ -564,14 +564,15 @@ impl Client {
     }
 
     /// Fetches every page, or stops at `q.limit` issues when it is set.
+    /// Each page is as large as the server allows, so a full list needs few
+    /// round trips.
     pub async fn query_all(&self, q: &IssueQuery) -> Result<Vec<Issue>> {
         let mut q = q.clone();
         let want = q.limit;
         let mut out = Vec::new();
         loop {
-            if let Some(w) = want {
-                q.limit = Some(w.saturating_sub(out.len() as u32).max(1));
-            }
+            let left = want.map_or(u32::MAX, |w| w.saturating_sub(out.len() as u32));
+            q.limit = Some(left.clamp(1, MAX_ISSUE_PAGE));
             let page = self.query(&q).await?;
             out.extend(page.items);
             match page.next_cursor {

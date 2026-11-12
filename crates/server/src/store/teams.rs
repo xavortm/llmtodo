@@ -74,6 +74,17 @@ pub async fn statuses(
     Ok(rows)
 }
 
+/// Every status, by ID.
+pub async fn status_map(
+    conn: &mut SqliteConnection,
+) -> ApiResult<std::collections::HashMap<String, StatusRow>> {
+    Ok(statuses(conn, None)
+        .await?
+        .into_iter()
+        .map(|s| (s.id.clone(), s))
+        .collect())
+}
+
 pub async fn status_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<StatusRow> {
     sqlx::query_as::<_, StatusRow>(crate::sql!(
         "SELECT {STATUS_COLS} FROM statuses s JOIN teams t ON t.id = s.team_id WHERE s.id = ?"
@@ -144,12 +155,32 @@ pub async fn team_rows(conn: &mut SqliteConnection) -> ApiResult<Vec<TeamRow>> {
 
 pub async fn to_api(conn: &mut SqliteConnection, t: TeamRow) -> ApiResult<Team> {
     let sts = statuses(conn, Some(&t.id)).await?;
+    Ok(team_with(t, &sts))
+}
+
+/// Builds every team from one status query.
+pub async fn all_to_api(conn: &mut SqliteConnection, rows: Vec<TeamRow>) -> ApiResult<Vec<Team>> {
+    let mut by_team: std::collections::HashMap<String, Vec<StatusRow>> = Default::default();
+    for s in statuses(conn, None).await? {
+        by_team.entry(s.team_id.clone()).or_default().push(s);
+    }
+    Ok(rows
+        .into_iter()
+        .map(|t| {
+            let sts = by_team.remove(&t.id).unwrap_or_default();
+            team_with(t, &sts)
+        })
+        .collect())
+}
+
+/// One team, given its statuses in list order.
+fn team_with(t: TeamRow, sts: &[StatusRow]) -> Team {
     let name_of = |id: &Option<String>| {
         id.as_ref()
             .and_then(|id| sts.iter().find(|s| &s.id == id))
             .map(|s| s.name.clone())
     };
-    Ok(Team {
+    Team {
         id: parse_uuid(&t.id),
         key: t.key.clone(),
         name: t.name.clone(),
@@ -157,7 +188,7 @@ pub async fn to_api(conn: &mut SqliteConnection, t: TeamRow) -> ApiResult<Team> 
         pr_merged_status: name_of(&t.pr_merged_status_id),
         statuses: sts.iter().map(StatusRow::to_api).collect(),
         created_at: parse_ts(&t.created_at),
-    })
+    }
 }
 
 /// Creates a team with the default statuses. Returns its ID.
