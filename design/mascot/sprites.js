@@ -20,6 +20,7 @@
       I: "#15161d", // inner lines
       W: "#2f3142", // fur
       S: "#222330", // fur shade
+      F: "#4a4e66", // far legs: lighter, so they separate from the near legs
       P: "#d4869e", // inner ear
       B: "#2f3142", // blush: same as fur, it barely showed on black
       N: "#f08fab", // nose
@@ -31,20 +32,20 @@
       C: "#ffffff", // laptop logo
       Z: "#7d84a0", // sleep z
     },
-    // White cat on a dark background. A soft outline keeps the edge visible
-    // without a black ring that melts into the background. Like the black
-    // cat, it uses one colour for all lines.
+    // White cat on a dark background. The outline is white too, so the cat
+    // is a clean white shape. Grey inner lines keep the face and legs clear.
     dark: {
       bg: "#16171f",
-      O: "#8a93ad",
-      I: "#8a93ad", // inner lines share the outline colour
+      O: "#ffffff",
+      I: "#8a8f9e",
       W: "#ffffff",
-      S: "#c9cfe0",
-      P: "#f2a7bd",
+      S: "#d9dce4",
+      F: "#c5c9d6",
+      P: "#ff9bb8",
       B: "#ffd6e1",
-      N: "#ee7f9c",
-      E: "#1f2030",
-      Q: "#4a5068",
+      N: "#ff6f9a",
+      E: "#000000",
+      Q: "#3a3d4a",
       G: "#dff3ff",
       L: "#4b5068",
       D: "#343749",
@@ -58,11 +59,11 @@
   // the colours it changes.
   const VARIANT_CHANGES = {
     light: {
-      soft: { name: "Soft (current)" },
+      soft: { name: "Soft (chosen)" },
       pure: {
         name: "Pure black",
         O: "#000000", I: "#000000", W: "#000000", B: "#000000", S: "#2a2a2a",
-        E: "#ffd400", Q: "#9a9a9a", P: "#ff8fb0", N: "#ff6f9a", G: "#1f2a44",
+        F: "#2a2a2a", E: "#ffd400", Q: "#9a9a9a", P: "#ff8fb0", N: "#ff6f9a", G: "#1f2a44",
       },
       ink: {
         name: "Ink",
@@ -76,19 +77,19 @@
       },
     },
     dark: {
-      soft: { name: "Soft (current)" },
-      pure: {
-        name: "Pure white, no outline",
-        O: "#ffffff", I: "#8a8f9e", W: "#ffffff", S: "#d9dce4",
-        E: "#000000", Q: "#3a3d4a", P: "#ff9bb8", N: "#ff6f9a",
+      pure: { name: "Pure white (chosen)" },
+      soft: {
+        name: "Soft",
+        O: "#8a93ad", I: "#8a93ad", S: "#c9cfe0", F: "#c9cfe0",
+        E: "#1f2030", Q: "#4a5068", P: "#f2a7bd", N: "#ee7f9c",
       },
       bright: {
         name: "Bright outline",
-        O: "#bcc3d8", I: "#bcc3d8", S: "#d6dbe8", E: "#000000", Q: "#2f3344",
+        O: "#bcc3d8", I: "#bcc3d8", S: "#d6dbe8", F: "#d6dbe8", P: "#f2a7bd", N: "#ee7f9c",
       },
       crisp: {
         name: "Bright outline, dark inner lines",
-        O: "#e6e9f2", I: "#5c6584", S: "#b4bcd2", E: "#000000", Q: "#2f3344",
+        O: "#e6e9f2", I: "#5c6584", S: "#b4bcd2", F: "#b4bcd2", P: "#f2a7bd", N: "#ee7f9c",
       },
     },
   };
@@ -301,13 +302,18 @@
     return out;
   }
 
-  function leg(poses, phase, x, fill) {
+  // A near leg is fur with an outline. A far leg is one solid "F" shape
+  // of the same size, with no dark outline of its own. The near legs' lines
+  // then separate the two sides instead of merging into a dark bundle.
+  function leg(poses, phase, x, { far = false } = {}) {
     const cells = [];
     poses[((phase % 8) + 8) % 8].forEach((span, r) => {
       if (!span) return;
       for (let c = 0; c < span[1]; c++) cells.push([x + span[0] + c, 26 + r]);
     });
-    return { g: outline(cells, fill, { capTop: false }), x: 0, y: 0 };
+    let g = outline(cells, "W", { capTop: false });
+    if (far) g = g.map((row) => row.map((c) => (c === "." ? c : "F")));
+    return { g, x: 0, y: 0 };
   }
 
   // The tail rises from the back. A wave runs from the base to the tip,
@@ -332,11 +338,11 @@
   function walk(f) {
     return compose([
       walkTail(f),
-      leg(HIND_LEG, f - 4, 8, "S"),
-      leg(FRONT_LEG, f - 6, 16, "S"),
+      leg(HIND_LEG, f - 4, 8, { far: true }),
+      leg(FRONT_LEG, f - 6, 16, { far: true }),
       { g: "bodySide", x: 6, y: 20 },
-      leg(HIND_LEG, f, 5, "W"),
-      leg(FRONT_LEG, f - 2, 13, "W"),
+      leg(HIND_LEG, f, 5),
+      leg(FRONT_LEG, f - 2, 13),
       { g: head({ eyes: "right" }), x: 15, y: 13 },
     ]);
   }

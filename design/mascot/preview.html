@@ -76,7 +76,7 @@
 <script>
 const { SIZE, ANIMS, PALETTES, VARIANTS, rgba } = Mascot;
 // The variant each theme uses on this page.
-const active = { light: "soft", dark: "soft" };
+const active = { light: "soft", dark: "pure" };
 const $ = (id) => document.getElementById(id);
 const root = document.documentElement;
 root.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
