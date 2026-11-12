@@ -1447,6 +1447,65 @@ fn shift_e_opens_editor_and_saves_each_write(cx: &mut TestAppContext) {
     );
 }
 
+/// LLM-170: an idle check draws nothing, the editor's exit ends the edit
+/// and deletes its file, and the check stops with the last edit.
+#[gpui_kit::test]
+fn the_editor_exit_ends_the_edit_and_the_checks(cx: &mut TestAppContext) {
+    use crate::model::external_editor::done_marker;
+    let (handle, view) = open(cx);
+    let dir = tempfile::tempdir().unwrap();
+    view.update(cx, |this, _| {
+        this.set_external(
+            dir.path().to_path_buf(),
+            std::sync::Arc::new(|_: &std::path::Path| Ok(())),
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("j", cx);
+        window.press("j", cx);
+        window.press("j", cx);
+        window.press("shift-e", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let path = dir.path().join("LLM-104.md");
+    assert!(path.exists());
+    assert!(cx.read(|cx| view.read(cx).external_polling()));
+
+    // Idle checks notify nobody.
+    let notified = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = notified.clone();
+    let _watch = cx.update(|cx| cx.observe(&view, move |_, _| count.set(count.get() + 1)));
+    for _ in 0..5 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+    }
+    assert_eq!(notified.get(), 0);
+    assert!(cx.read(|cx| view.read(cx).external_polling()));
+
+    // The owner quits the editor: the shell touches the marker.
+    touch_later(&done_marker(&path), "", 10);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(notified.get() > 0);
+    assert!(!path.exists());
+    assert!(!done_marker(&path).exists());
+    cx.read(|cx| {
+        let this = view.read(cx);
+        assert!(!this.external_polling());
+        assert_eq!(this.message(), "Closed LLM-104 in $EDITOR");
+    });
+
+    // A later Shift+E starts the checks again.
+    cx.update_window(handle, |_, window, cx| window.press("shift-e", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| view.read(cx).external_polling()));
+}
+
 #[gpui_kit::test]
 fn shift_e_refuses_a_locked_task(cx: &mut TestAppContext) {
     let (handle, view) = open(cx);

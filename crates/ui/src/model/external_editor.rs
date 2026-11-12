@@ -5,12 +5,18 @@
 //! to the app's pane. Outside herdr, it runs in a new Terminal window. The
 //! workspace polls the file and saves the text each time the editor writes
 //! it, with the same version check as the built-in editor.
+//!
+//! The launcher gives no handle on the editor process: Terminal and herdr
+//! run the command on their own. So the shell line touches a marker file
+//! after the editor exits, and the next poll ends the session. A session
+//! also ends when its file is gone, or when the workspace says its task
+//! closed or went to the Trash. An ended session deletes both files.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use gpui_shared_string::SharedString;
 
@@ -42,6 +48,18 @@ pub fn file_for(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{name}.md"))
 }
 
+/// The file the shell line touches once the editor exits.
+pub fn done_marker(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".done");
+    PathBuf::from(name)
+}
+
+/// An editor that returns this soon after the open did not wait for its
+/// window to close, such as `code` without `--wait`. Its session stays
+/// open until its task closes.
+pub const QUICK_EXIT: Duration = Duration::from_secs(3);
+
 /// The folder for the files: `llmtodo-edit` in the user's temporary folder.
 pub fn default_dir() -> PathBuf {
     std::env::temp_dir().join("llmtodo-edit")
@@ -52,10 +70,15 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// The shell line that opens `path` in `editor`. The editor command may
-/// carry its own arguments, such as `code --wait`, so it stays unquoted.
+/// The shell line that opens `path` in `editor`, then touches the done
+/// marker when the editor exits. The editor command may carry its own
+/// arguments, such as `code --wait`, so it stays unquoted.
 pub fn shell_line(editor: &str, path: &Path) -> String {
-    format!("{editor} {}", shell_quote(&path.to_string_lossy()))
+    format!(
+        "{editor} {}; touch {}",
+        shell_quote(&path.to_string_lossy()),
+        shell_quote(&done_marker(path).to_string_lossy())
+    )
 }
 
 /// Where the editor runs.
@@ -162,6 +185,27 @@ struct Session {
     /// The text the app last read or wrote, so a write that changes
     /// nothing saves nothing.
     text: String,
+    /// When the app wrote the file and started the editor.
+    opened: SystemTime,
+    /// The editor returned at once, so its exit does not end the session.
+    detached: bool,
+}
+
+/// What one poll found.
+#[derive(Default)]
+pub struct Poll {
+    pub saves: Vec<ExternalSave>,
+    /// The sessions that ended, by task key.
+    pub ended: Vec<SharedString>,
+    /// The sessions whose editor returned at once, by task key.
+    pub detached: Vec<SharedString>,
+}
+
+impl Poll {
+    /// Whether the poll found nothing, so nothing needs a redraw.
+    pub fn is_empty(&self) -> bool {
+        self.saves.is_empty() && self.ended.is_empty() && self.detached.is_empty()
+    }
 }
 
 /// A save the editor asked for by writing its file.
@@ -215,6 +259,8 @@ impl ExternalEdits {
         version: i64,
     ) -> Result<PathBuf, String> {
         let path = file_for(&self.dir, &key);
+        // A marker left by an earlier session would end this one at once.
+        let _ = std::fs::remove_file(done_marker(&path));
         std::fs::create_dir_all(&self.dir)
             .and_then(|_| std::fs::write(&path, &text))
             .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
@@ -224,26 +270,37 @@ impl ExternalEdits {
             base: version,
             modified: modified(&path),
             text,
+            opened: SystemTime::now(),
+            detached: false,
         };
         self.sessions.insert(key, session);
         Ok(path)
     }
 
-    /// The saves for each file the editor wrote since the last check. A
-    /// file that is gone ends its session.
-    pub fn poll(&mut self) -> Vec<ExternalSave> {
-        let mut saves = Vec::new();
+    /// The saves for each file the editor wrote since the last check, and
+    /// the sessions that ended. A session ends when its file is gone, when
+    /// its editor exited, or when `keep` refuses its task. One `stat` per
+    /// session, and one more for the done marker.
+    pub fn poll(&mut self, keep: impl Fn(IssueId) -> bool) -> Poll {
+        let mut poll = Poll::default();
         self.sessions.retain(|key, session| {
             let Some(now) = modified(&session.path) else {
+                poll.ended.push(key.clone());
+                end(session);
                 return false;
             };
+            if !keep(session.id) {
+                poll.ended.push(key.clone());
+                end(session);
+                return false;
+            }
             if Some(now) != session.modified {
                 session.modified = Some(now);
                 if let Ok(text) = std::fs::read_to_string(&session.path)
                     && text != session.text
                 {
                     session.text = text.clone();
-                    saves.push(ExternalSave {
+                    poll.saves.push(ExternalSave {
                         key: key.clone(),
                         id: session.id,
                         text,
@@ -251,9 +308,26 @@ impl ExternalEdits {
                     });
                 }
             }
+            // The editor writes before it exits, so the read above holds
+            // its last text.
+            let marker = done_marker(&session.path);
+            if let Some(done) = modified(&marker) {
+                let quick = done
+                    .duration_since(session.opened)
+                    .is_ok_and(|d| d < QUICK_EXIT);
+                if quick && !session.detached {
+                    session.detached = true;
+                    let _ = std::fs::remove_file(&marker);
+                    poll.detached.push(key.clone());
+                } else if !session.detached {
+                    poll.ended.push(key.clone());
+                    end(session);
+                    return false;
+                }
+            }
             true
         });
-        saves
+        poll
     }
 
     /// A description save reached the server. A save of the `$EDITOR` text
@@ -280,6 +354,12 @@ impl ExternalEdits {
     }
 }
 
+/// Deletes an ended session's file and its done marker.
+fn end(session: &Session) {
+    let _ = std::fs::remove_file(&session.path);
+    let _ = std::fs::remove_file(done_marker(&session.path));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +374,97 @@ mod tests {
     #[test]
     fn the_shell_line_quotes_the_path_only() {
         let line = shell_line("code --wait", Path::new("/tmp/it's here/LLM-7.md"));
-        assert_eq!(line, r"code --wait '/tmp/it'\''s here/LLM-7.md'");
+        assert_eq!(
+            line,
+            r"code --wait '/tmp/it'\''s here/LLM-7.md'; touch '/tmp/it'\''s here/LLM-7.md.done'"
+        );
+    }
+
+    fn edits(dir: &Path) -> ExternalEdits {
+        ExternalEdits::new(dir.to_path_buf(), Arc::new(|_: &Path| Ok(())))
+    }
+
+    /// Writes `text` with a change time `secs` after now, as an editor would.
+    fn write_later(path: &Path, text: &str, secs: u64) {
+        std::fs::write(path, text).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+
+    const ID: IssueId = IssueId::from_u128(7);
+
+    #[test]
+    fn an_idle_poll_finds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut edits = edits(dir.path());
+        edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        assert!(edits.poll(|_| true).is_empty());
+        assert!(!edits.is_empty());
+    }
+
+    #[test]
+    fn the_editor_exit_saves_its_last_write_and_ends_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut edits = edits(dir.path());
+        let path = edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        // The last write and the exit land between two polls.
+        write_later(&path, "Last words\n", 1);
+        write_later(&done_marker(&path), "", 10);
+        let poll = edits.poll(|_| true);
+        assert_eq!(poll.saves.len(), 1);
+        assert_eq!(poll.saves[0].text, "Last words\n");
+        assert_eq!(poll.ended, ["LLM-7"]);
+        assert!(edits.is_empty());
+        assert!(!path.exists());
+        assert!(!done_marker(&path).exists());
+    }
+
+    #[test]
+    fn an_editor_that_returns_at_once_keeps_its_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut edits = edits(dir.path());
+        let path = edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        std::fs::write(done_marker(&path), "").unwrap();
+        let poll = edits.poll(|_| true);
+        assert_eq!(poll.detached, ["LLM-7"]);
+        assert!(poll.ended.is_empty());
+        // Its writes still save, and its marker no longer counts.
+        write_later(&path, "From the GUI editor\n", 1);
+        write_later(&done_marker(&path), "", 20);
+        let poll = edits.poll(|_| true);
+        assert_eq!(poll.saves.len(), 1);
+        assert!(poll.ended.is_empty() && poll.detached.is_empty());
+        assert!(!edits.is_empty());
+    }
+
+    #[test]
+    fn a_session_ends_when_its_task_goes_or_its_file_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut edits = edits(dir.path());
+        let path = edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        let poll = edits.poll(|id| id != ID);
+        assert_eq!(poll.ended, ["LLM-7"]);
+        assert!(!path.exists());
+
+        let path = edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(edits.poll(|_| true).ended, ["LLM-7"]);
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn a_new_open_clears_an_old_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut edits = edits(dir.path());
+        let path = file_for(dir.path(), "LLM-7");
+        write_later(&done_marker(&path), "", 30);
+        edits.open("LLM-7".into(), ID, "Text\n".into(), 1).unwrap();
+        assert!(edits.poll(|_| true).is_empty());
     }
 
     #[test]

@@ -3516,6 +3516,8 @@ impl Workspace {
         self.external = ExternalEdits::new(dir, launcher);
     }
 
+    /// Polls the `$EDITOR` files until the last session ends. The next
+    /// `Shift+E` starts it again.
     fn start_external_poll(&mut self, cx: &mut Context<Self>) {
         if self._external_poll.is_some() {
             return;
@@ -3523,26 +3525,53 @@ impl Workspace {
         self._external_poll = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(EXTERNAL_POLL).await;
-                if this.update(cx, |this, cx| this.poll_external(cx)).is_err() {
-                    break;
+                match this.update(cx, |this, cx| this.poll_external(cx)) {
+                    Ok(true) => {}
+                    _ => break,
                 }
             }
         }));
     }
 
-    /// Saves each `$EDITOR` file the editor wrote since the last check. A
-    /// file that is gone ends its edit.
-    pub fn poll_external(&mut self, cx: &mut Context<Self>) {
-        for save in self.external.poll() {
+    #[cfg(test)]
+    pub fn external_polling(&self) -> bool {
+        self._external_poll.is_some()
+    }
+
+    /// Saves each `$EDITOR` file the editor wrote since the last check, and
+    /// ends the edits whose editor exited, whose file is gone, or whose
+    /// task went to the Trash. Draws only when something happened. Returns
+    /// whether an edit is still open, so the poll goes on.
+    pub fn poll_external(&mut self, cx: &mut Context<Self>) -> bool {
+        let store = self.store.read(cx);
+        let poll = self
+            .external
+            .poll(|id| store.get(id).is_some_and(|i| !i.deleted));
+        for save in poll.saves.iter() {
             if !self.editable(save.id, cx) {
                 continue;
             }
-            self.save_text(save.id, save.text.into(), save.base, false, cx);
+            self.save_text(save.id, save.text.clone().into(), save.base, false, cx);
             if self.backend.is_none() {
                 self.message = format!("Saved {} from $EDITOR", save.key).into();
             }
         }
-        cx.notify();
+        if let Some(key) = poll.detached.first() {
+            self.message = format!(
+                "$EDITOR returned at once, so {key} stays open for saves. Set EDITOR to wait, such as code --wait"
+            )
+            .into();
+        } else if let Some(key) = poll.ended.first() {
+            self.message = format!("Closed {key} in $EDITOR").into();
+        }
+        if !poll.is_empty() {
+            cx.notify();
+        }
+        let open = !self.external.is_empty();
+        if !open {
+            self._external_poll = None;
+        }
+        open
     }
 
     /// `:theirs`: drops the owner's text from a refused save and keeps the
