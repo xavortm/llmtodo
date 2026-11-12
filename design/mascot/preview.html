@@ -26,6 +26,12 @@
   .sheet canvas { background: var(--bg); border-radius: 4px; display: block; }
   .sizes { display: flex; gap: 24px; align-items: flex-end; flex-wrap: wrap; }
   .sizes figure { margin: 0; text-align: center; color: var(--muted); font-size: 11px; }
+  .variants { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .variant { display: grid; gap: 6px; justify-items: start; padding: 10px; border-radius: 8px; border: 2px solid transparent; text-align: left; }
+  .variant:hover { border-color: var(--muted); }
+  .variant[aria-pressed="true"] { outline: 2px solid var(--text); outline-offset: 2px; }
+  .variant .small { display: flex; gap: 10px; align-items: flex-end; }
+  .variant span { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -46,6 +52,11 @@
   </section>
 
   <section>
+    <h2>Colour variants · click one to use it everywhere on this page</h2>
+    <div id="variants"></div>
+  </section>
+
+  <section>
     <h2>Real sizes</h2>
     <div class="sizes" id="sizes"></div>
   </section>
@@ -63,20 +74,22 @@
 
 <script src="sprites.js"></script>
 <script>
-const { SIZE, ANIMS, PALETTES, rgba } = Mascot;
+const { SIZE, ANIMS, PALETTES, VARIANTS, rgba } = Mascot;
+// The variant each theme uses on this page.
+const active = { light: "soft", dark: "soft" };
 const $ = (id) => document.getElementById(id);
 const root = document.documentElement;
 root.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 const theme = () => root.dataset.theme;
 
-// One offscreen 32x32 canvas per frame and theme.
+// One offscreen 32x32 canvas per frame, theme and variant.
 const cache = new Map();
-function frameCanvas(frame, th = theme()) {
-  const key = th + ":" + ANIMS_INDEX.get(frame);
+function frameCanvas(frame, th = theme(), v = active[th]) {
+  const key = `${th}:${v}:${ANIMS_INDEX.get(frame)}`;
   if (!cache.has(key)) {
     const c = document.createElement("canvas");
     c.width = c.height = SIZE;
-    c.getContext("2d").putImageData(new ImageData(rgba(frame, th), SIZE, SIZE), 0, 0);
+    c.getContext("2d").putImageData(new ImageData(rgba(frame, VARIANTS[th][v]), SIZE, SIZE), 0, 0);
     cache.set(key, c);
   }
   return cache.get(key);
@@ -84,12 +97,12 @@ function frameCanvas(frame, th = theme()) {
 const ANIMS_INDEX = new Map();
 for (const [name, a] of Object.entries(ANIMS)) a.frames.forEach((f, i) => ANIMS_INDEX.set(f, `${name}/${i}`));
 
-function drawScaled(canvas, frame, scale, th, bg) {
+function drawScaled(canvas, frame, scale, th, bg, v) {
   canvas.width = canvas.height = SIZE * scale;
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;
   if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-  ctx.drawImage(frameCanvas(frame, th), 0, 0, SIZE * scale, SIZE * scale);
+  ctx.drawImage(frameCanvas(frame, th, v), 0, 0, SIZE * scale, SIZE * scale);
 }
 
 // Player: loops an animation's timeline, honoring each step's duration.
@@ -173,6 +186,8 @@ function loop(now) {
   render();
   for (const [c, s] of sizeCanvases) drawScaled(c, cat.frame, s);
   for (const [c, th] of themeCanvases) drawScaled(c, cat.frame, 4, th, PALETTES[th].bg);
+  for (const { canvases, th, id } of variantCards)
+    for (const [c, s] of canvases) drawScaled(c, cat.frame, s, th, PALETTES[th].bg, id);
   requestAnimationFrame(loop);
 }
 
@@ -194,6 +209,39 @@ const themeCanvases = Object.keys(PALETTES).map((th) => {
   $("themes").append(fig);
   return [c, th];
 });
+
+// Colour variants: every variant of both themes, at 4x, 2x and 1x.
+const variantCards = [];
+for (const [th, list] of Object.entries(VARIANTS)) {
+  $("variants").append(Object.assign(document.createElement("h2"), { textContent: th === "light" ? "Light theme · black cat" : "Dark theme · white cat" }));
+  const grid = document.createElement("div");
+  grid.className = "variants";
+  for (const [id, pal] of Object.entries(list)) {
+    const card = document.createElement("button");
+    card.className = "variant";
+    card.dataset.theme = th;
+    card.dataset.id = id;
+    card.style.background = pal.bg;
+    card.style.color = th === "light" ? "#1f2030" : "#e7e9f0";
+    const canvases = [4, 2, 1].map((s) => [document.createElement("canvas"), s]);
+    const small = document.createElement("div");
+    small.className = "small";
+    small.append(canvases[1][0], canvases[2][0]);
+    card.append(canvases[0][0], small, Object.assign(document.createElement("span"), { textContent: pal.name }));
+    card.onclick = () => {
+      active[th] = id;
+      markVariants();
+      drawSheets();
+    };
+    grid.append(card);
+    variantCards.push({ canvases, th, id });
+  }
+  $("variants").append(grid);
+}
+function markVariants() {
+  document.querySelectorAll(".variant").forEach((b) => b.setAttribute("aria-pressed", active[b.dataset.theme] === b.dataset.id));
+}
+markVariants();
 
 // Frame sheets: each animation's unique frames, redrawn on theme change.
 function drawSheets() {

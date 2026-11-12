@@ -53,6 +53,51 @@
     },
   };
 
+  // Colour variants to compare for clarity. "soft" is the current palette.
+  // The other three raise contrast in different ways. Each one only lists
+  // the colours it changes.
+  const VARIANT_CHANGES = {
+    light: {
+      soft: { name: "Soft (current)" },
+      pure: {
+        name: "Pure black",
+        O: "#000000", I: "#000000", W: "#000000", B: "#000000", S: "#2a2a2a",
+        E: "#ffd400", Q: "#9a9a9a", P: "#ff8fb0", N: "#ff6f9a", G: "#1f2a44",
+      },
+      ink: {
+        name: "Ink",
+        O: "#000000", I: "#000000", W: "#1c1d26", B: "#1c1d26", S: "#0b0b10",
+        E: "#ffd23f", Q: "#a3a8bf", P: "#e88aa8", N: "#ff7fa3",
+      },
+      detail: {
+        name: "Ink, light inner lines",
+        O: "#000000", I: "#6a6f8e", W: "#24252f", B: "#24252f", S: "#121219",
+        E: "#ffcf33", Q: "#b8bdd1", P: "#ec8fac", N: "#ff7fa3",
+      },
+    },
+    dark: {
+      soft: { name: "Soft (current)" },
+      pure: {
+        name: "Pure white, no outline",
+        O: "#ffffff", I: "#8a8f9e", W: "#ffffff", S: "#d9dce4",
+        E: "#000000", Q: "#3a3d4a", P: "#ff9bb8", N: "#ff6f9a",
+      },
+      bright: {
+        name: "Bright outline",
+        O: "#bcc3d8", I: "#bcc3d8", S: "#d6dbe8", E: "#000000", Q: "#2f3344",
+      },
+      crisp: {
+        name: "Bright outline, dark inner lines",
+        O: "#e6e9f2", I: "#5c6584", S: "#b4bcd2", E: "#000000", Q: "#2f3344",
+      },
+    },
+  };
+  const VARIANTS = {};
+  for (const [theme, list] of Object.entries(VARIANT_CHANGES)) {
+    VARIANTS[theme] = {};
+    for (const [id, changes] of Object.entries(list)) VARIANTS[theme][id] = { ...PALETTES[theme], ...changes };
+  }
+
   const BASE_SIT_TAIL = ["KKKKWK..", "WWWWSK..", "KKKKK..."];
 
   const PARTS = {
@@ -384,9 +429,10 @@
     return "I";
   }
 
-  // RGBA bytes for one frame in one theme, for canvas ImageData or PNG export.
-  function rgba(frame, theme = "dark") {
-    const pal = PALETTES[theme];
+  // RGBA bytes for one frame in one palette, for canvas ImageData or PNG export.
+  // "palette" is a theme name or a palette object, such as a variant.
+  function rgba(frame, palette = "dark") {
+    const pal = typeof palette === "string" ? PALETTES[palette] : palette;
     const out = new Uint8ClampedArray(SIZE * SIZE * 4);
     frame.forEach((row, y) =>
       row.forEach((c, x) => {
@@ -398,5 +444,5 @@
     return out;
   }
 
-  return { SIZE, PALETTES, PARTS, ANIMS, rgba };
+  return { SIZE, PALETTES, VARIANTS, PARTS, ANIMS, rgba };
 });
