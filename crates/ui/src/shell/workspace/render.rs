@@ -445,7 +445,31 @@ impl Workspace {
                             .font_family(theme.mono_font_family.clone())
                             .child(mode.to_uppercase()),
                     )
-                    .child(count)
+                    .map(|this| {
+                        if count.is_empty() {
+                            return this;
+                        }
+                        // The count names the project: a click opens the
+                        // palette on `project `, the UI for `:project X`.
+                        this.child(
+                            div()
+                                .id("status-count")
+                                .test_support()
+                                .px_1()
+                                .rounded(radius)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .active(move |s| s.bg(pressed))
+                                .child(count)
+                                .tooltip(
+                                    crate::shell::tooltip::Card::text("Switch project (:project)")
+                                        .builder(),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_palette_with("project ", window, cx)
+                                })),
+                        )
+                    })
                     .when_some(offer, |this, offer| {
                         this.child(
                             h_flex()

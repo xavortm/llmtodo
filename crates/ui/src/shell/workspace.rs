@@ -428,9 +428,9 @@ impl Workspace {
                     }
                 });
             }),
-            cx.subscribe_in(&palette, window, |this, _, event, window, cx| {
-                let PaletteEvent::Run(command) = event;
-                this.run_command(command, window, cx);
+            cx.subscribe_in(&palette, window, |this, _, event, window, cx| match event {
+                PaletteEvent::Run(command) => this.run_command(command, window, cx),
+                PaletteEvent::Dismissed => cx.notify(),
             }),
             // Any key means keyboard navigation again, so the focus outline
             // comes back. An observer sees every key, bound ones included.

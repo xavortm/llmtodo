@@ -4160,3 +4160,38 @@ fn hover_shows_card(
     })
     .unwrap();
 }
+
+/// LLM-200: a click on the issue count opens the palette on `project `.
+/// LLM-200: a click outside the palette closes it.
+#[gpui_kit::test]
+fn the_status_count_opens_the_project_switcher(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-count", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let this = view.read(cx);
+        assert!(this.palette_open(cx));
+        assert_eq!(this.palette_typed(cx), "project ");
+    });
+
+    // A click on the list, outside the palette, closes it, and the list
+    // keeps the focus.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-count", cx);
+        window.render_frame(cx);
+        window.click(("row", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!view.read(cx).palette_open(cx));
+        assert!(window.try_find("palette").is_none());
+    })
+    .unwrap();
+}

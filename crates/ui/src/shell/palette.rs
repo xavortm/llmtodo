@@ -8,9 +8,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 /// The most suggestions the palette lists at once.
@@ -96,6 +97,8 @@ fn palette_command(commands: &[String], typed: &str, selected: usize) -> String 
 pub enum PaletteEvent {
     /// Run this command. The palette is already closed.
     Run(String),
+    /// A click outside closed the palette.
+    Dismissed,
 }
 
 pub struct Palette {
@@ -185,6 +188,25 @@ impl Palette {
         cx.notify();
     }
 
+    /// A click outside closes the palette, as in Zed or VS Code. The click
+    /// keeps the focus it gives. Only a click on something that takes no
+    /// focus sends focus back to where the palette opened.
+    pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        let input = self.input.focus_handle(cx);
+        let back = self.return_to.take().unwrap_or(self.fallback.clone());
+        window.defer(cx, move |window, cx| {
+            if input.contains_focused(window, cx) {
+                window.focus(&back, cx);
+            }
+        });
+        cx.emit(PaletteEvent::Dismissed);
+        cx.notify();
+    }
+
     /// The suggestions for what is typed, at most a screenful.
     fn suggestions(&self, cx: &App) -> Vec<String> {
         let mut out = palette_matches(&self.commands, &self.input.read(cx).value());
@@ -233,6 +255,7 @@ impl Render for Palette {
                         cx.stop_propagation();
                         this.select_prev(cx);
                     }))
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
                     .w_96()
                     .p_1()
                     .gap_px()
