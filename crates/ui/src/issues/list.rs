@@ -137,6 +137,8 @@ pub struct IssueList {
     pub scope: Scope,
     /// Hide closed tasks this many days old. None shows them all.
     pub hide_closed_after: Option<u32>,
+    /// Experimental: draw a light line through the titles of Done tasks.
+    pub strike_done: bool,
     /// How many tasks the scope and filter would show but that setting hides.
     hidden_closed: usize,
     /// The issues that pass the filter, in sort order.
@@ -243,6 +245,7 @@ impl IssueList {
             query: Filter::default(),
             scope: Scope::All,
             hide_closed_after: None,
+            strike_done: true,
             hidden_closed: 0,
             visible: Vec::new(),
             rows: Vec::new(),
@@ -1214,6 +1217,7 @@ impl IssueList {
         };
         let selected = row == self.selected;
         let closed = issue.status.is_closed();
+        let struck = self.strike_done && issue.status.is_done();
         let layout = self.layout.clone();
         let llm = Self::render_llm_badge(&issue, window, cx);
         let marked = self.marked.contains(&issue.id);
@@ -1284,9 +1288,18 @@ impl IssueList {
                 Column::Title,
                 &layout,
                 div()
+                    .id(if struck { "title-struck" } else { "title" })
+                    .test_support()
                     .w_full()
                     .truncate()
                     .when(closed, |this| this.text_color(muted))
+                    .when(struck, |mut this| {
+                        this.text_style().strikethrough = Some(gpui_kit::StrikethroughStyle {
+                            thickness: gpui_kit::px(1.),
+                            color: Some(muted.opacity(0.6)),
+                        });
+                        this
+                    })
                     .child(issue.title.clone()),
             ))
             // As many tags as fit, then "+N" for the rest. The last tag

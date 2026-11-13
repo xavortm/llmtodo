@@ -62,6 +62,9 @@ pub struct UiSettings {
     pub hidden_columns: Vec<String>,
     /// Sudo, the pixel cat under the sidebar.
     pub mascot: bool,
+    /// Experimental: a light line through the titles of Done tasks in the
+    /// task list.
+    pub strike_done: bool,
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -91,6 +94,7 @@ impl Default for UiSettings {
             last_task: None,
             hidden_columns: Vec::new(),
             mascot: true,
+            strike_done: true,
         }
     }
 }
@@ -193,6 +197,7 @@ mod tests {
         assert!(store.load().open_last_view);
         assert!(store.load().hidden_columns.is_empty());
         assert!(store.load().mascot, "the cat is on for old files");
+        assert!(store.load().strike_done, "the line is on for old files");
     }
 
     #[test]

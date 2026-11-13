@@ -1360,6 +1360,7 @@ impl Workspace {
             Scope::All
         };
         let hide_closed_after = self.hide_closed.then_some(self.hide_closed_days);
+        let strike_done = settings.strike_done;
         let hidden_columns = settings
             .hidden_columns
             .iter()
@@ -1387,6 +1388,7 @@ impl Workspace {
             list.scope = scope;
             list.hide_closed_after = hide_closed_after;
             list.hidden_columns = hidden_columns;
+            list.strike_done = strike_done;
             list.reload(None, cx);
         });
     }
@@ -1450,6 +1452,7 @@ impl Workspace {
                 .map(|c| c.setting().to_string())
                 .collect(),
             mascot: self.mascot_on,
+            strike_done: list.strike_done,
         }
     }
 
@@ -2266,6 +2269,15 @@ impl Workspace {
         self.mascot_on = on;
         self.sync_mascot(cx);
         cx.notify();
+        self.persist(cx);
+    }
+
+    /// The experimental Settings switch for the line through Done titles.
+    pub fn set_strike_done(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.list_do(cx, |list, cx| {
+            list.strike_done = on;
+            cx.notify();
+        });
         self.persist(cx);
     }
 

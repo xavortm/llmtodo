@@ -16,6 +16,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex,
     input::{InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, StepAction},
     switch::Switch,
+    tag::Tag,
     v_flex,
 };
 use gpui_kit::{
@@ -76,9 +77,10 @@ pub enum Row {
     Zoom,
     OpenLast,
     Mascot,
+    StrikeDone,
 }
 
-const ROWS: [Row; 8] = [
+const ROWS: [Row; 9] = [
     Row::HideClosed,
     Row::HideClosedDays,
     Row::Vim,
@@ -87,6 +89,7 @@ const ROWS: [Row; 8] = [
     Row::Zoom,
     Row::OpenLast,
     Row::Mascot,
+    Row::StrikeDone,
 ];
 
 impl Row {
@@ -100,6 +103,7 @@ impl Row {
             Self::Zoom => "settings-row-zoom",
             Self::OpenLast => "settings-row-open-last",
             Self::Mascot => "settings-row-mascot",
+            Self::StrikeDone => "settings-row-strike-done",
         }
     }
 
@@ -113,6 +117,7 @@ impl Row {
             Self::Zoom => "Zoom",
             Self::OpenLast => "Open the last view at start",
             Self::Mascot => "Sudo the cat",
+            Self::StrikeDone => "Line through done tasks",
         }
     }
 
@@ -122,6 +127,11 @@ impl Row {
             Self::Mascot => Some(IconName::Cat),
             _ => None,
         }
+    }
+
+    /// A row that tries out a feature shows an "Experimental" tag.
+    fn experimental(self) -> bool {
+        self == Self::StrikeDone
     }
 
     /// A number row holds its own field, and the theme row its previews.
@@ -396,6 +406,9 @@ impl SettingsView {
                 );
             }
             Row::Mascot => self.write(ViewEvent::SetMascot(!values.mascot), window, cx),
+            Row::StrikeDone => {
+                self.write(ViewEvent::SetStrikeDone(!values.strike_done), window, cx)
+            }
             Row::HideClosedDays if !values.hide_closed => {}
             Row::HideClosedDays => self.days.update(cx, |state, cx| state.focus(window, cx)),
             Row::Zoom => self.zoom.update(cx, |state, cx| state.focus(window, cx)),
@@ -435,6 +448,7 @@ impl SettingsView {
                  and sleeps when nothing happens"
                 .into(),
             Row::Theme => "Every theme has a light and a dark mode".into(),
+            Row::StrikeDone => "A light line through the titles of Done tasks in the list".into(),
             Row::DarkMode | Row::Zoom => return None,
         };
         Some(text)
@@ -504,6 +518,7 @@ impl SettingsView {
             Row::Zoom => self.number_field(row, &self.zoom, "%", false, window, cx),
             Row::OpenLast => switch(values.open_last_view),
             Row::Mascot => switch(values.mascot),
+            Row::StrikeDone => switch(values.strike_done),
         }
     }
 
@@ -555,7 +570,27 @@ impl SettingsView {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().child(row.title()))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(row.title()))
+                            .when(row.experimental(), |this| {
+                                this.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "{}-experimental",
+                                            row.id()
+                                        )))
+                                        .test_support()
+                                        .child(
+                                            Tag::secondary()
+                                                .outline()
+                                                .xsmall()
+                                                .child("Experimental"),
+                                        ),
+                                )
+                            }),
+                    )
                     .when_some(help, |this, help| {
                         this.child(div().text_xs().text_color(muted).child(help))
                     })

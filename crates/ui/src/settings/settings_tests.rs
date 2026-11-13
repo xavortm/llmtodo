@@ -462,3 +462,65 @@ fn commands_do_not_act_on_the_task_behind_settings(cx: &mut TestAppContext) {
     });
     assert_eq!(before, after);
 }
+
+/// The first list row whose task status passes `pick`.
+fn row_where(
+    view: &Entity<Workspace>,
+    pick: impl Fn(&crate::model::data::Issue) -> bool,
+    cx: &TestAppContext,
+) -> usize {
+    cx.read(|cx| {
+        let this = view.read(cx);
+        let store = this.store().read(cx);
+        this.rows(cx)
+            .iter()
+            .position(|row| match row {
+                crate::issues::list::Row::Issue(id) => store.get(*id).is_some_and(&pick),
+                _ => false,
+            })
+            .expect("a row of that kind")
+    })
+}
+
+fn struck(handle: AnyWindowHandle, row: usize, cx: &mut TestAppContext) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("row", row))
+            .try_find("title-struck")
+            .is_some()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn the_line_through_done_tasks_is_on_by_default_and_a_switch_turns_it_off(cx: &mut TestAppContext) {
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
+    let done = row_where(&view, |i| i.status.is_done(), cx);
+    let open = row_where(&view, |i| !i.status.is_closed(), cx);
+    assert!(struck(handle, done, cx), "a Done title has the line");
+    assert!(!struck(handle, open, cx), "an open title has none");
+
+    run(handle, &view, "settings", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .within("settings-row-strike-done")
+                .try_find("settings-row-strike-done-experimental")
+                .is_some(),
+            "the row says it is experimental"
+        );
+    })
+    .unwrap();
+    click(handle, "settings-row-strike-done", cx);
+    assert!(!store.load().strike_done);
+    press(handle, &["escape"], cx);
+    assert!(!struck(handle, done, cx), "off: no line");
+
+    // The choice survives a restart.
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let done = row_where(&view, |i| i.status.is_done(), cx);
+    assert!(!struck(handle, done, cx));
+}

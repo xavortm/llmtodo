@@ -91,6 +91,7 @@ pub enum ViewEvent {
     SetColorTheme(crate::shell::theme::ColorTheme),
     SetOpenLastView(bool),
     SetMascot(bool),
+    SetStrikeDone(bool),
     SetZoom(f32),
 }
 
