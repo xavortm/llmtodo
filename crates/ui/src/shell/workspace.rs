@@ -383,8 +383,6 @@ impl Workspace {
         self.backend = Some(backend);
     }
 
-    /// Shows the demo issues, with no server behind them.
-    #[cfg(test)]
     /// Stands in for `LLMTODO_PROJECT_DIR`, so a test does not depend on
     /// the shell that runs it.
     #[cfg(test)]
@@ -392,6 +390,8 @@ impl Workspace {
         self.project_dir = dir;
     }
 
+    /// Shows the demo issues, with no server behind them.
+    #[cfg(test)]
     pub fn load_demo(&mut self, cx: &mut Context<Self>) {
         let catalog = crate::model::demo::catalog();
         let issues = crate::model::demo::issues(&catalog);
