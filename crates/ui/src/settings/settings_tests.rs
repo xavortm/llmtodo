@@ -270,6 +270,17 @@ fn a_click_on_a_theme_preview_picks_it_and_keeps_the_mode(cx: &mut TestAppContex
 
     run(handle, &view, "theme gruvbox", cx);
     assert_eq!(store.load().color_theme, "gruvbox");
+
+    click(handle, "settings-theme-macos", cx);
+    assert_eq!(store.load().color_theme, "macos");
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().to_string()),
+        "macOS Light"
+    );
+    assert_eq!(
+        cx.read(|cx| cx.theme().font_family.to_string()),
+        ".SystemUIFont"
+    );
 }
 
 #[gpui_kit::test]

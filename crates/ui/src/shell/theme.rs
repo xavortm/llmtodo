@@ -115,17 +115,20 @@ pub enum ColorTheme {
     Default,
     /// A warm theme. See `assets/themes/NOTICE.md`.
     Gruvbox,
+    /// Apple's system colors, Xcode's code colors and the system font.
+    MacOs,
 }
 
 impl ColorTheme {
     /// Every theme, in the order the Settings picker shows them.
-    pub const ALL: [Self; 2] = [Self::Default, Self::Gruvbox];
+    pub const ALL: [Self; 3] = [Self::Default, Self::Gruvbox, Self::MacOs];
 
     /// The name in `ui.json` and in the `:theme` command.
     pub fn id(self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::Gruvbox => "gruvbox",
+            Self::MacOs => "macos",
         }
     }
 
@@ -137,6 +140,7 @@ impl ColorTheme {
         match self {
             Self::Default => "Default",
             Self::Gruvbox => "Gruvbox",
+            Self::MacOs => "macOS",
         }
     }
 
@@ -162,6 +166,16 @@ impl ColorTheme {
                 }
             }
             Self::Gruvbox => GRUVBOX.with(|set| pick(set, mode)),
+            Self::MacOs => MACOS.with(|set| pick(set, mode)),
+        }
+    }
+
+    /// The UI font. The macOS theme uses the system font, SF Pro. Code
+    /// keeps `CODE_FONT` in every theme.
+    pub fn ui_font(self) -> &'static str {
+        match self {
+            Self::MacOs => ".SystemUIFont",
+            Self::Default | Self::Gruvbox => UI_FONT,
         }
     }
 }
@@ -169,6 +183,8 @@ impl ColorTheme {
 thread_local! {
     static GRUVBOX: Vec<Rc<ThemeConfig>> =
         load_set(include_str!("../../assets/themes/gruvbox.json"));
+    static MACOS: Vec<Rc<ThemeConfig>> =
+        load_set(include_str!("../../assets/themes/macos.json"));
 }
 
 fn load_set(json: &str) -> Vec<Rc<ThemeConfig>> {
@@ -224,7 +240,7 @@ pub fn set_theme(name: ColorTheme, mode: ThemeMode, cx: &mut App) {
     Theme::change(mode, None, cx);
     let theme = Theme::global_mut(cx);
     // `main::init` loads the fonts.
-    theme.font_family = UI_FONT.into();
+    theme.font_family = name.ui_font().into();
     theme.mono_font_family = CODE_FONT.into();
     apply_font_sizes(theme, level);
     style_colors(theme, name);
@@ -532,6 +548,19 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn macos_buttons_keep_white_text(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            cx.update(|cx| {
+                set_theme(ColorTheme::MacOs, mode, cx);
+                let t = cx.theme();
+                assert_eq!(t.button_primary_foreground, gpui_kit::white(), "{mode:?}");
+                assert_eq!(t.font_family.as_ref(), ".SystemUIFont");
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn a_preview_shows_the_colors_the_theme_applies(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         for (name, mode) in every_theme() {
@@ -569,7 +598,8 @@ mod tests {
         }
         assert_eq!(ColorTheme::from_id("nope"), None);
         assert_eq!(ColorTheme::Default.next(true), ColorTheme::Gruvbox);
-        assert_eq!(ColorTheme::Default.next(false), ColorTheme::Gruvbox);
-        assert_eq!(ColorTheme::Gruvbox.next(true), ColorTheme::Default);
+        assert_eq!(ColorTheme::Default.next(false), ColorTheme::MacOs);
+        assert_eq!(ColorTheme::Gruvbox.next(true), ColorTheme::MacOs);
+        assert_eq!(ColorTheme::MacOs.next(true), ColorTheme::Default);
     }
 }
