@@ -223,3 +223,39 @@ fn cmd_v_and_cmd_x_work_in_the_editor_in_normal_mode(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-212: zoom in, zoom out and reset never change the title bar. The
+/// rest of the app still zooms.
+#[gpui_kit::test]
+fn zoom_does_not_change_the_title_bar(cx: &mut TestAppContext) {
+    let (handle, _view) = open(cx);
+    // The bar's height, the sidebar button, and the folder text, whose
+    // size follows its font size. The window's rem size shows the zoom.
+    let measure = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+            window.render_frame(cx);
+            (
+                window.find("title-bar").bounds().size,
+                window.find("toggle-sidebar").bounds().size,
+                window.find("project-path").bounds().size,
+                window.rem_size(),
+            )
+        })
+        .unwrap()
+    };
+    let (bar, button, path, rem) = measure("escape", cx);
+    assert!(bar.height > gpui_kit::px(0.) && path.width > gpui_kit::px(0.));
+    for key in [
+        "cmd-=", "cmd-=", "cmd-=", "cmd-0", "cmd--", "cmd--", "cmd-0",
+    ] {
+        let (zoomed_bar, zoomed_button, zoomed_path, zoomed_rem) = measure(key, cx);
+        let level = zoom(cx);
+        assert_eq!(zoomed_rem, rem * level, "the app zooms after {key}");
+        assert_eq!(zoomed_bar, bar, "title bar after {key}");
+        assert_eq!(zoomed_button, button, "sidebar button after {key}");
+        assert_eq!(zoomed_path, path, "folder text after {key}");
+    }
+    assert_eq!(zoom(cx), 1.0);
+}

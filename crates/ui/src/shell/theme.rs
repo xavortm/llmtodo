@@ -92,6 +92,12 @@ pub fn zoom_step(level: f32, up: bool) -> f32 {
     }
 }
 
+/// The window's rem size at 100% zoom. GPUI Kit sets the rem size from
+/// the UI font size. The title bar draws at this size (LLM-212).
+pub fn unzoomed_rem_size() -> gpui_kit::Pixels {
+    gpui_kit::px(UI_FONT_SIZE)
+}
+
 /// Sets the zoom level, clamped to the steps' range, and redraws.
 pub fn set_zoom(level: f32, cx: &mut App) {
     let level = if level.is_finite() { level } else { 1.0 };

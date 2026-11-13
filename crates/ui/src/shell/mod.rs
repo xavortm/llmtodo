@@ -12,6 +12,7 @@ pub mod sidebar;
 pub mod split;
 pub mod theme;
 pub mod tooltip;
+pub mod unzoomed;
 pub mod view_events;
 pub mod view_history;
 pub mod widgets;
