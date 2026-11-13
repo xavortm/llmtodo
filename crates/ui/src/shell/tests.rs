@@ -761,6 +761,49 @@ fn task_id_copies_by_click_and_palette(cx: &mut TestAppContext) {
     assert_eq!(copied.as_deref(), Some("LLM-104"));
 }
 
+/// LLM-199: a click on an ID shows "Copied" above the pointer on the next
+/// frame, and the card goes away by itself.
+#[gpui_kit::test]
+fn a_click_on_an_id_flashes_copied_above_the_pointer(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let key = window.find(("row-key", 2usize)).bounds();
+        window.click(("row-key", 2usize), cx);
+        assert_eq!(view.read(cx).flash_text(), Some("Copied"));
+        window.render_frame(cx);
+        let card = window.find("flash").bounds();
+        // The card sits above the ID, so the tooltip below stays clear.
+        assert!(
+            card.bottom() <= key.center().y,
+            "card {card:?}, key {key:?}"
+        );
+    })
+    .unwrap();
+
+    cx.executor()
+        .advance_clock(crate::shell::workspace::FLASH_FOR);
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).flash_text(), None);
+        assert!(window.try_find("flash").is_none());
+    })
+    .unwrap();
+}
+
+/// LLM-199: `:copy` comes from the keyboard, so the status bar says it and
+/// no card shows at the pointer.
+#[gpui_kit::test]
+fn the_copy_command_shows_no_flash(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    run_palette(handle, "copy", cx);
+    cx.read(|cx| {
+        assert_eq!(view.read(cx).message(), "Copied LLM-101");
+        assert_eq!(view.read(cx).flash_text(), None);
+    });
+}
+
 fn marked_keys(view: &Entity<Workspace>, cx: &TestAppContext) -> Vec<String> {
     cx.read(|cx| {
         let this = view.read(cx);
@@ -792,7 +835,10 @@ fn a_click_on_a_marked_id_copies_every_marked_id(cx: &mut TestAppContext) {
 
     let copied = cx.read_from_clipboard().and_then(|c| c.text());
     assert_eq!(copied.as_deref(), Some("LLM-101,LLM-102,LLM-103"));
-    cx.read(|cx| assert_eq!(view.read(cx).message(), "Copied 3 IDs"));
+    cx.read(|cx| {
+        assert_eq!(view.read(cx).message(), "Copied 3 IDs");
+        assert_eq!(view.read(cx).flash_text(), Some("Copied 3 IDs"));
+    });
     // The click does not reach the row, so the marks stay.
     assert_eq!(marked_keys(&view, cx), ["LLM-101", "LLM-102", "LLM-103"]);
 }

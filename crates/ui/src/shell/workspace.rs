@@ -89,6 +89,21 @@ struct AnswerUndo {
     /// Ends the offer. A newer answer drops this timer and starts its own.
     _expire: gpui_kit::Task<()>,
 }
+
+/// LLM-199: a short card above the pointer, such as "Copied", after a
+/// click whose result the window does not show by itself.
+pub(crate) struct Flash {
+    pub(crate) text: SharedString,
+    /// The pointer position at the click, in window coordinates.
+    pub(crate) at: gpui_kit::Point<gpui_kit::Pixels>,
+    /// The card, built once, with the same look as a tooltip.
+    pub(crate) view: gpui_kit::AnyView,
+    /// Hides the card. A newer card drops this timer and starts its own.
+    _expire: gpui_kit::Task<()>,
+}
+
+/// How long a flash card stays.
+pub(crate) const FLASH_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
 /// How long issues must stay unchanged before a saved view is read again.
 const VIEW_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -270,6 +285,8 @@ pub struct Workspace {
     last_deleted: Vec<(IssueId, SharedString)>,
     help_open: bool,
     message: SharedString,
+    /// LLM-199: the card a copy click shows above the pointer.
+    flash: Option<Flash>,
     /// The answer the Undo button takes back, while the button shows.
     answer_undo: Option<AnswerUndo>,
     /// The question an undo on its way to the server reopens.
@@ -562,6 +579,7 @@ impl Workspace {
             last_deleted: Vec::new(),
             help_open: false,
             message: "".into(),
+            flash: None,
             answer_undo: None,
             undoing: None,
             text_asked: None,
@@ -2477,6 +2495,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// LLM-199: shows `text` in a small card above the pointer for
+    /// [`FLASH_FOR`]. It confirms a click that changes nothing else in the
+    /// window, such as a copy. The card draws on the next frame.
+    pub fn flash(
+        &mut self,
+        text: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
+        let view = crate::shell::tooltip::Card::text(text.clone()).build(window, cx);
+        let expire = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH_FOR).await;
+            this.update(cx, |this, cx| {
+                this.flash = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self.flash = Some(Flash {
+            text,
+            at: window.mouse_position(),
+            view,
+            _expire: expire,
+        });
+        cx.notify();
+    }
+
+    /// The text of the flash card on screen, if one shows.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn flash_text(&self) -> Option<&str> {
+        self.flash.as_ref().map(|f| f.text.as_ref())
+    }
+
     /// Sends Approve or Request changes for a ticket in User review, with
     /// the text of its feedback field. The server moves the ticket, so the
     /// app waits for its copy instead of changing its own.
@@ -3975,29 +4027,32 @@ impl Workspace {
         self.send(id, Write::Update(Box::new(update)), WriteKind::Assignee, cx);
     }
 
-    pub fn copy_key(&mut self, id: IssueId, cx: &mut Context<Self>) {
+    /// Copies one task's ID. Returns whether it copied.
+    pub fn copy_key(&mut self, id: IssueId, cx: &mut Context<Self>) -> bool {
         let Some(key) = self.store.read(cx).get(id).map(|i| i.key.clone()) else {
-            return;
+            return false;
         };
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(key.to_string()));
         self.message = format!("Copied {key}").into();
         cx.notify();
+        true
     }
 
     /// LLM-190: copies the keys of several tasks, comma-separated, in the
-    /// order of `ids`.
-    pub fn copy_keys(&mut self, ids: &[IssueId], cx: &mut Context<Self>) {
+    /// order of `ids`. Returns how many it copied, or None for none.
+    pub fn copy_keys(&mut self, ids: &[IssueId], cx: &mut Context<Self>) -> Option<usize> {
         let store = self.store.read(cx);
         let keys: Vec<String> = ids
             .iter()
             .filter_map(|id| store.get(*id).map(|i| i.key.to_string()))
             .collect();
         if keys.is_empty() {
-            return;
+            return None;
         }
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(keys.join(",")));
         self.message = format!("Copied {} IDs", keys.len()).into();
         cx.notify();
+        Some(keys.len())
     }
 
     /// Moves an issue to the Trash. Nothing is lost: `:restore` brings back

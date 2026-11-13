@@ -77,11 +77,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.run_on_marks(id, &action, cx) {
+        if self.run_on_marks(id, &action, window, cx) {
             return;
         }
         match action {
-            IssueAction::CopyKey => self.copy_key(id, cx),
+            IssueAction::CopyKey => {
+                if self.copy_key(id, cx) {
+                    self.flash("Copied", window, cx);
+                }
+            }
             IssueAction::SetStatus(status) => self.set_status(id, status, cx),
             IssueAction::ToggleLabel(label) => self.toggle_label(id, label, cx),
             IssueAction::SetWaitingOn(waiting) => self.set_waiting_on(id, waiting, cx),
@@ -100,13 +104,21 @@ impl Workspace {
     /// applies to every marked task when `id` is one of them. LLM-190: so
     /// does Copy ID, from the menu or a click on a task's ID. Returns
     /// whether it ran that way.
-    fn run_on_marks(&mut self, id: IssueId, action: &IssueAction, cx: &mut Context<Self>) -> bool {
+    fn run_on_marks(
+        &mut self,
+        id: IssueId,
+        action: &IssueAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let marked = self.marked(cx);
         if marked.len() < 2 || !marked.contains(&id) {
             return false;
         }
         if matches!(action, IssueAction::CopyKey) {
-            self.copy_keys(&marked, cx);
+            if let Some(count) = self.copy_keys(&marked, cx) {
+                self.flash(format!("Copied {count} IDs"), window, cx);
+            }
             // A click on a row's ID reaches the row next, and the row's
             // plain click would end the multi-selection.
             cx.stop_propagation();

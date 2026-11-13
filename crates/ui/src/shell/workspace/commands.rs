@@ -82,6 +82,8 @@ impl Workspace {
                 None => Some(format!("Wait on agent, owner or none, not {arg}")),
             },
             ("copy" | "yank", Some(id)) => {
+                // From the keyboard: the status bar says it, with no card
+                // at a pointer that may be far away.
                 self.copy_key(id, cx);
                 None
             }

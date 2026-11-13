@@ -283,12 +283,12 @@ impl Workspace {
                             .active(move |s| s.bg(pressed))
                             .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
                             .child(crate::shell::widgets::card_text(path.clone(), cx))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                                     path.to_string(),
                                 ));
                                 this.message = format!("Copied {path}").into();
-                                cx.notify();
+                                this.flash("Copied", window, cx);
                             })),
                     ),
                 ),
@@ -335,6 +335,7 @@ impl Workspace {
                         .label("Check again")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_command("sync", window, cx);
+                            this.flash("Checking", window, cx);
                         })),
                     crate::shell::tooltip::Card::text("Ask the server again (:sync)"),
                 )),
@@ -672,5 +673,24 @@ impl Render for Workspace {
             })
             .when(self.help_open, |this| this.child(self.render_help(cx)))
             .when(claims_open, |this| this.child(self.claims.clone()))
+            .children(self.render_flash())
+    }
+}
+
+impl Workspace {
+    /// LLM-199: the flash card, centred above the pointer. It floats over
+    /// every other layer and takes no clicks.
+    fn render_flash(&self) -> Option<impl IntoElement + use<>> {
+        let flash = self.flash.as_ref()?;
+        Some(
+            gpui_kit::deferred(
+                gpui_kit::anchored()
+                    .position(flash.at)
+                    .anchor(gpui_kit::Anchor::BottomCenter)
+                    .snap_to_window_with_margin(gpui_kit::px(8.))
+                    .child(div().id("flash").test_support().child(flash.view.clone())),
+            )
+            .with_priority(2),
+        )
     }
 }
