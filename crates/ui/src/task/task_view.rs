@@ -893,6 +893,7 @@ impl TaskView {
         );
         let title: SharedString =
             held.map_or_else(|| link.title.clone().into(), |i| i.title.clone());
+        let status_name = status.name.clone();
         let theme = cx.theme();
         let hover = theme.secondary_hover;
         let pressed = theme.secondary_active;
@@ -942,7 +943,7 @@ impl TaskView {
             .child(with_card(
                 SharedString::from(format!("dep-tip-{verb}-{key}")),
                 open,
-                Card::text(format!("{key} {title}")),
+                Card::text(format!("{key} {title}")).row("Status", Some(status_name)),
             ))
             // A locked task stays read-only, so it offers no way to remove.
             .when(!locked, |this| {
@@ -1876,11 +1877,13 @@ impl TaskView {
             .px_3()
             .gap_2()
             .text_sm()
-            .child(
+            .child(with_card(
+                SharedString::from(format!("detail-status-{issue_id}")),
                 Icon::new(issue.status.icon())
                     .small()
                     .when(issue.status.is_done(), |i| i.text_color(theme.success)),
-            )
+                Card::text(format!("Status: {}", issue.status.name)),
+            ))
             .child(key)
             .child(
                 div()
@@ -2021,14 +2024,24 @@ fn read_only_card(
         .builder()
 }
 
-/// One row of the git panel: an icon, then whatever the caller adds.
-fn git_row(icon: IconName, muted: gpui_kit::Hsla) -> gpui_kit::Div {
-    h_flex().w_full().min_w_0().items_start().gap_2().child(
-        div()
-            .flex_none()
-            .pt_0p5()
-            .child(Icon::new(icon).xsmall().text_color(muted)),
-    )
+/// One row of the git panel: an icon, then whatever the caller adds. The
+/// icon's card names what the row shows, such as "Branch".
+fn git_row(
+    id: impl Into<gpui_kit::ElementId>,
+    icon: IconName,
+    what: impl Into<SharedString>,
+    muted: gpui_kit::Hsla,
+) -> gpui_kit::Div {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_start()
+        .gap_2()
+        .child(div().flex_none().pt_0p5().child(with_card(
+            id,
+            Icon::new(icon).xsmall().text_color(muted),
+            Card::text(what),
+        )))
 }
 
 /// Monospace text in a git panel row.
@@ -2046,12 +2059,11 @@ fn git_fact_rows(git: &IssueGit, cx: &App) -> Vec<gpui_kit::AnyElement> {
     let theme = cx.theme();
     let mono = theme.mono_font_family.clone();
     let (fg, muted) = (theme.foreground, theme.muted_foreground);
-    let row = |icon: IconName| git_row(icon, muted);
     let text = |s: String| git_text(s, &mono, fg);
     let mut rows = Vec::new();
     if let Some(b) = &git.branch {
         rows.push(
-            row(IconName::GitBranch)
+            git_row("git-branch-icon", IconName::GitBranch, "Branch", muted)
                 .child(text(b.clone()))
                 .into_any_element(),
         );
@@ -2062,7 +2074,7 @@ fn git_fact_rows(git: &IssueGit, cx: &App) -> Vec<gpui_kit::AnyElement> {
             place = format!("{place} on {h}");
         }
         rows.push(
-            row(IconName::FolderGit)
+            git_row("git-worktree-icon", IconName::FolderGit, "Worktree", muted)
                 .child(text(place))
                 .into_any_element(),
         );
@@ -2073,14 +2085,14 @@ fn git_fact_rows(git: &IssueGit, cx: &App) -> Vec<gpui_kit::AnyElement> {
             (Some(n), None) => format!("#{n}"),
             (None, None) => pr.url.clone(),
         };
-        let icon = match pr.state.as_deref() {
-            Some("merged") => IconName::GitMerge,
-            Some("closed") => IconName::GitPullRequestClosed,
-            Some("draft") => IconName::GitPullRequestDraft,
-            _ => IconName::GitPullRequest,
+        let (icon, what) = match pr.state.as_deref() {
+            Some("merged") => (IconName::GitMerge, "Merged pull request"),
+            Some("closed") => (IconName::GitPullRequestClosed, "Closed pull request"),
+            Some("draft") => (IconName::GitPullRequestDraft, "Draft pull request"),
+            _ => (IconName::GitPullRequest, "Pull request"),
         };
         rows.push(
-            row(icon)
+            git_row("git-pr-icon", icon, what, muted)
                 .child(
                     crate::shell::widgets::link("git-pr", pr.url.clone(), cx)
                         .min_w_0()
@@ -2105,7 +2117,6 @@ fn git_commit_rows(
     let theme = cx.theme();
     let mono = theme.mono_font_family.clone();
     let (fg, muted) = (theme.foreground, theme.muted_foreground);
-    let row = |icon: IconName| git_row(icon, muted);
     let text = |s: String| git_text(s, &mono, fg);
     git.commits
         .iter()
@@ -2114,7 +2125,12 @@ fn git_commit_rows(
         .map(|(ix, c)| {
             let (hash, subject) = c.split_once(' ').unwrap_or((c.as_str(), ""));
             let url = repo.and_then(|r| llmtodo_client::git::commit_url(r, hash));
-            let row = row(IconName::GitCommitHorizontal);
+            let row = git_row(
+                ("git-commit-icon", ix),
+                IconName::GitCommitHorizontal,
+                "Commit",
+                muted,
+            );
             match url {
                 Some(url) => row
                     .child(

@@ -249,7 +249,11 @@ fn locked_dot(nested: bool, fill: gpui_kit::Hsla) -> impl IntoElement {
                 .test_support()
                 .size(gpui_kit::rems(DOT))
                 .rounded_full()
-                .bg(fill),
+                .bg(fill)
+                .tooltip(
+                    crate::shell::tooltip::Card::text("An agent holds a task in this project")
+                        .builder(),
+                ),
         )
 }
 
@@ -335,11 +339,13 @@ impl Render for Sidebar {
                             )
                         })
                         .when(active, |this| {
-                            this.child(
+                            this.child(crate::shell::tooltip::with_card(
+                                "sidebar-tracker-open",
                                 Icon::new(IconName::Check)
                                     .xsmall()
                                     .text_color(theme.muted_foreground),
-                            )
+                                crate::shell::tooltip::Card::text("The open tracker"),
+                            ))
                         })
                         .on_click(move |_, window, cx| {
                             events.emit(ViewEvent::SwitchTracker(ix), window, cx);

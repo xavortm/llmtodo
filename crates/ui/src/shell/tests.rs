@@ -4030,3 +4030,65 @@ fn edit_llm_104_again(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mu
     })
     .unwrap();
 }
+
+/// LLM-192: an icon with no text label shows a card on hover. The card
+/// opens next to the icon, so it is that icon's card and no other.
+#[gpui_kit::test]
+fn icons_without_a_label_show_a_card(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let id = view.update(cx, |this, cx| {
+        let mut issue = this.visible_issue(0, cx).clone();
+        issue.assignee = Some(crate::model::data::Assignee::Agent(
+            crate::model::demo::claude(),
+        ));
+        let id = issue.id;
+        this.upsert_issue(issue, cx);
+        id
+    });
+    // The list is at full width, so every column shows.
+    hover_shows_card(
+        handle,
+        crate::shell::widgets::issue_part("assignee", id),
+        cx,
+    );
+    hover_shows_card(handle, ("row-check", 0usize), cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    let open = cx.read(|cx| view.read(cx).detail(cx).expect("a task is open").issue);
+    hover_shows_card(
+        handle,
+        SharedString::from(format!("detail-status-{open}")),
+        cx,
+    );
+}
+
+/// Hovers `target` and checks that a card opens next to it.
+fn hover_shows_card(
+    handle: AnyWindowHandle,
+    target: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) {
+    let target = target.into();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(target.clone(), cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let icon = window.find(target.clone()).bounds();
+        let card = window
+            .try_find("tooltip-card")
+            .unwrap_or_else(|| panic!("no card on {target:?}"))
+            .bounds();
+        let gap = (card.center().y - icon.center().y).abs();
+        assert!(gap < px(80.), "{target:?}: card {card:?} far from {icon:?}");
+    })
+    .unwrap();
+}

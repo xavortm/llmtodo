@@ -246,6 +246,7 @@ impl Card {
 pub fn with_card(id: impl Into<ElementId>, child: impl IntoElement, card: Card) -> AnyElement {
     div()
         .id(id)
+        .test_support()
         .flex_none()
         .child(child)
         .tooltip(card.builder())

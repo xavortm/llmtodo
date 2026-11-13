@@ -1125,7 +1125,15 @@ impl IssueList {
                 };
                 events.emit(ViewEvent::ClickRow { id, click }, window, cx);
             })
-            .child(square);
+            .child(square)
+            .tooltip(
+                Card::text(if marked {
+                    "Unselect this task (x)"
+                } else {
+                    "Select this task (x)"
+                })
+                .builder(),
+            );
         // On the outside, so the box still sees the press but the row does
         // not: the row neither shows as pressed nor starts a drag.
         div()
@@ -1679,9 +1687,11 @@ fn assignee_cell(issue: &Issue, muted: gpui_kit::Hsla) -> impl IntoElement + use
         .text_xs()
         .text_color(muted)
         .map(|this| match &issue.assignee {
-            Some(Assignee::Agent(agent)) => {
-                this.child(Icon::new(agent.icon()).small().text_color(muted))
-            }
+            Some(Assignee::Agent(agent)) => this.child(with_card(
+                widgets::issue_part("assignee", issue.id),
+                Icon::new(agent.icon()).small().text_color(muted),
+                Card::text(format!("Assigned to {}", agent.label())),
+            )),
             Some(Assignee::Person(name)) => this.child(name.clone()),
             None => this,
         })

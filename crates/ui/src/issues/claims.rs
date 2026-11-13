@@ -195,7 +195,14 @@ impl Render for ClaimsList {
                         .when(selected, |this| this.bg(active_bg))
                         .when(!selected, |this| this.hover(move |s| s.bg(hover)))
                         .active(move |s| s.bg(pressed))
-                        .child(Icon::new(row.claim.actor.icon()).xsmall())
+                        .child(crate::shell::tooltip::with_card(
+                            SharedString::from(format!("claim-agent-{}", row.key)),
+                            Icon::new(row.claim.actor.icon()).xsmall(),
+                            crate::shell::tooltip::Card::text(format!(
+                                "Claimed by {}",
+                                row.claim.actor.label()
+                            )),
+                        ))
                         .child(
                             div()
                                 .flex_none()
