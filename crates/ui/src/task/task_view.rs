@@ -1848,7 +1848,7 @@ impl TaskView {
                     .test_support()
                     .flex_1()
                     .min_w_0()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .font_weight(gpui_kit::FontWeight::BOLD)
                     .child(issue.title.clone()),
             )
             .children(
