@@ -53,6 +53,7 @@ pub fn catalog() -> Catalog {
             .map(|(p, t)| (p.into(), vec![t.into()]))
             .collect(),
         project_repos: vec![("app".into(), "https://github.com/xavortm/llmtodo".into())],
+        project_folders: vec![("server".into(), "/tmp/llmtodo-demo/server".into())],
         views: vec![place("Open bugs", "Open bugs")],
         documents: vec![crate::model::data::DocEntry {
             id: llmtodo_core::DocumentId::from_u128(901),

@@ -14,9 +14,11 @@ pub struct ProjectRow {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    pub local_path: Option<String>,
 }
 
-const COLS: &str = "id, slug, name, description, state, created_at, updated_at, deleted_at";
+const COLS: &str =
+    "id, slug, name, description, state, created_at, updated_at, deleted_at, local_path";
 
 /// Turns a name into a slug: lower case, words joined by `-`.
 pub fn slugify(name: &str) -> String {
@@ -89,6 +91,7 @@ pub async fn all_to_api(
             slug: p.slug,
             name: p.name,
             description: p.description,
+            local_path: p.local_path,
             state: p.state.parse().unwrap_or(ProjectState::Backlog),
             created_at: parse_ts(&p.created_at),
             updated_at: parse_ts(&p.updated_at),
@@ -221,6 +224,20 @@ pub async fn add_team(
 pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
     sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
         .bind(name)
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+/// Sets or clears the project's local folder.
+pub async fn set_local_path(
+    c: &mut SqliteConnection,
+    path: Option<&str>,
+    id: &str,
+) -> ApiResult<()> {
+    sqlx::query("UPDATE projects SET local_path = ? WHERE id = ?")
+        .bind(path)
         .bind(id)
         .execute(&mut *c)
         .await?;

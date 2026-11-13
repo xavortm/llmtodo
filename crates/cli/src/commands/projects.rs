@@ -39,6 +39,11 @@ pub enum ProjectCmd {
         add_team: Vec<String>,
         #[arg(long)]
         remove_team: Vec<String>,
+        /// The project's local folder, which the app shows when the
+        /// project has no linked repo. `""` clears it. `llmtodo init` and
+        /// calls from the repo set it on their own.
+        #[arg(long)]
+        local_path: Option<String>,
     },
     /// Move a project to the trash.
     Delete {
@@ -90,7 +95,9 @@ pub async fn run(app: &App, cmd: ProjectCmd) -> CliResult {
             state,
             add_team,
             remove_team,
+            local_path,
         } => {
+            let local_path = local_path.map(|p| absolute(&p)).transpose()?;
             let u = UpdateProject {
                 name,
                 slug,
@@ -98,6 +105,7 @@ pub async fn run(app: &App, cmd: ProjectCmd) -> CliResult {
                 state,
                 add_teams: (!add_team.is_empty()).then_some(add_team),
                 remove_teams: (!remove_team.is_empty()).then_some(remove_team),
+                local_path,
             };
             app.out.ser(&c.update_project(&project, &u).await?)
         }
@@ -113,4 +121,13 @@ pub async fn run(app: &App, cmd: ProjectCmd) -> CliResult {
         }
     }
     Ok(())
+}
+
+/// Makes a folder given on the command line absolute. An empty one stays
+/// empty: it clears the folder.
+fn absolute(path: &str) -> CliResult<String> {
+    if path.trim().is_empty() {
+        return Ok(String::new());
+    }
+    Ok(std::path::absolute(path)?.to_string_lossy().into_owned())
 }

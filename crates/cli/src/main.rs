@@ -191,7 +191,43 @@ pub struct App {
 impl App {
     /// Connects to the server, starting it when it is not running.
     pub async fn client(&self) -> CliResult<&llmtodo_client::Client> {
-        self.client.get_or_try_init(|| self.connect()).await
+        let mut fresh = false;
+        let c = self
+            .client
+            .get_or_try_init(|| {
+                fresh = true;
+                self.connect()
+            })
+            .await?;
+        if fresh {
+            self.remember_local_path(c).await;
+        }
+        Ok(c)
+    }
+
+    /// Saves the repo's main checkout as the project's local folder, when
+    /// this call runs in a repo whose `.llmtodo.toml` names a project that
+    /// has no folder yet. The app shows the folder. A failure here never
+    /// fails the command.
+    async fn remember_local_path(&self, c: &llmtodo_client::Client) {
+        let (Some(project), Some(root)) = (&self.detected.repo.project, &self.detected.repo_root)
+        else {
+            return;
+        };
+        let Ok(p) = c.project(project).await else {
+            return;
+        };
+        if p.local_path.is_some() {
+            return;
+        }
+        let Some(main) = llmtodo_client::git::main_checkout_root(root) else {
+            return;
+        };
+        let update = llmtodo_api_types::UpdateProject {
+            local_path: Some(main.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let _ = c.update_project(&p.slug, &update).await;
     }
 
     /// A new connection, for a caller that outlives a server restart. The

@@ -460,6 +460,7 @@ Delete a status no issue uses
 - `--state <state>`
 - `--add-team <add_team>` (repeatable)
 - `--remove-team <remove_team>` (repeatable)
+- `--local-path <local_path>`: The project's local folder, which the app shows when the project has no linked repo. `""` clears it. `llmtodo init` and calls from the repo set it on their own
 
 ### `llmtodo project delete`
 

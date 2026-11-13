@@ -985,3 +985,77 @@ async fn order_set_show_step_and_clear() {
     assert_eq!(t.json("s1", &["issue", "view", "LLM-5"])["depth"], 0);
     t.stop().await;
 }
+
+/// LLM-213: the project's local folder. `init` saves the repo's main
+/// checkout, a call from a worktree fills it when it is empty, and
+/// `project update --local-path` sets and clears it.
+#[tokio::test(flavor = "multi_thread")]
+async fn projects_remember_their_local_folder() {
+    let t = T::new().await;
+    let repo = t.dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let main = repo.canonicalize().unwrap().to_string_lossy().into_owned();
+    let path = |t: &T| t.json("s1", &["project", "view", "app"])["local_path"].clone();
+
+    let mut c = t.bare_cmd(
+        "s1",
+        &[
+            "init",
+            "--no-input",
+            "--no-skill",
+            "--team",
+            "ABC",
+            "--project",
+            "app",
+            "--create",
+        ],
+    );
+    assert!(c.current_dir(&repo).output().unwrap().status.success());
+    assert_eq!(path(&t), Value::from(main.clone()));
+
+    t.json("s1", &["project", "update", "app", "--local-path", ""]);
+    assert_eq!(path(&t), Value::Null);
+
+    // A call from a worktree saves the main checkout, not the worktree.
+    git(&["add", ".llmtodo.toml"]);
+    git(&["commit", "-q", "-m", "init"]);
+    git(&["worktree", "add", "-q", "-b", "side", "wt"]);
+    let mut c = t.bare_cmd("s1", &["team", "list"]);
+    assert!(
+        c.current_dir(repo.join("wt"))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(path(&t), Value::from(main.clone()));
+
+    // A set folder stays: a call from elsewhere does not replace it.
+    t.json(
+        "s1",
+        &["project", "update", "app", "--local-path", "/tmp/other"],
+    );
+    let mut c = t.bare_cmd("s1", &["team", "list"]);
+    assert!(c.current_dir(&repo).output().unwrap().status.success());
+    assert_eq!(path(&t), Value::from("/tmp/other"));
+
+    // A relative folder becomes absolute.
+    t.json("s1", &["project", "update", "app", "--local-path", "sub"]);
+    let want = t.dir.path().canonicalize().unwrap().join("sub");
+    let want = want.to_string_lossy().into_owned();
+    assert_eq!(path(&t), Value::from(want));
+    t.stop().await;
+}

@@ -125,7 +125,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 - **Team**: key such as `ALX`, name, statuses, and the next issue number.
 - **Status**: belongs to a team. It has a name, a type, a color and a position.
 - **Label** and **label group**: workspace-wide, so every team shares them.
-- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project.
+- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. A CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet. `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213).
 - **Milestone**: belongs to one project.
 - **Issue**: belongs to one team. It has an optional project, milestone and parent. It also has `waiting_on`, which is empty, `agent` or `owner`.
 - **Relation**: a typed edge between two issues.
@@ -452,6 +452,7 @@ Zed is the visual target. The app should feel like a Zed window that shows issue
 
 - Dense layout with docked panels, thin borders and no heavy shadows.
 - A title bar, a sidebar panel, a main pane and a status bar, like Zed's workspace.
+- The title bar names the project of the current scope. With a linked repo, it shows the repo as a link, such as `xavortm/llmtodo`, and a click opens it. Without a repo, it shows the project's local folder, and a click copies it. Any other scope shows the tracker's name alone. The bar never shows the app's working folder. `LLMTODO_PROJECT_DIR` names a folder for development runs and wins over the rest (LLM-213).
 - Dark theme by default, with a light theme. Colors come from theme tokens, so a Zed theme file can map onto them later.
 - Zed's text sizes and spacing. Monospace font for issue keys, branches and paths.
 - Small info elements, such as hover cards, captions and badges, use a smaller font than body text, the same size as their label, and a line height near 1.3 (LLM-198).

@@ -371,6 +371,21 @@ pub fn git_root(dir: &Path) -> Option<std::path::PathBuf> {
     git_out(&["rev-parse", "--show-toplevel"], dir).map(std::path::PathBuf::from)
 }
 
+/// The top folder of the main checkout of the repo that holds `dir`. In a
+/// linked worktree it is the checkout the worktree came from, so the
+/// folder stays when the worktree goes. A bare repo has no checkout.
+pub fn main_checkout_root(dir: &Path) -> Option<std::path::PathBuf> {
+    let common = git_out(
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        dir,
+    )?;
+    let common = std::path::PathBuf::from(common);
+    if common.file_name().is_some_and(|n| n == ".git") {
+        return common.parent().map(Path::to_path_buf);
+    }
+    git_root(dir)
+}
+
 /// The branch name and the commit hash of HEAD, in one git call.
 /// `--abbrev-ref` applies to every rev after it, so the plain `HEAD`
 /// must come first. A detached HEAD has no branch.
@@ -609,6 +624,17 @@ mod tests {
     /// LLM-140: a session in the main checkout writes once, other agents
     /// land work, the session pulls it in with a fast-forward and writes
     /// again. Only the commit the session made itself belongs to it.
+    #[test]
+    fn the_main_checkout_root_skips_linked_worktrees() {
+        let r = Repo::new();
+        r.git(".", &["worktree", "add", "-q", "-b", "side", "wt"]);
+        let main = r.dir(".").canonicalize().unwrap();
+        let wt = r.dir("wt").canonicalize().unwrap();
+        assert_eq!(main_checkout_root(&r.dir(".")), Some(main.clone()));
+        assert_eq!(main_checkout_root(&r.dir("wt")), Some(main));
+        assert_eq!(git_root(&r.dir("wt")), Some(wt));
+    }
+
     #[test]
     fn a_session_on_main_lists_only_its_own_commits() {
         let r = Repo::new();

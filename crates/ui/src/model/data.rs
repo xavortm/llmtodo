@@ -655,6 +655,9 @@ pub struct Catalog {
     /// Each project's first linked repo as its web page, by project slug.
     /// The git panel links commits there.
     pub project_repos: Vec<(SharedString, String)>,
+    /// Each project's local folder, by project slug. The CLI saves it.
+    /// The title bar shows it when the project has no repo.
+    pub project_folders: Vec<(SharedString, String)>,
     /// Every saved view, by name. A view's key is its name.
     pub views: Vec<Place>,
     /// Every live project document, by title.
@@ -747,6 +750,11 @@ impl Catalog {
                 Some((p.slug.clone().into(), web))
             })
             .collect();
+        let project_folders = projects
+            .iter()
+            .filter(|p| p.deleted_at.is_none())
+            .filter_map(|p| Some((p.slug.clone().into(), p.local_path.clone()?)))
+            .collect();
         let project_teams = projects
             .iter()
             .filter(|p| p.deleted_at.is_none())
@@ -810,6 +818,7 @@ impl Catalog {
             project_teams,
             projects,
             project_repos,
+            project_folders,
             views,
             documents,
             labels,
@@ -841,6 +850,14 @@ impl Catalog {
             .iter()
             .find(|(s, _)| s.as_ref() == slug)
             .map(|(_, web)| web.as_str())
+    }
+
+    /// A project's local folder, when the CLI saved one.
+    pub fn project_folder(&self, slug: &str) -> Option<&str> {
+        self.project_folders
+            .iter()
+            .find(|(s, _)| s.as_ref() == slug)
+            .map(|(_, path)| path.as_str())
     }
 
     /// One team's statuses, active ones first.

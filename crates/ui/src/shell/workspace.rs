@@ -134,25 +134,78 @@ fn status_word(name: &str) -> String {
     name.to_lowercase().replace(' ', "-")
 }
 
-/// The project name and its folder, with the home folder shortened to `~`.
-/// `LLMTODO_PROJECT_DIR` picks the folder; it defaults to the working folder.
-fn project_name_and_path() -> (SharedString, SharedString) {
-    let dir = std::env::var_os("LLMTODO_PROJECT_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_default();
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "llmtodo".into());
-    let mut path = dir.to_string_lossy().to_string();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = home.to_string_lossy().to_string();
-        if let Some(rest) = path.strip_prefix(&home) {
-            path = format!("~{rest}");
+/// What the title bar shows right of the project name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TitlePlace {
+    /// The project's linked repo: `label` such as `xavortm/llmtodo`, and
+    /// the page a click opens.
+    Repo {
+        label: SharedString,
+        url: SharedString,
+    },
+    /// A local folder, with the home folder shortened to `~`. A click
+    /// copies it.
+    Folder(SharedString),
+    /// Nothing: the scope is not one project.
+    None,
+}
+
+/// The title bar's name and place. `LLMTODO_PROJECT_DIR`, passed as
+/// `dev_dir`, wins for development runs. Then the project of the scope
+/// gives its name and its repo, else its local folder. Any other scope
+/// shows the tracker's name alone. The app's working folder never shows:
+/// an app started from the Dock has `/` there (LLM-213).
+pub(crate) fn title_place(
+    scope: &Scope,
+    catalog: &Catalog,
+    tracker: &str,
+    dev_dir: Option<&std::path::Path>,
+    home: Option<&str>,
+) -> (SharedString, TitlePlace) {
+    let short = |path: &str| -> SharedString {
+        match home.and_then(|h| path.strip_prefix(h)) {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}").into(),
+            _ => path.to_string().into(),
         }
+    };
+    if let Some(dir) = dev_dir {
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| tracker.to_string());
+        return (
+            name.into(),
+            TitlePlace::Folder(short(&dir.to_string_lossy())),
+        );
     }
-    (name.into(), path.into())
+    let slug = match scope {
+        Scope::Project(slug) => Some(slug.clone()),
+        Scope::Document(id) => catalog
+            .documents
+            .iter()
+            .find(|d| d.id.to_string() == id.as_ref())
+            .map(|d| d.project.clone()),
+        _ => None,
+    };
+    let project = slug.and_then(|slug| catalog.projects.iter().find(|p| p.key == slug));
+    let Some(project) = project else {
+        return (tracker.to_string().into(), TitlePlace::None);
+    };
+    let place = if let Some(url) = catalog.project_repo(&project.key) {
+        let label = url
+            .strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("https://"))
+            .unwrap_or(url);
+        TitlePlace::Repo {
+            label: label.to_string().into(),
+            url: url.to_string().into(),
+        }
+    } else if let Some(folder) = catalog.project_folder(&project.key) {
+        TitlePlace::Folder(short(folder))
+    } else {
+        TitlePlace::None
+    };
+    (project.name.clone(), place)
 }
 
 /// Starts the API thread for a tracker. Tests swap it for one that records
@@ -253,8 +306,9 @@ pub struct Workspace {
     _events: Option<gpui_kit::Task<()>>,
     /// Redraws the claim timers once a minute.
     _clock: gpui_kit::Task<()>,
-    /// The project this window shows: its name and its folder.
-    project: (SharedString, SharedString),
+    /// `LLMTODO_PROJECT_DIR`: a development run names its folder, and
+    /// the title bar shows it in place of the scope's project.
+    project_dir: Option<std::path::PathBuf>,
     /// The panes: the sidebar and the split between list and task view.
     layout: Layout,
     window_frame: Option<[f32; 4]>,
@@ -331,6 +385,13 @@ impl Workspace {
 
     /// Shows the demo issues, with no server behind them.
     #[cfg(test)]
+    /// Stands in for `LLMTODO_PROJECT_DIR`, so a test does not depend on
+    /// the shell that runs it.
+    #[cfg(test)]
+    pub(crate) fn set_project_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.project_dir = dir;
+    }
+
     pub fn load_demo(&mut self, cx: &mut Context<Self>) {
         let catalog = crate::model::demo::catalog();
         let issues = crate::model::demo::issues(&catalog);
@@ -563,7 +624,9 @@ impl Workspace {
             update: None,
             _events: None,
             _clock: Self::start_clock(cx),
-            project: project_name_and_path(),
+            project_dir: std::env::var_os("LLMTODO_PROJECT_DIR")
+                .filter(|d| !d.is_empty())
+                .map(std::path::PathBuf::from),
             layout: Layout::new(split_side, split_stacked, narrow),
             window_frame: None,
             settings: store,

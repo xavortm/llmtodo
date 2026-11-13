@@ -112,6 +112,19 @@ fn a_click_on_a_tracker_row_opens_that_tracker(cx: &mut TestAppContext) {
     });
 }
 
+/// LLM-213: with all issues in scope, the title bar names the open
+/// tracker, and a switch renames it.
+#[gpui_kit::test]
+fn the_title_bar_names_the_open_tracker(cx: &mut TestAppContext) {
+    let (_, view, _) = open(cx, None);
+    view.update(cx, |this, cx| {
+        this.set_project_dir(None);
+        assert_eq!(this.title_place(cx).0, "Demo");
+        assert!(this.switch_tracker(1, cx));
+        assert_eq!(this.title_place(cx).0, "Real tracker");
+    });
+}
+
 /// LLM-111: kept text stays in the folder of its tracker, and the next
 /// tracker does not show it.
 #[gpui_kit::test]

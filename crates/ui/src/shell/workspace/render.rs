@@ -188,14 +188,14 @@ impl Workspace {
             })
     }
 
-    /// The project name on the left, its folder on the right. A click on
-    /// the folder copies it. Restart to update sits left of the folder.
+    /// The project of the scope on the left, its repo or folder on the
+    /// right. A click on the repo opens it; a click on the folder copies
+    /// it. Restart to update sits left of them.
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update = self.render_update_button();
+        let (name, place) = self.title_place(cx);
+        let place = self.render_title_place(place, cx);
         let theme = cx.theme();
-        let (name, path) = self.project.clone();
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
         let sidebar_open = self.sidebar_shown();
         // Which tracker is open, when there is a choice. The real one says
         // so plainly, so the owner never edits real data by mistake.
@@ -272,37 +272,100 @@ impl Workspace {
                                         "Show sidebar (Cmd-B)"
                                     }),
                                 ))
-                                .child(div().text_color(theme.foreground).child(name))
+                                .child(
+                                    div()
+                                        .id("project-name")
+                                        .test_support()
+                                        .text_color(theme.foreground)
+                                        .child(name),
+                                )
                                 .children(tracker),
                         )
-                        .child(
-                            h_flex().gap_2().children(update).child(
-                                div()
-                                    .id("project-path")
-                                    .test_support()
-                                    .px_1()
-                                    .rounded(theme.radius)
-                                    .cursor_pointer()
-                                    .font_family(theme.mono_font_family.clone())
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .hover(move |s| s.bg(hover))
-                                    .active(move |s| s.bg(pressed))
-                                    .tooltip(
-                                        crate::shell::tooltip::Card::text("Copy path").builder(),
-                                    )
-                                    .child(crate::shell::widgets::card_text(path.clone(), cx))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                            path.to_string(),
-                                        ));
-                                        this.message = format!("Copied {path}").into();
-                                        this.flash("Copied", window, cx);
-                                    })),
-                            ),
-                        ),
+                        .child(h_flex().gap_2().children(update).children(place)),
                 ),
         )
+    }
+
+    /// The scope's project name and its repo or folder, for the title bar.
+    pub(crate) fn title_place(&self, cx: &App) -> (SharedString, TitlePlace) {
+        let store = self.store.read(cx);
+        let tracker = store
+            .trackers
+            .get(store.tracker)
+            .map_or_else(|| SharedString::from("llmtodo"), |t| t.name.clone());
+        let home = std::env::var("HOME").ok();
+        title_place(
+            &self.list.read(cx).scope,
+            &store.catalog,
+            &tracker,
+            self.project_dir.as_deref(),
+            home.as_deref(),
+        )
+    }
+
+    /// The repo as a link, or the folder as a copy button. Neither for a
+    /// scope that is not one project.
+    fn render_title_place(
+        &self,
+        place: TitlePlace,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let theme = cx.theme();
+        let hover = theme.foreground.opacity(0.08);
+        let pressed = theme.foreground.opacity(0.16);
+        let mono = theme.mono_font_family.clone();
+        let muted = theme.muted_foreground;
+        let radius = theme.radius;
+        match place {
+            TitlePlace::None => None,
+            TitlePlace::Repo { label, url } => {
+                let tip = if url.starts_with("https://github.com/") {
+                    "Open on GitHub"
+                } else {
+                    "Open the repo"
+                };
+                Some(
+                    div()
+                        .id("project-repo")
+                        .test_support()
+                        .px_1()
+                        .rounded(radius)
+                        .hover(move |s| s.bg(hover))
+                        .active(move |s| s.bg(pressed))
+                        .tooltip(crate::shell::tooltip::Card::text(tip).builder())
+                        .child(
+                            crate::shell::widgets::link("project-repo-link", url, cx)
+                                .font_family(mono)
+                                .text_xs()
+                                .child(crate::shell::widgets::card_text(label, cx)),
+                        )
+                        .into_any_element(),
+                )
+            }
+            TitlePlace::Folder(path) => Some(
+                div()
+                    .id("project-path")
+                    .test_support()
+                    .px_1()
+                    .rounded(radius)
+                    .cursor_pointer()
+                    .font_family(mono)
+                    .text_xs()
+                    .text_color(muted)
+                    .hover(move |s| s.bg(hover))
+                    .active(move |s| s.bg(pressed))
+                    .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
+                    .child(crate::shell::widgets::card_text(path.clone(), cx))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                            path.to_string(),
+                        ));
+                        this.message = format!("Copied {path}").into();
+                        this.flash("Copied", window, cx);
+                    }))
+                    .into_any_element(),
+            ),
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

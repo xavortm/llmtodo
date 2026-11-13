@@ -370,6 +370,10 @@ pub struct Project {
     pub state: ProjectState,
     pub teams: Vec<String>,
     pub repos: Vec<String>,
+    /// The project's local folder, the git root of its main checkout.
+    /// The CLI saves it. The app shows it when the project has no repo.
+    #[serde(default)]
+    pub local_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub deleted_at: Option<Timestamp>,
@@ -395,6 +399,8 @@ pub struct UpdateProject {
     pub state: Option<ProjectState>,
     pub add_teams: Option<Vec<String>>,
     pub remove_teams: Option<Vec<String>>,
+    /// An absolute folder. An empty string clears it.
+    pub local_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

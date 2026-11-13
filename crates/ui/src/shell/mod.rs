@@ -31,6 +31,8 @@ mod sidebar_tests;
 #[cfg(test)]
 pub mod tests;
 #[cfg(test)]
+mod title_bar_tests;
+#[cfg(test)]
 mod trackers_tests;
 #[cfg(test)]
 mod update_tests;

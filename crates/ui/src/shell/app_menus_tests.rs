@@ -21,6 +21,7 @@ fn open_with(
         gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
             cx.new(|cx| {
                 let mut this = Workspace::with_settings(settings, store, window, cx);
+                this.set_project_dir(None);
                 this.load_demo(cx);
                 this
             })
@@ -228,9 +229,14 @@ fn cmd_v_and_cmd_x_work_in_the_editor_in_normal_mode(cx: &mut TestAppContext) {
 /// rest of the app still zooms.
 #[gpui_kit::test]
 fn zoom_does_not_change_the_title_bar(cx: &mut TestAppContext) {
-    let (handle, _view) = open(cx);
-    // The bar's height, the sidebar button, and the folder text, whose
-    // size follows its font size. The window's rem size shows the zoom.
+    let (handle, view) = open(cx);
+    // A project with a repo, so the bar shows a repo link (LLM-213).
+    view.update(cx, |this, cx| {
+        this.set_scope(crate::model::scope::Scope::Project("app".into()), cx)
+    });
+    // The bar's height, the sidebar button, the project name and the repo
+    // link, whose sizes follow their font size. The window's rem size
+    // shows the zoom.
     let measure = |key: &str, cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -239,23 +245,25 @@ fn zoom_does_not_change_the_title_bar(cx: &mut TestAppContext) {
             (
                 window.find("title-bar").bounds().size,
                 window.find("toggle-sidebar").bounds().size,
-                window.find("project-path").bounds().size,
+                window.find("project-name").bounds().size,
+                window.find("project-repo").bounds().size,
                 window.rem_size(),
             )
         })
         .unwrap()
     };
-    let (bar, button, path, rem) = measure("escape", cx);
-    assert!(bar.height > gpui_kit::px(0.) && path.width > gpui_kit::px(0.));
+    let (bar, button, name, repo, rem) = measure("escape", cx);
+    assert!(bar.height > gpui_kit::px(0.) && repo.width > gpui_kit::px(0.));
     for key in [
         "cmd-=", "cmd-=", "cmd-=", "cmd-0", "cmd--", "cmd--", "cmd-0",
     ] {
-        let (zoomed_bar, zoomed_button, zoomed_path, zoomed_rem) = measure(key, cx);
+        let (zoomed_bar, zoomed_button, zoomed_name, zoomed_repo, zoomed_rem) = measure(key, cx);
         let level = zoom(cx);
         assert_eq!(zoomed_rem, rem * level, "the app zooms after {key}");
         assert_eq!(zoomed_bar, bar, "title bar after {key}");
         assert_eq!(zoomed_button, button, "sidebar button after {key}");
-        assert_eq!(zoomed_path, path, "folder text after {key}");
+        assert_eq!(zoomed_name, name, "project name after {key}");
+        assert_eq!(zoomed_repo, repo, "repo link after {key}");
     }
     assert_eq!(zoom(cx), 1.0);
 }

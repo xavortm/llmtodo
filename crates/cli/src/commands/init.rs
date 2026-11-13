@@ -12,6 +12,7 @@ use serde_json::json;
 use crate::commands::skill;
 use crate::context::{RepoConfig, git_root};
 use crate::{App, CliError, CliResult};
+use llmtodo_client::git::main_checkout_root;
 
 #[derive(Args)]
 pub struct InitArgs {
@@ -285,6 +286,16 @@ pub async fn run(app: &App, a: InitArgs) -> CliResult {
     let changed = std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str());
     if changed {
         std::fs::write(&path, &text)?;
+    }
+
+    // The app shows the project's local folder when it has no repo. A
+    // worktree saves the checkout it came from.
+    if let (Some(slug), Some(main)) = (&project, main_checkout_root(&root)) {
+        let update = UpdateProject {
+            local_path: Some(main.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        c.update_project(slug, &update).await?;
     }
 
     let skill = install_skill(&a)?;

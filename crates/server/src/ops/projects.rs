@@ -125,6 +125,16 @@ pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateProject) -> ApiResult
         )
         .await?;
     }
+    if let Some(path) = req.local_path.as_deref().map(str::trim) {
+        if !path.is_empty() && !std::path::Path::new(path).is_absolute() {
+            return Err(ApiError::validation(format!(
+                "local path must be absolute, got {path:?}"
+            )));
+        }
+        let path = path.trim_end_matches('/');
+        let path = (!path.is_empty()).then_some(path);
+        store::projects::set_local_path(w.c(), path, &p.id).await?;
+    }
     for team in req.add_teams.iter().flatten() {
         let tid = teams::team_row(w.c(), team).await?.id;
         store::projects::add_team(w.c(), &p.id, tid).await?;
