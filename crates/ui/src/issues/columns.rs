@@ -33,12 +33,17 @@ pub struct ToggleColumn(pub Column);
 /// the lock icon and a model name such as `Sonnet 5.5`.
 pub const LLM_BADGE_REM: f32 = 6.25;
 
+/// The width of the order column, in rem: room for one dot.
+pub const ORDER_REM: f32 = 1.25;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
     /// The box that marks the task for a bulk action.
     Check,
     /// What an agent does on the task: Locked, Analyzing or nothing.
     Llm,
+    /// The order line of the task's parent, under "group by parent".
+    Order,
     Status,
     Key,
     Title,
@@ -56,9 +61,10 @@ pub enum Column {
 
 impl Column {
     /// Every column, left to right.
-    pub const ALL: [Column; 12] = [
+    pub const ALL: [Column; 13] = [
         Column::Check,
         Column::Llm,
+        Column::Order,
         Column::Status,
         Column::Key,
         Column::Title,
@@ -77,6 +83,7 @@ impl Column {
         match self {
             Column::Check => "col-check",
             Column::Llm => "col-llm",
+            Column::Order => "col-order",
             Column::Status => "col-status",
             Column::Key => "col-key",
             Column::Title => "col-title",
@@ -95,6 +102,7 @@ impl Column {
         match self {
             Column::Check => "Checkbox",
             Column::Llm => "LLM status",
+            Column::Order => "Order",
             Column::Status => "Status",
             Column::Key => "Key",
             Column::Title => "Title",
@@ -126,6 +134,7 @@ impl Column {
         match self {
             Column::Check => Some(rems(1.)),
             Column::Llm => Some(rems(LLM_BADGE_REM)),
+            Column::Order => Some(rems(ORDER_REM)),
             Column::Status => Some(rems(5.)),
             Column::Key => Some(rems(4.)),
             Column::Title => None,
@@ -155,8 +164,9 @@ impl Column {
             Column::Added => Some(3),
             Column::Assignee => Some(4),
             Column::Waiting => Some(5),
-            Column::Deps => Some(6),
-            Column::Llm => Some(7),
+            Column::Order => Some(6),
+            Column::Deps => Some(7),
+            Column::Llm => Some(8),
             Column::Check | Column::Status | Column::Key | Column::Title => None,
         }
     }
@@ -481,9 +491,37 @@ mod tests {
     use gpui_kit::px;
 
     const REM: f32 = 16.;
+    /// The list hides the order column unless it groups by parent.
+    const NO_ORDER: &[Column] = &[Column::Order];
+
+    /// Every column but the order column.
+    fn shown() -> Vec<Column> {
+        Column::ALL
+            .into_iter()
+            .filter(|c| *c != Column::Order)
+            .collect()
+    }
+
+    #[test]
+    fn the_order_column_hides_after_waiting_and_before_deps() {
+        use Column::*;
+        let at = |width: f32| plan(Some(px(width)), px(REM), &[], &Demand::default()).columns;
+        assert_eq!(at(2000.), Column::ALL);
+        // 20 px more than the list without it, and one more gap of 8.
+        assert_eq!(at(904.), Column::ALL);
+        // The waiting column needs 20 + 8 and hides first.
+        assert_eq!(
+            at(568.),
+            [Check, Llm, Order, Status, Key, Title, Deps, Waiting]
+        );
+        assert_eq!(at(567.), [Check, Llm, Order, Status, Key, Title, Deps]);
+        // 16 for the padding, 16 + 100 + 20 + 80 + 64 + 160 + 36, 6 gaps.
+        assert_eq!(at(540.), [Check, Llm, Order, Status, Key, Title, Deps]);
+        assert_eq!(at(539.), [Check, Llm, Status, Key, Title, Deps]);
+    }
 
     fn plan_at(width: f32, demand: &Demand) -> Layout {
-        plan(Some(px(width)), px(REM), &[], demand)
+        plan(Some(px(width)), px(REM), NO_ORDER, demand)
     }
 
     fn at(width: f32) -> Vec<Column> {
@@ -503,12 +541,15 @@ mod tests {
     #[test]
     fn columns_hide_least_useful_first() {
         use Column::*;
-        assert_eq!(visible(None, px(REM), &[], &Demand::default()), Column::ALL);
-        assert_eq!(at(2000.), Column::ALL);
+        assert_eq!(
+            visible(None, px(REM), NO_ORDER, &Demand::default()),
+            shown()
+        );
+        assert_eq!(at(2000.), shown());
         // 16 for the padding, and
         // 16 + 100 + 80 + 64 + 160 + 64 + 36 + 20 + 32 + 56 + 56 + 88, and
         // 11 gaps of 8.
-        assert_eq!(at(876.), Column::ALL);
+        assert_eq!(at(876.), shown());
         // The labels hide first, then the time and the cost.
         assert_eq!(
             at(875.),
@@ -545,7 +586,7 @@ mod tests {
         use Column::*;
         // Most titles have 50 characters: 360 px instead of the 160 minimum.
         let at = |width: f32| plan_at(width, &Demand::titles(50)).columns;
-        assert_eq!(at(1076.), Column::ALL);
+        assert_eq!(at(1076.), shown());
         let no_labels = [
             Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Time, Added,
         ];
@@ -618,7 +659,7 @@ mod tests {
     #[test]
     fn the_owners_choice_applies_before_the_width_rule() {
         use Column::*;
-        let hidden = [Labels, Key, Check, Time];
+        let hidden = [Labels, Key, Check, Time, Order];
         let without = [Llm, Status, Title, Deps, Waiting, Assignee, Cost, Added];
         let none = Demand::default();
         assert_eq!(visible(None, px(REM), &hidden, &none), without);
@@ -672,14 +713,14 @@ mod tests {
     #[test]
     fn the_comfortable_width_leaves_out_hidden_columns() {
         let none = Demand::default();
-        let all = comfortable_width_for(&none, px(REM), &[]);
-        let less = comfortable_width_for(&none, px(REM), &[Column::Labels]);
+        let all = comfortable_width_for(&none, px(REM), NO_ORDER);
+        let less = comfortable_width_for(&none, px(REM), &[Column::Labels, Column::Order]);
         assert_eq!(f32::from(all) - f32::from(less), 64. + 8.);
     }
 
     fn comfortable(chars: &[usize]) -> f32 {
         let list: Vec<(usize, &[usize])> = chars.iter().map(|c| (*c, &[][..])).collect();
-        f32::from(comfortable_width_for(&rows(&list), px(REM), &[]))
+        f32::from(comfortable_width_for(&rows(&list), px(REM), NO_ORDER))
     }
 
     #[test]
@@ -694,7 +735,7 @@ mod tests {
         assert_eq!(comfortable(&[300, 300]), 716. + 576.);
         // Labels that need 12.35 rem add 8.35 rem to the 4 rem minimum.
         let labelled = rows(&[(5, &[8, 8, 8])]);
-        let width = f32::from(comfortable_width_for(&labelled, px(REM), &[]));
+        let width = f32::from(comfortable_width_for(&labelled, px(REM), NO_ORDER));
         assert!((width - (876. + 8.35 * REM)).abs() < 1e-3, "{width}");
     }
 }

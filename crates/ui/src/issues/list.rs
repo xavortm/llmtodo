@@ -55,6 +55,8 @@ pub enum GroupBy {
     Status,
     Label,
     Assignee,
+    /// One group per parent task. Its sub-issues show in their order.
+    Parent,
 }
 
 impl GroupBy {
@@ -64,6 +66,7 @@ impl GroupBy {
             "status" => Some(Self::Status),
             "label" | "labels" => Some(Self::Label),
             "assignee" | "owner" => Some(Self::Assignee),
+            "parent" | "epic" => Some(Self::Parent),
             _ => None,
         }
     }
@@ -74,6 +77,7 @@ impl GroupBy {
             Self::Status => "Status",
             Self::Label => "Label",
             Self::Assignee => "Assignee",
+            Self::Parent => "Parent",
         }
     }
 
@@ -82,7 +86,8 @@ impl GroupBy {
             Self::None => Self::Status,
             Self::Status => Self::Label,
             Self::Label => Self::Assignee,
-            Self::Assignee => Self::None,
+            Self::Assignee => Self::Parent,
+            Self::Parent => Self::None,
         }
     }
 }
@@ -91,7 +96,10 @@ impl GroupBy {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     Header {
+        /// Names the group. Under "group by parent", the parent's key.
         title: SharedString,
+        /// Under "group by parent", the parent's title.
+        subtitle: Option<SharedString>,
         count: usize,
         label: Option<Label>,
         /// Set under "group by status", where a drop moves a task here.
@@ -135,6 +143,8 @@ pub struct IssueList {
     visible: Vec<IssueId>,
     /// What the list shows: `visible`, split into groups.
     rows: Vec<Row>,
+    /// Under "group by parent", the order line of each row.
+    order: Vec<Option<rows::OrderMark>>,
     /// Index into `rows`.
     selected: usize,
     pub group: GroupBy,
@@ -236,6 +246,7 @@ impl IssueList {
             hidden_closed: 0,
             visible: Vec::new(),
             rows: Vec::new(),
+            order: Vec::new(),
             selected: 0,
             group: GroupBy::None,
             sort: (SortKey::Key, false),
@@ -421,6 +432,7 @@ impl IssueList {
         self.hidden_closed = built.hidden_closed;
         self.schedule_hide(built.next_hide, cx);
         self.rows = built.rows;
+        self.order = built.order;
         self.demand.set(None);
         let kept_row = |list: &Self, cx: &App| match &held {
             Some(Row::Issue(id)) => list.row_of(*id).or_else(|| list.header_of_issue(*id, cx)),
@@ -497,6 +509,8 @@ impl IssueList {
             || old.title != new.title
             || old.team != new.team
             || old.project != new.project
+            || old.parent != new.parent
+            || old.order_step != new.order_step
             || old.status != new.status
             || old.labels != new.labels
             || old.assignee != new.assignee
@@ -545,6 +559,7 @@ impl IssueList {
                 .assignee
                 .as_ref()
                 .map_or("Unassigned".into(), Assignee::name),
+            GroupBy::Parent => i.parent.clone().unwrap_or_else(|| rows::NO_PARENT.into()),
         };
         self.header_row(&title)
     }
@@ -785,6 +800,10 @@ impl IssueList {
         if self.group == GroupBy::Status && !hidden.contains(&Column::Status) {
             hidden.push(Column::Status);
         }
+        // The order line belongs to the parent groups.
+        if self.group != GroupBy::Parent && !hidden.contains(&Column::Order) {
+            hidden.push(Column::Order);
+        }
         hidden
     }
 
@@ -947,6 +966,7 @@ impl IssueList {
         &self,
         row: usize,
         title: SharedString,
+        subtitle: Option<SharedString>,
         count: usize,
         label: Option<Label>,
         status: Option<Status>,
@@ -1001,9 +1021,27 @@ impl IssueList {
                         }),
                 )
             })
-            .child(div().text_color(theme.foreground).child(title))
             .child(
                 div()
+                    .flex_none()
+                    .text_color(theme.foreground)
+                    .when(subtitle.is_some(), |this| {
+                        this.font_family(theme.mono_font_family.clone())
+                    })
+                    .child(title.clone()),
+            )
+            .when_some(subtitle, |this, subtitle| {
+                this.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.foreground)
+                        .child(subtitle),
+                )
+            })
+            .child(
+                div()
+                    .flex_none()
                     .text_color(theme.muted_foreground)
                     .child(count.to_string()),
             )
@@ -1017,6 +1055,21 @@ impl IssueList {
                     window,
                     cx,
                 );
+            })
+            .when(self.group == GroupBy::Parent, |this| {
+                let parent = (title.as_ref() != rows::NO_PARENT).then(|| title.clone());
+                let events = self.events.clone();
+                this.drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
+                    .on_drop(move |dragged: &DraggedIssue, window, cx| {
+                        events.emit(
+                            ViewEvent::OnIssue(
+                                dragged.issue,
+                                IssueAction::SetParent(parent.clone()),
+                            ),
+                            window,
+                            cx,
+                        );
+                    })
             })
             .when_some(
                 status.filter(|_| self.group == GroupBy::Status),
@@ -1048,6 +1101,7 @@ impl IssueList {
             Row::Issue(id) => *id,
             Row::Header {
                 title,
+                subtitle,
                 count,
                 label,
                 status,
@@ -1056,6 +1110,7 @@ impl IssueList {
                 return self.render_header_row(
                     row,
                     title.clone(),
+                    subtitle.clone(),
                     *count,
                     label.clone(),
                     status.clone(),
@@ -1211,6 +1266,10 @@ impl IssueList {
             .when(self.shows(Column::Llm), |this| {
                 this.child(cell_with(Column::Llm, &layout, div().children(llm)))
             })
+            .when(self.shows(Column::Order), |this| {
+                let mark = self.order.get(row).copied().flatten();
+                this.child(cell_with(Column::Order, &layout, order_cell(mark, cx)))
+            })
             .when(self.shows(Column::Status), |this| {
                 this.child(cell_with(
                     Column::Status,
@@ -1328,6 +1387,11 @@ impl IssueList {
             .when(self.group == GroupBy::Status, |this| {
                 self.with_status_drag(this, &issue, cx)
             })
+            // Under "group by parent", drag a task onto another group, or
+            // onto any task in it, to give it that parent.
+            .when(self.group == GroupBy::Parent, |this| {
+                self.with_parent_drag(this, &issue, cx)
+            })
             .context_menu(crate::shell::issue_menu::issue_menu(
                 self.store.clone(),
                 self.events.clone(),
@@ -1428,6 +1492,7 @@ impl IssueList {
                             GroupBy::Status,
                             GroupBy::Label,
                             GroupBy::Assignee,
+                            GroupBy::Parent,
                         ]
                         .into_iter()
                         .fold(menu, |menu, group| {
@@ -1494,6 +1559,9 @@ impl IssueList {
                     sort_header("sort-llm", "LLM", "LLM status", SortKey::Llm),
                 ))
             })
+            .when(self.shows(Column::Order), |this| {
+                this.child(cell_with(Column::Order, &layout, div()))
+            })
             .when(self.shows(Column::Status), |this| {
                 this.child(cell_with(
                     Column::Status,
@@ -1559,16 +1627,21 @@ impl IssueList {
             // A checklist of the columns. It reads the list each time it
             // opens, so the checks are always current.
             .context_menu(move |menu, _, cx| {
-                let hidden = list
+                let (hidden, group) = list
                     .upgrade()
-                    .map(|list| list.read(cx).hidden_columns.clone())
-                    .unwrap_or_default();
+                    .map(|list| {
+                        let list = list.read(cx);
+                        (list.hidden_columns.clone(), list.group)
+                    })
+                    .unwrap_or((Vec::new(), GroupBy::None));
                 Column::ALL.into_iter().fold(menu, |menu, column| {
                     menu.menu_with_check_and_disabled(
                         column.label(),
                         !hidden.contains(&column),
                         Box::new(columns::ToggleColumn(column)),
-                        column == Column::Title,
+                        // The order line shows only under "group by parent".
+                        column == Column::Title
+                            || (column == Column::Order && group != GroupBy::Parent),
                     )
                 })
             })
@@ -1609,6 +1682,89 @@ impl IssueList {
                 );
             })
     }
+}
+
+impl IssueList {
+    /// Lets a row be dragged onto another parent group, or onto a task in
+    /// it, to give it that parent.
+    fn with_parent_drag<E: gpui_kit::StatefulInteractiveElement>(
+        &self,
+        this: E,
+        issue: &Issue,
+        cx: &App,
+    ) -> E {
+        let dragged = DraggedIssue {
+            issue: issue.id,
+            key: issue.key.clone(),
+            title: issue.title.clone(),
+        };
+        let parent = issue.parent.clone();
+        let drop = cx.theme().foreground.opacity(0.16);
+        let events = self.events.clone();
+        let store = self.store.clone();
+        this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
+            .on_drop(move |dragged: &DraggedIssue, window, cx| {
+                let same = store
+                    .read(cx)
+                    .get(dragged.issue)
+                    .is_some_and(|i| i.parent == parent);
+                if same {
+                    return;
+                }
+                events.emit(
+                    ViewEvent::OnIssue(dragged.issue, IssueAction::SetParent(parent.clone())),
+                    window,
+                    cx,
+                );
+            })
+    }
+}
+
+/// The order line in one row: a line through the row, cut at the first
+/// and last ordered rows, and a dot on the first row of each step. A
+/// filled dot means every task of the step is done or canceled. A row
+/// with no step draws nothing.
+fn order_cell(mark: Option<rows::OrderMark>, cx: &App) -> AnyElement {
+    let Some(mark) = mark else {
+        return div().into_any_element();
+    };
+    let theme = cx.theme();
+    let line = theme.muted_foreground.opacity(0.6);
+    let fg = theme.muted_foreground;
+    let page = theme.background;
+    let segment = |show: bool| {
+        div()
+            .flex_1()
+            .w(gpui_kit::px(1.5))
+            .when(show, |this| this.bg(line))
+    };
+    v_flex()
+        .id("order-mark")
+        .test_support()
+        .relative()
+        .size_full()
+        .items_center()
+        .child(segment(mark.up))
+        .child(segment(mark.down))
+        .children(mark.dot.map(|filled| {
+            div()
+                .id(if filled {
+                    "order-dot-done"
+                } else {
+                    "order-dot"
+                })
+                .test_support()
+                .absolute()
+                .top(gpui_kit::relative(0.5))
+                .mt(gpui_kit::px(-4.))
+                .size_2()
+                .rounded_full()
+                .border_1()
+                .border_color(fg)
+                .bg(if filled { fg } else { page })
+        }))
+        .into_any_element()
 }
 
 impl Render for IssueList {

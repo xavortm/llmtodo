@@ -318,6 +318,8 @@ pub fn issues(catalog: &Catalog) -> Vec<Issue> {
                     _ if ix % 2 == 0 => Some("app".into()),
                     _ => Some("server".into()),
                 },
+                parent: None,
+                order_step: None,
                 title: (*title).into(),
                 status: status(catalog, status_name),
                 assignee: match ix % 4 {

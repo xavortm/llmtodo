@@ -3438,9 +3438,14 @@ fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
                 .filter(|c| window.within("column-header").try_find(c.id()).is_some())
                 .collect()
         };
+        // The order column shows only under "group by parent".
+        let every: Vec<Column> = Column::ALL
+            .into_iter()
+            .filter(|c| *c != Column::Order)
+            .collect();
         window.render_frame(cx);
         window.render_frame(cx);
-        assert_eq!(shown(window), Column::ALL, "a wide list shows every column");
+        assert_eq!(shown(window), every, "a wide list shows every column");
 
         window.press("enter", cx);
         window.render_frame(cx);
@@ -3450,7 +3455,7 @@ fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
         let demand = view.read(cx).list().read(cx).demand(cx);
         assert_eq!(
             open,
-            columns::visible(Some(width), window.rem_size(), &[], &demand)
+            columns::visible(Some(width), window.rem_size(), &[Column::Order], &demand)
         );
         assert!(
             !open.contains(&Column::Added),
@@ -3465,7 +3470,7 @@ fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             shown(window),
-            Column::ALL,
+            every,
             "closing the task view brings them back"
         );
     })

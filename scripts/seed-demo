@@ -263,6 +263,20 @@ owner issue comment add "$review" --body "Looks good. One question: what happens
 as_agent agent:ollama/qwen3-coder demo-session-2 w1:p3 wt-sync issue comment add "$review" --body "The second push is refused with exit code 6, because the remote generation is newer. See the sync test."
 owner issue update "$map" --section "Goal" --body $'\nShip a beta that ten testers use every day.\n'
 
+# LLM-206: an epic whose seven sub-issues run in five steps. Step 1 is done,
+# so its dot is filled. Step 2 holds three tasks in any order, one of them
+# done, so its dot stays hollow. Group by parent to see the order line.
+epic=$(key issue create -t "Onboarding flow" -p high --project demo-app -l ux)
+o1=$(key issue create -t "Onboarding: research notes" -s Done --project demo-app --parent "$epic" -l design)
+o2=$(key issue create -t "Onboarding: welcome screen" -s Done --project demo-app --parent "$epic" -l frontend)
+o3=$(key issue create -t "Onboarding: sample project" --project demo-app --parent "$epic" -l backend)
+o4=$(key issue create -t "Onboarding: first-run tips" --project demo-app --parent "$epic" -l ux)
+o5=$(key issue create -t "Onboarding: invite a teammate" --project demo-app --parent "$epic" -l frontend)
+o6=$(key issue create -t "Onboarding: usage events" --project demo-app --parent "$epic" -l backend)
+o7=$(key issue create -t "Onboarding: launch checklist" --project demo-app --parent "$epic" -l docs)
+key issue create -t "Onboarding: copy review" --project demo-app --parent "$epic" -l docs >/dev/null
+owner issue order set "$epic" "$o1" "$o2,$o3,$o4" "$o5" "$o6" "$o7"
+
 # A trashed issue, a second team, a document, and filler for scrolling.
 trash=$(key issue create -t "Old idea we dropped" --project demo-app)
 owner issue delete "$trash"
@@ -283,4 +297,4 @@ for t in "Settings screen" "Keyboard shortcut help" "Empty states" "Error toasts
 done
 
 echo "demo data ready in $dir"
-echo "rich Markdown ticket: $rich, map: $map, claimed: $progress and $review, blocked: $blocked, trash: $trash"
+echo "rich Markdown ticket: $rich, map: $map, claimed: $progress and $review, blocked: $blocked, trash: $trash, ordered epic: $epic"

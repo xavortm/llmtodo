@@ -148,3 +148,69 @@ fn the_palette_can_open_with_a_command_typed(cx: &mut TestAppContext) {
     let typed = cx.read(|cx| view.read(cx).palette_typed(cx));
     assert_eq!(typed, "depends ");
 }
+
+/// LLM-208: order edges show as one chip each way, such as "Order: step 2
+/// of LLM-101", not one chip per task. `:undepend` points to `:step`.
+#[gpui_kit::test]
+fn order_edges_show_as_one_line_per_direction(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.run_until_parked();
+    run(handle, &view, "open llm-105", cx);
+    let id = cx.read(|cx| view.read(cx).store().read(cx).by_key("LLM-105").unwrap().id);
+    let order = |direction: &str, key: &str| {
+        let mut r = relation(direction, key, "Todo", "unstarted");
+        r.source = llmtodo_api_types::RelationSource::Order;
+        r
+    };
+    view.update(cx, |this, cx| {
+        this.store().update(cx, |store, cx| {
+            store.modify(id, |issue| {
+                issue.parent = Some("LLM-101".into());
+                issue.order_step = Some(2);
+            });
+            store.set_relations(
+                id,
+                vec![
+                    order("blocked-by", "LLM-102"),
+                    order("blocked-by", "LLM-103"),
+                    order("blocks", "LLM-106"),
+                    relation("blocks", "LLM-104", "Todo", "unstarted"),
+                ],
+            );
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, _| {
+        window.find("dep-order-undepend");
+        window.find("dep-order-unblock");
+        // The manual edge keeps its own chip. The order edges have none.
+        window.find("dep-open-unblock-LLM-104");
+        for key in ["LLM-102", "LLM-103"] {
+            assert!(
+                window
+                    .try_find(format!("dep-open-undepend-{key}"))
+                    .is_none()
+            );
+        }
+        assert!(window.try_find("dep-open-unblock-LLM-106").is_none());
+    })
+    .unwrap();
+    // A click on the chip opens the parent.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("dep-order-undepend", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let open = cx.read(|cx| view.read(cx).detail(cx).map(|d| d.issue));
+    let parent = cx.read(|cx| view.read(cx).store().read(cx).by_key("LLM-101").unwrap().id);
+    assert_eq!(open, Some(parent));
+
+    run(handle, &view, "open llm-105", cx);
+    run(handle, &view, "undepend llm-102", cx);
+    assert_eq!(
+        message(&view, cx),
+        "LLM-105 and LLM-102 are in their parent's order. :step none takes LLM-105 out"
+    );
+}

@@ -838,7 +838,9 @@ impl TaskView {
     /// button ends the group.
     fn render_dependencies(&self, issue: &Issue, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let store = self.store.read(cx);
-        let list = |direction: &str| -> Vec<llmtodo_api_types::IssueLink> {
+        // Order edges show as one line each way, not one chip per task.
+        let mut order_edges = (false, false);
+        let mut list = |direction: &str| -> Vec<llmtodo_api_types::IssueLink> {
             store
                 .relations(issue.id)
                 .into_iter()
@@ -848,23 +850,39 @@ impl TaskView {
                         && r.direction == direction
                         && !r.issue.deleted
                 })
+                .filter(|r| {
+                    let order = r.source == llmtodo_api_types::RelationSource::Order;
+                    if order {
+                        match direction {
+                            "blocked-by" => order_edges.0 = true,
+                            _ => order_edges.1 = true,
+                        }
+                    }
+                    !order
+                })
                 .map(|r| r.issue.clone())
                 .collect()
         };
         let depends = list("blocked-by");
         let blocks = list("blocks");
-        let any = !depends.is_empty() || !blocks.is_empty();
+        let order_line = issue.parent.clone().zip(issue.order_step);
+        let order_depends = order_edges.0 && order_line.is_some();
+        let order_blocks = order_edges.1 && order_line.is_some();
+        let any = !depends.is_empty() || !blocks.is_empty() || order_depends || order_blocks;
         let locked = issue.claim.is_some();
         let muted = cx.theme().muted_foreground;
         let mut items = Vec::new();
-        for (title, links, verb) in [
-            ("Depends on", depends, "undepend"),
-            ("Blocks", blocks, "unblock"),
+        for (title, links, verb, order) in [
+            ("Depends on", depends, "undepend", order_depends),
+            ("Blocks", blocks, "unblock", order_blocks),
         ] {
-            if links.is_empty() {
+            if links.is_empty() && !order {
                 continue;
             }
             items.push(div().text_color(muted).child(title).into_any_element());
+            if let Some((parent, step)) = order_line.clone().filter(|_| order) {
+                items.push(self.order_row(verb, parent, step, cx));
+            }
             for link in links {
                 items.push(self.dependency_row(issue.id, verb, &link, locked, cx));
             }
@@ -876,6 +894,64 @@ impl TaskView {
             })
             .child(self.dependency_menu())
             .into_any_element()
+    }
+
+    /// The one chip that stands for every order edge one way, such as
+    /// "Order: step 3 of LLM-1". A click opens the parent. `:step` changes
+    /// the order, so the chip has no X.
+    fn order_row(
+        &self,
+        verb: &'static str,
+        parent: SharedString,
+        step: u32,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let theme = cx.theme();
+        let hover = theme.secondary_hover;
+        let pressed = theme.secondary_active;
+        let muted = theme.muted_foreground;
+        let radius = theme.radius;
+        let border = theme.border;
+        let events = self.events.clone();
+        let title = self.store.read(cx).by_key(&parent).map(|p| p.title.clone());
+        let open_key = parent.clone();
+        let chip = h_flex()
+            .id(SharedString::from(format!("dep-order-{verb}")))
+            .test_support()
+            .flex_none()
+            .h_5()
+            .gap_1()
+            .px_1()
+            .rounded(radius)
+            .border_1()
+            .border_color(border)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .active(move |s| s.bg(pressed))
+            .child(
+                Icon::new(IconName::GitCommitVertical)
+                    .xsmall()
+                    .text_color(muted),
+            )
+            .child(widgets::card_text(
+                SharedString::from(format!("Order: step {step} of {parent}")),
+                cx,
+            ))
+            .on_click(move |_, window, cx| {
+                events.emit(ViewEvent::OpenKey(open_key.to_string()), window, cx);
+            });
+        let card = match title {
+            Some(title) => format!("{parent} {title}"),
+            None => parent.to_string(),
+        };
+        with_card(
+            SharedString::from(format!("dep-order-tip-{verb}")),
+            chip,
+            Card::text(card).row(
+                "Change it",
+                Some(SharedString::from(":step <n>, :step new or :step none")),
+            ),
+        )
     }
 
     /// One task chip in the dependencies group. Its status comes from the

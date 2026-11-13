@@ -1174,6 +1174,70 @@ fn closing_a_blocker_updates_the_depth_of_its_dependents_live() {
     drop(backend);
 }
 
+/// LLM-208: an order change writes one event, on the parent. The app
+/// refreshes every sub-issue, so the steps, depths and open blockers show.
+#[test]
+fn an_order_change_refreshes_the_parents_sub_issues_live() {
+    let live = Live::new();
+    let owner = live.client(None);
+    let create = |title: &str, parent: Option<&str>| {
+        live.rt
+            .block_on(owner.create_issue(&CreateIssue {
+                title: title.into(),
+                description: String::new(),
+                team: Some("LLM".into()),
+                status: None,
+                priority: None,
+                assignee: None,
+                labels: Vec::new(),
+                project: None,
+                milestone: None,
+                parent: parent.map(Into::into),
+                wanted_executor: None,
+                waiting_on: None,
+                relations: Default::default(),
+                estimate_minutes: None,
+                estimate_cost_usd: None,
+            }))
+            .unwrap()
+            .issue
+            .key
+            .to_string()
+    };
+    let epic = create("Epic", None);
+    let first = create("First", Some(&epic));
+    let second = create("Second", Some(&epic));
+    let third = create("Third", Some(&epic));
+
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+
+    let key = |k: &str| -> llmtodo_client::types::IssueKey { k.parse().unwrap() };
+    let order = llmtodo_api_types::SetOrder {
+        steps: vec![vec![key(&first)], vec![key(&second), key(&third)]],
+    };
+    live.rt.block_on(owner.set_order(&epic, &order)).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    live.wait(&mut events, "the sub-issues", |e| {
+        for issue in issues_in(e) {
+            seen.insert(
+                issue.key.to_string(),
+                (issue.order_step, issue.depth, issue.open_blockers.len()),
+            );
+        }
+        [&first, &second, &third]
+            .iter()
+            .all(|k| seen.contains_key(*k))
+            .then_some(())
+    });
+    assert_eq!(seen[&first], (Some(1), 0, 0));
+    assert_eq!(seen[&second], (Some(2), 1, 1));
+    assert_eq!(seen[&third], (Some(2), 1, 1));
+    drop(backend);
+}
+
 /// The snapshot carries the open owner questions, so the inbox needs no
 /// description.
 #[test]

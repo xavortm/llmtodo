@@ -77,9 +77,57 @@ pub struct BuiltRows {
     /// closed tasks" setting hides.
     pub hidden_closed: usize,
     pub rows: Vec<Row>,
+    /// Under "group by parent", the order line of each row, by row index.
+    /// Empty under the other groupings.
+    pub order: Vec<Option<OrderMark>>,
     /// When the next shown task gets old enough for "Hide old closed
     /// tasks" to hide it. The list builds again then.
     pub next_hide: Option<jiff::Timestamp>,
+}
+
+/// The title of the group of issues with no parent.
+pub const NO_PARENT: &str = "No parent";
+
+/// How one task row draws the order line of its parent. The line runs
+/// down a narrow column from the first ordered row of a group to the last.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrderMark {
+    /// Set on the first row of a step: whether its dot is filled. A dot is
+    /// filled when every task of the step is done or canceled.
+    pub dot: Option<bool>,
+    /// The line runs from the row's top to its middle.
+    pub up: bool,
+    /// The line runs from the row's middle to its bottom.
+    pub down: bool,
+}
+
+/// What "group by parent" needs to know about every live issue, also the
+/// ones the scope or the filter hides: each parent's title, and whether
+/// each step is done.
+#[derive(Default)]
+struct Parents<'i> {
+    titles: HashMap<&'i str, SharedString>,
+    /// `(parent key, step)` to whether every task of the step is closed.
+    done: HashMap<(&'i str, u32), bool>,
+}
+
+impl<'i> Parents<'i> {
+    fn new(all: &[&'i Issue]) -> Self {
+        let mut parents = Parents::default();
+        for issue in all {
+            parents
+                .titles
+                .insert(issue.key.as_ref(), issue.title.clone());
+            if issue.deleted {
+                continue;
+            }
+            if let (Some(parent), Some(step)) = (&issue.parent, issue.order_step) {
+                let done = parents.done.entry((parent.as_ref(), step)).or_insert(true);
+                *done &= issue.status.is_closed();
+            }
+        }
+        parents
+    }
 }
 
 /// The key that names a group in the collapsed set, such as `status:Done`.
@@ -97,6 +145,21 @@ fn key_order(key: &str) -> (&str, u64) {
 
 /// Filters, sorts and groups `issues`.
 pub fn build<'i>(input: &RowsInput<'_>, issues: impl Iterator<Item = &'i Issue>) -> BuiltRows {
+    if input.group != GroupBy::Parent {
+        return build_with(input, issues, None);
+    }
+    // Only this grouping reads the issues twice, so only it pays for the
+    // list of them.
+    let all: Vec<&Issue> = issues.collect();
+    let parents = Parents::new(&all);
+    build_with(input, all.into_iter(), Some(&parents))
+}
+
+fn build_with<'i>(
+    input: &RowsInput<'_>,
+    issues: impl Iterator<Item = &'i Issue>,
+    parents: Option<&Parents<'_>>,
+) -> BuiltRows {
     let mut hidden = 0;
     let mut next_hide: Option<jiff::Timestamp> = None;
     // A closed task hides this long after it closed.
@@ -121,11 +184,15 @@ pub fn build<'i>(input: &RowsInput<'_>, issues: impl Iterator<Item = &'i Issue>)
         })
         .collect();
     sort(&mut kept, input);
-    let rows = group(&kept, input);
+    let (rows, order) = match parents {
+        Some(parents) => parent_groups(&kept, input, parents),
+        None => (group(&kept, input), Vec::new()),
+    };
     BuiltRows {
         visible: kept.iter().map(|i| i.id).collect(),
         hidden_closed: hidden,
         rows,
+        order,
         next_hide,
     }
 }
@@ -178,6 +245,7 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
     // group, so the cost does not grow with the number of groups.
     let mut groups: Vec<Group> = match input.group {
         GroupBy::None => return issues.iter().map(|i| Row::Issue(i.id)).collect(),
+        GroupBy::Parent => return parent_groups(issues, input, &Parents::default()).0,
         GroupBy::Status => {
             // Every status in use, also ones the catalog lacks. Statuses are
             // equal by name in any case, so the map holds each exact name
@@ -268,6 +336,7 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
         let collapsed = input.collapsed.contains(&group_key(input.group, &title));
         rows.push(Row::Header {
             title,
+            subtitle: None,
             count: members.len(),
             label,
             status,
@@ -278,4 +347,95 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
         }
     }
     rows
+}
+
+/// The rows under "group by parent", with the order line of each row.
+///
+/// One group per parent, in key order, then the issues with no parent.
+/// Inside a group, the tasks with a step come first, by step, and each
+/// step keeps the chosen sort. The tasks with no step follow in the chosen
+/// sort.
+fn parent_groups(
+    issues: &[&Issue],
+    input: &RowsInput<'_>,
+    parents: &Parents<'_>,
+) -> (Vec<Row>, Vec<Option<OrderMark>>) {
+    let mut groups: Vec<(&str, Vec<&Issue>)> = Vec::new();
+    let mut at: HashMap<&str, usize> = HashMap::new();
+    let mut none = Vec::new();
+    for issue in issues {
+        let Some(parent) = &issue.parent else {
+            none.push(*issue);
+            continue;
+        };
+        let ix = *at.entry(parent.as_ref()).or_insert_with(|| {
+            groups.push((parent.as_ref(), Vec::new()));
+            groups.len() - 1
+        });
+        groups[ix].1.push(*issue);
+    }
+    groups.sort_by_key(|(key, _)| (key_order(key), *key));
+    let mut rows = Vec::new();
+    let mut order = Vec::new();
+    let mut push_group = |title: SharedString,
+                          subtitle: Option<SharedString>,
+                          mut members: Vec<&Issue>,
+                          parent: Option<&str>| {
+        // A stable sort, so each step keeps the chosen order.
+        if parent.is_some() {
+            members.sort_by_key(|i| i.order_step.unwrap_or(u32::MAX));
+        }
+        let collapsed = input
+            .collapsed
+            .contains(&group_key(GroupBy::Parent, &title));
+        rows.push(Row::Header {
+            title,
+            subtitle,
+            count: members.len(),
+            label: None,
+            status: None,
+            collapsed,
+        });
+        order.push(None);
+        if collapsed {
+            return;
+        }
+        let ordered = match parent {
+            Some(_) => members.iter().filter(|i| i.order_step.is_some()).count(),
+            None => 0,
+        };
+        let mut last_step = None;
+        for (ix, issue) in members.iter().enumerate() {
+            rows.push(Row::Issue(issue.id));
+            order.push((ix < ordered).then(|| {
+                let step = issue.order_step.unwrap_or_default();
+                let first = last_step != Some(step);
+                last_step = Some(step);
+                OrderMark {
+                    dot: first.then(|| {
+                        parent
+                            .and_then(|p| parents.done.get(&(p, step)).copied())
+                            // Not known without the full list: the step's
+                            // tasks on this list decide.
+                            .unwrap_or_else(|| {
+                                members[..ordered]
+                                    .iter()
+                                    .filter(|i| i.order_step == Some(step))
+                                    .all(|i| i.status.is_closed())
+                            })
+                    }),
+                    up: ix > 0,
+                    down: ix + 1 < ordered,
+                }
+            }));
+        }
+    };
+    for (key, members) in groups {
+        let subtitle = parents.titles.get(key).cloned();
+        push_group(key.to_string().into(), subtitle, members, Some(key));
+    }
+    if !none.is_empty() {
+        push_group(NO_PARENT.into(), None, none, None);
+    }
+    (rows, order)
 }

@@ -118,6 +118,10 @@ pub enum WriteKind {
     Restore,
     Release,
     Dependency,
+    /// A new parent, or none.
+    Parent,
+    /// A step in the parent's order.
+    Order,
     /// Approve or Request changes on a ticket in User review.
     Review,
 }
@@ -877,6 +881,9 @@ struct Pending {
     /// Issues whose change can move the depth of the tasks that wait for
     /// them. Those tasks get no event of their own.
     dependents_of: BTreeSet<String>,
+    /// Parents whose order changed. Their sub-issues get a new step and
+    /// new order edges but no event of their own.
+    children_of: BTreeSet<String>,
     /// Statuses, labels, teams, projects or views changed.
     catalog: bool,
     reload: bool,
@@ -889,6 +896,9 @@ impl Pending {
                 self.keys.insert(key.to_string());
                 if CHANGES_DEPENDENTS.contains(&event.field) {
                     self.dependents_of.insert(key.to_string());
+                }
+                if event.field == ActivityField::Order {
+                    self.children_of.insert(key.to_string());
                 }
             }
             // Statuses, labels and teams change how every issue shows.
@@ -907,13 +917,18 @@ impl Pending {
     }
 
     fn is_empty(&self) -> bool {
-        self.keys.is_empty() && self.dependents_of.is_empty() && !self.catalog && !self.reload
+        self.keys.is_empty()
+            && self.dependents_of.is_empty()
+            && self.children_of.is_empty()
+            && !self.catalog
+            && !self.reload
     }
 
     /// Adds the work in `other`.
     fn merge(&mut self, other: Pending) {
         self.keys.extend(other.keys);
         self.dependents_of.extend(other.dependents_of);
+        self.children_of.extend(other.children_of);
         self.catalog |= other.catalog;
         self.reload |= other.reload;
     }
@@ -956,11 +971,22 @@ async fn flush(
         pending.catalog = false;
         pending.keys.clear();
         pending.dependents_of.clear();
+        pending.children_of.clear();
         return Ok(());
     }
     if pending.catalog {
         catalog(client, events).await?;
         pending.catalog = false;
+    }
+    // An order change gives the parent's sub-issues new steps, depths and
+    // open blockers. Each one then refreshes like a touched issue, and the
+    // tasks that wait for it follow.
+    while let Some(parent) = pending.children_of.first().cloned() {
+        for key in children(client, &parent).await? {
+            pending.keys.insert(key.clone());
+            pending.dependents_of.insert(key);
+        }
+        pending.children_of.remove(&parent);
     }
     if !pending.keys.is_empty() {
         let keys: Vec<String> = pending.keys.iter().cloned().collect();
@@ -977,6 +1003,20 @@ async fn flush(
         pending.dependents_of.remove(&key);
     }
     Ok(())
+}
+
+/// The keys of the live sub-issues of `parent`. An unknown key has none.
+async fn children(client: &Client, parent: &str) -> Result<Vec<String>, String> {
+    let query = IssueQuery {
+        parent: Some(parent.to_string()),
+        order: Some(IssueOrder::Id),
+        ..Default::default()
+    };
+    match client.query_all(&query).await {
+        Ok(issues) => Ok(issues.into_iter().map(|i| i.key.to_string()).collect()),
+        Err(ClientError::Unreachable(e)) => Err(e),
+        Err(_) => Ok(Vec::new()),
+    }
 }
 
 /// Sends fresh copies of the tasks that wait for `key`. An unknown key is

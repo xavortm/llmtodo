@@ -420,6 +420,11 @@ pub struct Issue {
     pub team: SharedString,
     /// The project slug, when the issue has one.
     pub project: Option<SharedString>,
+    /// The parent's key, when the issue is a sub-issue.
+    pub parent: Option<SharedString>,
+    /// The step of this issue in its parent's order, 1 first. Tasks of one
+    /// step can be done in any order. None when it has no step.
+    pub order_step: Option<u32>,
     pub title: SharedString,
     pub status: Status,
     pub assignee: Option<Assignee>,
@@ -590,6 +595,8 @@ impl Issue {
             key: issue.key.to_string().into(),
             team: issue.team.clone().into(),
             project: issue.project.clone().map(Into::into),
+            parent: issue.parent.as_ref().map(|p| p.to_string().into()),
+            order_step: issue.order_step,
             title: issue.title.clone().into(),
             status: catalog.status(&issue.team, &issue.status),
             assignee: issue.assignee.as_ref().map(Assignee::from_actor),

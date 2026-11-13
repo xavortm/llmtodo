@@ -90,6 +90,7 @@ impl Workspace {
             IssueAction::SetStatus(status) => self.set_status(id, status, cx),
             IssueAction::ToggleLabel(label) => self.toggle_label(id, label, cx),
             IssueAction::SetWaitingOn(waiting) => self.set_waiting_on(id, waiting, cx),
+            IssueAction::SetParent(parent) => self.set_parent(id, parent, cx),
             IssueAction::EditDescription => {
                 if let Some(row) = self.list.read(cx).row_of(id) {
                     self.list_do(cx, |list, cx| list.select(row, cx));
@@ -115,6 +116,18 @@ impl Workspace {
         let marked = self.marked(cx);
         if marked.len() < 2 || !marked.contains(&id) {
             return false;
+        }
+        if let IssueAction::SetParent(parent) = action {
+            for each in &marked {
+                self.set_parent(*each, parent.clone(), cx);
+            }
+            if let Some(p) = parent {
+                self.message = format!("{} tasks are now under {p}", marked.len()).into();
+            } else {
+                self.message = format!("{} tasks have no parent now", marked.len()).into();
+            }
+            cx.notify();
+            return true;
         }
         if matches!(action, IssueAction::CopyKey) {
             if let Some(count) = self.copy_keys(&marked, cx) {

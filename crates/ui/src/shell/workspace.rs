@@ -3865,6 +3865,35 @@ impl Workspace {
             self.message = format!("{key} cannot depend on itself").into();
             return;
         }
+        // An order edge goes away with the order, not with :undepend.
+        let direction = if verb == "undepend" {
+            "blocked-by"
+        } else {
+            "blocks"
+        };
+        let only_order = !add && {
+            let edges: Vec<_> = store
+                .relations(id)
+                .into_iter()
+                .flatten()
+                .filter(|r| {
+                    r.kind == llmtodo_api_types::RelationType::Blocks
+                        && r.direction == direction
+                        && r.issue.key.to_string() == other
+                })
+                .collect();
+            !edges.is_empty()
+                && edges
+                    .iter()
+                    .all(|r| r.source == llmtodo_api_types::RelationSource::Order)
+        };
+        if only_order {
+            self.message = format!(
+                "{key} and {other} are in their parent's order. :step none takes {key} out"
+            )
+            .into();
+            return;
+        }
         if !self.editable(id, cx) {
             return;
         }
@@ -3936,6 +3965,52 @@ impl Workspace {
         self.send(id, Write::Update(Box::new(update)), WriteKind::Status, cx);
         self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
         approved
+    }
+
+    /// Gives the task the parent with key `parent`, or makes it a top-level
+    /// task with `None`. A drop onto a parent group sends it. The task
+    /// leaves the old parent's order.
+    pub fn set_parent(
+        &mut self,
+        id: IssueId,
+        parent: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.editable(id, cx) {
+            return;
+        }
+        let store = self.store.read(cx);
+        let Some(issue) = store.get(id) else {
+            return;
+        };
+        if issue.parent == parent {
+            return;
+        }
+        let key = issue.key.clone();
+        if parent.as_ref() == Some(&key) {
+            self.message = format!("{key} cannot be its own parent").into();
+            cx.notify();
+            return;
+        }
+        self.edit_issue(id, cx, |issue, _| {
+            issue.parent = parent.clone();
+            issue.order_step = None;
+        });
+        self.message = match &parent {
+            Some(p) => format!("{key} is now under {p}"),
+            None => format!("{key} has no parent now"),
+        }
+        .into();
+        let update = llmtodo_client::types::UpdateIssue {
+            parent: parent
+                .as_ref()
+                .map_or(llmtodo_client::types::Change::Clear, |p| {
+                    llmtodo_client::types::Change::Set(p.to_string())
+                }),
+            ..Default::default()
+        };
+        self.send(id, Write::Update(Box::new(update)), WriteKind::Parent, cx);
+        self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
     }
 
     /// Sets who the task waits on, or clears it with `None`.

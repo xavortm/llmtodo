@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use gpui_kit::{App, Window};
+use gpui_kit::{App, SharedString, Window};
 
 use crate::issues::list::{GroupBy, RowClick, SortKey};
 use crate::model::data::{IssueId, Label, Status, WaitingOn};
@@ -19,6 +19,8 @@ pub enum IssueAction {
     SetStatus(Status),
     ToggleLabel(Label),
     SetWaitingOn(Option<WaitingOn>),
+    /// The parent's key, or none to make it a top-level task.
+    SetParent(Option<SharedString>),
     EditDescription,
     Restore,
     Delete,
