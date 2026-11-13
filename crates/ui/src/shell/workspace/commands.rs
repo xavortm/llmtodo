@@ -151,6 +151,7 @@ impl Workspace {
                 self.show_settings(window, cx);
                 None
             }
+            ("step", _) => Some(self.command_step(arg, cx)),
             ("depends" | "blocks" | "undepend" | "unblock", Some(id)) => {
                 self.change_dependency(id, verb, arg, cx);
                 None
@@ -475,6 +476,101 @@ impl Workspace {
         };
         self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
         Some(message)
+    }
+
+    /// `:step <n>`, `:step new` or `:step none` on the marked tasks, or on
+    /// the task the command acts on. Every task must have the same parent.
+    /// The app works out the parent's whole new order and sends it in one
+    /// write. Returns the message to show.
+    fn command_step(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        use crate::model::order::{self, StepTarget};
+        let Some(target) = StepTarget::parse(arg) else {
+            return "Use :step <n>, :step new or :step none".into();
+        };
+        if self.refuse_read_only_tracker(cx) {
+            return self.message.to_string();
+        }
+        let marked = self.marked(cx);
+        let ids = if marked.is_empty() {
+            match self.target(cx) {
+                Some(id) => vec![id],
+                None => return "Select a task first".into(),
+            }
+        } else {
+            marked
+        };
+        let store = self.store.read(cx);
+        let tasks: Vec<&Issue> = ids.iter().filter_map(|id| store.get(*id)).collect();
+        if let Some(lone) = tasks.iter().find(|i| i.parent.is_none()) {
+            return format!("{} has no parent. Only sub-issues have a step", lone.key);
+        }
+        let first = tasks[0];
+        if let Some(other) = tasks.iter().find(|i| i.parent != first.parent) {
+            return format!(
+                "{} and {} have different parents. Pick tasks of one parent",
+                first.key, other.key
+            );
+        }
+        if let Some(held) = tasks.iter().find(|i| i.claim.is_some()) {
+            let held = held.id;
+            self.editable(held, cx);
+            return self.message.to_string();
+        }
+        let parent = first.parent.clone().unwrap_or_default();
+        let Some(parent_id) = store.by_key(&parent).map(|p| p.id) else {
+            return format!("{parent} is not loaded. :reload and try again");
+        };
+        let keys: Vec<SharedString> = tasks.iter().map(|i| i.key.clone()).collect();
+        let now = order::steps_of(&parent, store.iter());
+        let new = match order::move_to(&now, &keys, target, &parent) {
+            Ok(new) => new,
+            Err(message) => return message,
+        };
+        let who = match keys.as_slice() {
+            [one] => format!("{one} is"),
+            many => format!("{} tasks are", many.len()),
+        };
+        let step = keys.first().and_then(|k| order::step_of(&new, k));
+        let message = match (target, step) {
+            (StepTarget::None, _) => match keys.as_slice() {
+                [one] => format!("{one} left the order of {parent}"),
+                many => format!("{} tasks left the order of {parent}", many.len()),
+            },
+            (StepTarget::New, Some(n)) => format!("{who} in step {n} of {parent}, a new last step"),
+            (_, Some(n)) => format!("{who} in step {n} of {parent}"),
+            (_, None) => format!("{who} out of the order of {parent}"),
+        };
+        if new == now {
+            return match (target, step) {
+                (StepTarget::None, _) => format!("Not in the order of {parent}: nothing changed"),
+                (_, Some(n)) => format!("Already in step {n} of {parent}: nothing changed"),
+                _ => "Nothing changed".into(),
+            };
+        }
+        // The app's own copies change at once. The live order event brings
+        // the server's steps, depths and open blockers after the write.
+        let children: Vec<IssueId> = store
+            .iter()
+            .filter(|i| !i.deleted && i.parent.as_deref() == Some(parent.as_ref()))
+            .map(|i| i.id)
+            .collect();
+        for id in children {
+            self.edit_issue(id, cx, |issue, _| {
+                issue.order_step = order::step_of(&new, &issue.key);
+            });
+        }
+        let steps = new
+            .iter()
+            .map(|step| step.iter().filter_map(|k| k.parse().ok()).collect())
+            .collect();
+        self.send(
+            parent_id,
+            Write::SetOrder(llmtodo_api_types::SetOrder { steps }),
+            WriteKind::Order,
+            cx,
+        );
+        self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
+        message
     }
 
     /// `:status` on several tasks. Each task uses its own team's status.

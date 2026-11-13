@@ -360,6 +360,7 @@ An epic's sub-issues can have an order. The order is a list of steps. Each step 
   - A drop on a parent group's header, or on a task in it, gives the task that parent. A drop on "No parent" clears it.
   - The task view shows the order edges as one chip each way, such as "Order: step 3 of LLM-1". A click opens the parent.
   - The `order` live event refreshes every sub-issue of the parent, and the tasks that wait for them.
+  - `:step <n>`, `:step new` and `:step none` act on the marked tasks, or on the selected task. The app works out the parent's whole new order and sends it in one `PUT /order`, so marked tasks land in one step together. A step number means the step as the list shows it before the move. The tasks must share one parent, or the command changes nothing and says why in the status bar.
 
 ## GitHub sync
 

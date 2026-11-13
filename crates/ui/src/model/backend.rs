@@ -139,6 +139,8 @@ pub enum Write {
     AddRelation(CreateRelation),
     RemoveRelation(RemoveRelation),
     Review(llmtodo_api_types::SubmitReview),
+    /// The whole order of the parent's sub-issues. The key is the parent.
+    SetOrder(llmtodo_api_types::SetOrder),
 }
 
 #[derive(Debug)]
@@ -1275,6 +1277,11 @@ async fn apply_write(
     open: Option<IssueId>,
     events: &Events,
 ) -> Result<(), String> {
+    // A failed order write undoes the app's early steps on every task in it.
+    let mut undo = vec![key.to_string()];
+    if let Write::SetOrder(order) = &write {
+        undo.extend(order.steps.iter().flatten().map(ToString::to_string));
+    }
     let mut detail = None;
     let mut keep = |d: IssueDetail| {
         let issue = d.issue.clone();
@@ -1289,6 +1296,11 @@ async fn apply_write(
         Write::RemoveRelation(relation) => {
             client.remove_relation(key, &relation).await.map(&mut keep)
         }
+        // The live order event refreshes the sub-issues.
+        Write::SetOrder(order) => match client.set_order(key, &order).await {
+            Ok(_) => client.issue(key).await.map(&mut keep),
+            Err(err) => Err(err),
+        },
         Write::Trash => client.delete_issue(key).await,
         Write::Restore => client
             .restore_issue(key, &RestoreRequest::default())
@@ -1344,9 +1356,7 @@ async fn apply_write(
                 primary(client, events).await?;
             }
             // Undo the app's early change with the server's copy.
-            refresh_rows(client, vec![key.to_string()], open, events)
-                .await
-                .map(|_| ())
+            refresh_rows(client, undo, open, events).await.map(|_| ())
         }
     }
 }

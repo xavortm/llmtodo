@@ -407,3 +407,209 @@ fn a_drop_on_a_parent_group_sets_that_parent(cx: &mut TestAppContext) {
         [("LLM-3".to_string(), Change::Clear)]
     );
 }
+
+// LLM-209: `:step` moves the selected or marked tasks between steps.
+
+fn run(handle: AnyWindowHandle, view: &Entity<Workspace>, command: &str, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| this.run_command(command, window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn select(view: &Entity<Workspace>, n: u128, cx: &mut TestAppContext) {
+    let row = row_of(view, n, cx);
+    view.update(cx, |this, cx| {
+        this.list().update(cx, |list, cx| list.select(row, cx));
+    });
+}
+
+fn mark_tasks(view: &Entity<Workspace>, numbers: &[u128], cx: &mut TestAppContext) {
+    view.update(cx, |this, cx| {
+        this.list().update(cx, |list, cx| {
+            for n in numbers {
+                list.marked.insert(IssueId::from_u128(*n));
+            }
+            cx.notify();
+        });
+    });
+}
+
+fn message(view: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
+    cx.read(|cx| view.read(cx).message().to_string())
+}
+
+/// The steps of LLM-1's sub-issues in the app, as `(number, step)`.
+fn steps(view: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(u128, Option<u32>)> {
+    cx.read(|cx| {
+        (2..=8)
+            .map(|n| {
+                let issue = view.read(cx).issue_by_key(&format!("LLM-{n}"), cx);
+                (n, issue.order_step)
+            })
+            .collect()
+    })
+}
+
+/// The order writes the workspace sent: the parent and its steps.
+fn order_writes(requests: &mut Requests) -> Vec<(String, Vec<Vec<String>>)> {
+    let mut out = Vec::new();
+    while let Ok(request) = requests.try_recv() {
+        if let Request::Write {
+            key,
+            write: Write::SetOrder(order),
+            ..
+        } = request
+        {
+            let steps = order
+                .steps
+                .iter()
+                .map(|s| s.iter().map(ToString::to_string).collect())
+                .collect();
+            out.push((key, steps));
+        }
+    }
+    out
+}
+
+fn strings(steps: &[&[&str]]) -> Vec<Vec<String>> {
+    steps
+        .iter()
+        .map(|s| s.iter().map(|k| k.to_string()).collect())
+        .collect()
+}
+
+#[gpui_kit::test]
+fn step_moves_the_selected_task_and_sends_the_whole_order(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    // LLM-8 has no step. Put it in step 2.
+    select(&view, 8, cx);
+    run(handle, &view, "step 2", cx);
+    assert_eq!(message(&view, cx), "LLM-8 is in step 2 of LLM-1");
+    assert_eq!(
+        order_writes(&mut requests),
+        [(
+            "LLM-1".to_string(),
+            strings(&[
+                &["LLM-2"],
+                &["LLM-3", "LLM-4", "LLM-5", "LLM-8"],
+                &["LLM-7"],
+                &["LLM-6"]
+            ])
+        )]
+    );
+    assert_eq!(
+        steps(&view, cx),
+        [
+            (2, Some(1)),
+            (3, Some(2)),
+            (4, Some(2)),
+            (5, Some(2)),
+            (6, Some(4)),
+            (7, Some(3)),
+            (8, Some(2)),
+        ]
+    );
+    // The list follows at once: LLM-8 now sits in step 2, on the line.
+    cx.read(|cx| {
+        let list = view.read(cx).list().read(cx);
+        let row = list.row_of(IssueId::from_u128(8)).unwrap();
+        assert_eq!(row, 5, "after LLM-3, LLM-4 and LLM-5");
+    });
+
+    // The same step again changes nothing and says so.
+    run(handle, &view, "step 2", cx);
+    assert_eq!(
+        message(&view, cx),
+        "Already in step 2 of LLM-1: nothing changed"
+    );
+    assert!(order_writes(&mut requests).is_empty());
+
+    // :step none takes it out again.
+    select(&view, 8, cx);
+    run(handle, &view, "step none", cx);
+    assert_eq!(message(&view, cx), "LLM-8 left the order of LLM-1");
+    assert_eq!(steps(&view, cx)[6], (8, None));
+    assert_eq!(order_writes(&mut requests).len(), 1);
+}
+
+#[gpui_kit::test]
+fn step_new_puts_the_marked_tasks_in_one_new_last_step(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    mark_tasks(&view, &[2, 8], cx);
+    run(handle, &view, "step new", cx);
+    // LLM-2 leaves step 1 empty, so the steps move up by one.
+    assert_eq!(
+        message(&view, cx),
+        "2 tasks are in step 4 of LLM-1, a new last step"
+    );
+    assert_eq!(
+        order_writes(&mut requests),
+        [(
+            "LLM-1".to_string(),
+            strings(&[
+                &["LLM-3", "LLM-4", "LLM-5"],
+                &["LLM-7"],
+                &["LLM-6"],
+                &["LLM-2", "LLM-8"]
+            ])
+        )]
+    );
+    assert_eq!(steps(&view, cx)[0], (2, Some(4)));
+    assert_eq!(steps(&view, cx)[6], (8, Some(4)));
+}
+
+#[gpui_kit::test]
+fn step_refuses_tasks_of_different_parents_or_none(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    let before = steps(&view, cx);
+    mark_tasks(&view, &[8, 10], cx);
+    run(handle, &view, "step 1", cx);
+    assert_eq!(
+        message(&view, cx),
+        "LLM-8 and LLM-10 have different parents. Pick tasks of one parent"
+    );
+    view.update(cx, |this, cx| {
+        this.list().update(cx, |list, _| list.marked.clear());
+    });
+    select(&view, 11, cx);
+    run(handle, &view, "step 1", cx);
+    assert_eq!(
+        message(&view, cx),
+        "LLM-11 has no parent. Only sub-issues have a step"
+    );
+    select(&view, 8, cx);
+    run(handle, &view, "step 9", cx);
+    assert_eq!(
+        message(&view, cx),
+        "LLM-1 has 4 steps. Use :step 1 to :step 5, or :step new"
+    );
+    run(handle, &view, "step soon", cx);
+    assert_eq!(message(&view, cx), "Use :step <n>, :step new or :step none");
+    assert_eq!(steps(&view, cx), before, "nothing changed");
+    assert!(order_writes(&mut requests).is_empty());
+}
+
+#[gpui_kit::test]
+fn the_palette_suggests_the_step_commands(cx: &mut TestAppContext) {
+    let (handle, view, _requests) = open(cx);
+    select(&view, 8, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(":", cx);
+        window.input("step n", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let typed = cx.read(|cx| view.read(cx).palette_typed(cx));
+    assert_eq!(typed, "step n");
+    // The first match is selected, so Enter runs it.
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        message(&view, cx),
+        "LLM-8 is in step 5 of LLM-1, a new last step"
+    );
+}

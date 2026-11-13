@@ -6,6 +6,7 @@ pub mod data;
 pub mod demo;
 pub mod drafts;
 pub mod external_editor;
+pub mod order;
 pub mod pipeline;
 pub mod scope;
 pub mod store;
@@ -25,6 +26,7 @@ mod boundary {
             ("demo.rs", include_str!("demo.rs")),
             ("pipeline.rs", include_str!("pipeline.rs")),
             ("external_editor.rs", include_str!("external_editor.rs")),
+            ("order.rs", include_str!("order.rs")),
             ("scope.rs", include_str!("scope.rs")),
             ("store.rs", include_str!("store.rs")),
             ("trackers.rs", include_str!("trackers.rs")),
