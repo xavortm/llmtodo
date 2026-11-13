@@ -699,6 +699,76 @@ async fn dependencies_depth_tree_and_cycles() {
     t.stop().await;
 }
 
+/// LLM-216: the server keeps the dependency graph in memory. Every write
+/// that changes it must show in the next read.
+#[tokio::test]
+async fn the_dependency_graph_follows_every_write() {
+    let t = T::new().await;
+    let a = t.issue("A", json!({})).await;
+    let b = t.issue("B", json!({})).await;
+    let get = async |key: &str| -> Value {
+        t.ok(&owner(), "GET", &format!("/v1/issues/{key}"), Value::Null)
+            .await
+    };
+    let status = async |key: &str, name: &str| {
+        t.ok(
+            &owner(),
+            "PATCH",
+            &format!("/v1/issues/{key}"),
+            json!({ "status": name }),
+        )
+        .await;
+    };
+    assert_eq!(get(&b).await["depth"], 0);
+
+    // A blocks B.
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{a}/relations"),
+        json!({ "type": "blocks", "issue": b }),
+    )
+    .await;
+    assert_eq!(get(&b).await["depth"], 1);
+    assert_eq!(get(&b).await["open_blockers"][0]["key"], a.as_str());
+
+    // Closing A ends the chain, and A is held by the open B.
+    status(&a, "Done").await;
+    assert_eq!(get(&b).await["depth"], 0);
+    assert_eq!(get(&a).await["has_open_dependents"], true);
+    // Closing B frees A.
+    status(&b, "Done").await;
+    assert_eq!(get(&a).await["has_open_dependents"], false);
+    status(&b, "Todo").await;
+    status(&a, "Todo").await;
+    assert_eq!(get(&b).await["depth"], 1);
+
+    // Trash and restore.
+    t.ok(&owner(), "DELETE", &format!("/v1/issues/{a}"), json!({}))
+        .await;
+    assert_eq!(get(&b).await["depth"], 0);
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{a}/restore"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(get(&b).await["depth"], 1);
+
+    // Removing the relation.
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{a}/relations/remove"),
+        json!({ "type": "blocks", "issue": b }),
+    )
+    .await;
+    assert_eq!(get(&b).await["depth"], 0);
+    assert_eq!(get(&b).await["open_blockers"], json!([]));
+    t.stop().await;
+}
+
 /// LLM-214: a closed issue that an open issue still waits for, directly or
 /// through other closed issues, has `has_open_dependents`.
 #[tokio::test]

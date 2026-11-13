@@ -11,6 +11,40 @@ use sqlx::Connection as _;
 
 const ISSUES: i64 = 50_000;
 
+/// The most a page of 1000 may take on one chain through every issue, and
+/// the most a write that rebuilds the dependency graph may take (LLM-216).
+const CHAIN_LIMIT: Duration = Duration::from_millis(200);
+
+/// Changes one issue's status, which makes the server build its dependency
+/// graph again. The reply to the write already builds it. Returns the
+/// slowest write and the slowest first page of 1000 after one.
+async fn timed_after_write(url: &str, http: &reqwest::Client, key: &str) -> (Duration, Duration) {
+    let (mut write, mut read) = (Duration::ZERO, Duration::ZERO);
+    for status in ["In Progress", "Todo"] {
+        let start = Instant::now();
+        let res = http
+            .patch(format!("{url}/v1/issues/{key}"))
+            .json(&json!({ "status": status }))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success());
+        res.bytes().await.unwrap();
+        write = write.max(start.elapsed());
+        let start = Instant::now();
+        let res = http
+            .post(format!("{url}/v1/issues/query"))
+            .json(&json!({ "limit": 1000 }))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success());
+        res.bytes().await.unwrap();
+        read = read.max(start.elapsed());
+    }
+    (write, read)
+}
+
 async fn timed_list(url: &str, http: &reqwest::Client, limit: u32) -> Duration {
     let mut best = Duration::MAX;
     for _ in 0..5 {
@@ -194,8 +228,20 @@ async fn list_with_large_dependency_graphs() {
         .unwrap();
     let worst = timed_list(&url, &http, 1000).await;
     println!("one chain through all {ISSUES} issues, page of 1000: {worst:?}");
+    let (write, read) = timed_after_write(&url, &http, "ALX-25000").await;
+    println!("one open chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order on one open chain, pages of 1000: {t:?} in {pages} pages");
+    // Before LLM-216, each page walked the whole chain again: 0.5 s a page.
+    assert!(worst < CHAIN_LIMIT, "one open chain took {worst:?}");
+    assert!(
+        write < CHAIN_LIMIT,
+        "a write on one open chain took {write:?}"
+    );
+    assert!(
+        read < CHAIN_LIMIT,
+        "one open chain after a write took {read:?}"
+    );
 
     // LLM-214: every issue but the last 1000 is closed, and the page holds
     // the closed head of the chain. The walk down for `has_open_dependents`
@@ -214,8 +260,19 @@ async fn list_with_large_dependency_graphs() {
         .unwrap();
     let closed = timed_list(&url, &http, 1000).await;
     println!("closed chain head held by open issues, page of 1000: {closed:?}");
+    let (write, read) = timed_after_write(&url, &http, &format!("ALX-{}", ISSUES - 500)).await;
+    println!("closed chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order with closed chains, pages of 1000: {t:?} in {pages} pages");
+    assert!(closed < CHAIN_LIMIT, "one closed chain took {closed:?}");
+    assert!(
+        write < CHAIN_LIMIT,
+        "a write on one closed chain took {write:?}"
+    );
+    assert!(
+        read < CHAIN_LIMIT,
+        "one closed chain after a write took {read:?}"
+    );
 
     db.close().await.unwrap();
     running.stop().await.unwrap();

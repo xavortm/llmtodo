@@ -2,18 +2,24 @@
 //! depends on B" is stored as "B blocks A". Depth is the longest chain of
 //! open blockers.
 //!
-//! One recursive query collects the blocker edges a set of issues can reach.
-//! The longest paths are then computed in Rust, once per node. A recursive
-//! query that counted lengths in SQL would walk every path, and the number
-//! of paths grows exponentially when chains share blockers.
+//! Every issue read needs `depth` and `has_open_dependents`, and both can
+//! depend on a chain through the whole database. So the server reads every
+//! `blocks` edge once, computes both values for every issue in Rust, and
+//! keeps the result in memory (LLM-216). Each computation visits each issue
+//! and edge once. The table `dep_graph_token` holds a random token that
+//! triggers replace on every write that can change the graph, so a read
+//! rebuilds the graph only after such a write. Before, each page of issues
+//! walked its chains again with recursive queries. On one chain of 49,000
+//! issues, that took half a second per page.
 //!
-//! The queries use CROSS JOIN, which makes SQLite keep the written join
-//! order. Left to itself, its planner starts from `statuses` and walks every
-//! issue for each step of the recursion. On 50,000 issues that took 25
-//! seconds per page. The walk up needs the index from migration 0007 for
-//! the same reason: without it, each step scans every `blocks` row.
+//! The recursive queries below serve the single-issue filters and the tree.
+//! They use CROSS JOIN, which makes SQLite keep the written join order. Left
+//! to itself, its planner starts from `statuses` and walks every issue for
+//! each step of the recursion. The walk up needs the index from migration
+//! 0007 for the same reason: without it, each step scans every `blocks` row.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use llmtodo_api_types::{DepNode, IssueKey, IssueLink};
 use sqlx::SqliteConnection;
@@ -25,154 +31,293 @@ use crate::store::{issues, teams};
 /// serde refuses to read more than 128.
 const MAX_TREE_DEPTH: usize = 40;
 
-/// The open blockers of a set of issues, and of their blockers in turn.
+/// The dependency graph of every live issue, with the values reads need.
+/// Only live issues on at least one `blocks` edge appear in it. Each issue
+/// has an index, and the lists below are by index.
 #[derive(Default)]
-pub struct Blockers {
-    /// Blockers of each issue that has any, in key order.
-    edges: HashMap<String, Vec<String>>,
-    links: HashMap<String, IssueLink>,
-    depth: HashMap<String, u32>,
+struct Graph {
+    token: Vec<u8>,
+    index: HashMap<String, u32>,
+    ids: Vec<String>,
+    /// The open blockers of each open issue, in key order.
+    blockers: Vec<Vec<u32>>,
+    depth: Vec<u32>,
+    /// True for a closed issue that an open issue still waits for, directly
+    /// or through other closed issues.
+    held: Vec<bool>,
 }
 
-#[derive(sqlx::FromRow)]
-struct EdgeRow {
-    issue: String,
-    blocker: String,
-    key: String,
-    title: String,
-    status_id: String,
+/// The last graph built. One entry is enough: a server has one database.
+/// Tests run several servers in one process, and their random tokens never
+/// match, so a mix-up costs only a rebuild.
+static GRAPH: Mutex<Option<Arc<Graph>>> = Mutex::new(None);
+
+/// Separates the fields in the strings that the graph queries return.
+const SEP: char = '\u{1f}';
+
+/// Up to this many issues on edges, the graph looks its issues up by ID.
+/// Above it, it scans every live issue.
+const SMALL_GRAPH: usize = 5000;
+
+/// A live issue on a `blocks` edge.
+struct Node<'a> {
+    id: &'a str,
+    team_id: &'a str,
+    number: i64,
+    open: bool,
+}
+
+impl Graph {
+    /// The current graph, built again when a write changed it since.
+    async fn current(conn: &mut SqliteConnection) -> ApiResult<Arc<Self>> {
+        let token: Vec<u8> = sqlx::query_scalar("SELECT token FROM dep_graph_token")
+            .fetch_one(&mut *conn)
+            .await?;
+        if let Some(g) = GRAPH.lock().expect("graph cache lock").as_ref()
+            && g.token == token
+        {
+            return Ok(Arc::clone(g));
+        }
+        // Each query returns one string. sqlx hands over rows one at a time,
+        // and 100,000 rows took 100 ms that way, against 15 ms as one string.
+        let edges: Option<String> = sqlx::query_scalar(
+            "SELECT group_concat(from_id || char(31) || to_id, char(31))
+             FROM relations WHERE type = 'blocks'",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let edges = edges.unwrap_or_default();
+        let on_edges: HashSet<&str> = edges.split(SEP).filter(|f| !f.is_empty()).collect();
+        // Looking issues up by ID costs about 3 µs each, and a scan of every
+        // live issue about 0.4 µs each. So a small graph looks its issues
+        // up, and a large one scans.
+        let node_fields = "group_concat(i.id || char(31) || i.team_id || char(31) || i.number
+            || char(31) || (s.type NOT IN ('completed', 'canceled')), char(31))";
+        let nodes: Option<String> = if on_edges.is_empty() {
+            None
+        } else if on_edges.len() <= SMALL_GRAPH {
+            let ids: Vec<&str> = on_edges.iter().copied().collect();
+            sqlx::query_scalar(crate::sql!(
+                "SELECT {node_fields} FROM json_each(?) j
+                 CROSS JOIN issues i ON i.id = j.value
+                 CROSS JOIN statuses s ON s.id = i.status_id
+                 WHERE i.deleted_at IS NULL"
+            ))
+            .bind(serde_json::to_string(&ids)?)
+            .fetch_one(&mut *conn)
+            .await?
+        } else {
+            sqlx::query_scalar(crate::sql!(
+                "SELECT {node_fields} FROM issues i
+                 CROSS JOIN statuses s ON s.id = i.status_id
+                 WHERE i.deleted_at IS NULL"
+            ))
+            .fetch_one(&mut *conn)
+            .await?
+        };
+        let graph = Arc::new(Self::build(
+            token,
+            &edges,
+            nodes.as_deref().unwrap_or(""),
+            &on_edges,
+        )?);
+        *GRAPH.lock().expect("graph cache lock") = Some(Arc::clone(&graph));
+        Ok(graph)
+    }
+
+    /// Builds the graph from the two query strings. `edges` holds blocker
+    /// and issue IDs in turn. `nodes` holds ID, team, number and an open
+    /// flag for live issues, and those not in `on_edges` are left out. An
+    /// edge to a trashed issue is left out.
+    fn build(
+        token: Vec<u8>,
+        edges: &str,
+        nodes: &str,
+        on_edges: &HashSet<&str>,
+    ) -> ApiResult<Self> {
+        let bad = || ApiError::internal("bad dependency graph row");
+        let mut list: Vec<Node<'_>> = Vec::new();
+        let mut fields = nodes.split(SEP).filter(|f| !f.is_empty());
+        while let Some(id) = fields.next() {
+            let (Some(team_id), Some(number), Some(open)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return Err(bad());
+            };
+            if !on_edges.contains(id) {
+                continue;
+            }
+            list.push(Node {
+                id,
+                team_id,
+                number: number.parse().map_err(|_| bad())?,
+                open: open == "1",
+            });
+        }
+        // Indexes follow key order, so sorting blockers by index sorts them
+        // by key.
+        list.sort_unstable_by(|a, b| (a.team_id, a.number).cmp(&(b.team_id, b.number)));
+        let index: HashMap<String, u32> = list
+            .iter()
+            .zip(0u32..)
+            .map(|(n, i)| (n.id.to_string(), i))
+            .collect();
+        let open: Vec<bool> = list.iter().map(|n| n.open).collect();
+        let mut blockers: Vec<Vec<u32>> = vec![Vec::new(); list.len()];
+        let mut held_edges: Vec<(u32, u32)> = Vec::new();
+        let mut fields = edges.split(SEP).filter(|f| !f.is_empty());
+        while let Some(from) = fields.next() {
+            let to = fields.next().ok_or_else(bad)?;
+            let (Some(&b), Some(&d)) = (index.get(from), index.get(to)) else {
+                continue;
+            };
+            if !open[b as usize] {
+                held_edges.push((b, d));
+            } else if open[d as usize] {
+                blockers[d as usize].push(b);
+            }
+        }
+        for list in &mut blockers {
+            list.sort_unstable();
+        }
+        Ok(Self {
+            token,
+            depth: chain_depths(&blockers),
+            held: held_by(&held_edges, &open),
+            ids: list.iter().map(|n| n.id.to_string()).collect(),
+            index,
+            blockers,
+        })
+    }
+
+    fn of(&self, id: &str) -> Option<usize> {
+        self.index.get(id).map(|&i| i as usize)
+    }
+}
+
+/// The open blockers of a set of issues, with the whole graph behind them.
+pub struct Blockers {
+    graph: Arc<Graph>,
+    /// The direct open blockers of the issues asked for.
+    links: HashMap<String, IssueLink>,
 }
 
 impl Blockers {
-    /// Loads the chains of the open, live issues in `ids`. A closed or
-    /// trashed issue has no chain. The query visits each reachable issue
-    /// once, so its cost follows the size of the chains, not of the database.
+    /// Loads the graph, and the short forms of the direct open blockers of
+    /// `ids`. A closed or trashed issue has no open blockers.
     pub async fn load(
         conn: &mut SqliteConnection,
         ids: &[String],
         statuses: &HashMap<String, teams::StatusRow>,
     ) -> ApiResult<Self> {
-        let rows = sqlx::query_as::<_, EdgeRow>(
-            "WITH RECURSIVE reach(id) AS (
-                SELECT i.id FROM json_each(?) j
-                CROSS JOIN issues i ON i.id = j.value
-                CROSS JOIN statuses s ON s.id = i.status_id
-                WHERE i.deleted_at IS NULL AND s.type NOT IN ('completed', 'canceled')
-                UNION
-                SELECT b.id FROM reach
-                CROSS JOIN relations r ON r.to_id = reach.id AND r.type = 'blocks'
-                CROSS JOIN issues b ON b.id = r.from_id
-                CROSS JOIN statuses s ON s.id = b.status_id
-                WHERE b.deleted_at IS NULL AND s.type NOT IN ('completed', 'canceled')
-             )
-             SELECT r.to_id AS issue, b.id AS blocker, b.key, b.title, b.status_id
-             FROM reach
-             CROSS JOIN relations r ON r.to_id = reach.id AND r.type = 'blocks'
-             CROSS JOIN issues b ON b.id = r.from_id
-             CROSS JOIN statuses s ON s.id = b.status_id
-             WHERE b.deleted_at IS NULL AND s.type NOT IN ('completed', 'canceled')
-             ORDER BY b.team_id, b.number",
-        )
-        .bind(serde_json::to_string(ids)?)
-        .fetch_all(&mut *conn)
-        .await?;
-        let mut out = Self::default();
-        for r in rows {
-            if !out.links.contains_key(&r.blocker) {
-                let status = statuses
-                    .get(&r.status_id)
-                    .map(super::teams::StatusRow::to_ref)
-                    .ok_or_else(|| ApiError::internal("issue has an unknown status"))?;
-                let key: IssueKey = r
-                    .key
-                    .parse()
-                    .map_err(|_| ApiError::internal(format!("bad key {}", r.key)))?;
-                out.links.insert(
-                    r.blocker.clone(),
-                    IssueLink {
-                        key,
-                        title: r.title,
-                        status,
-                        deleted: false,
-                    },
-                );
-            }
-            out.edges.entry(r.issue).or_default().push(r.blocker);
-        }
-        out.depth = chain_depths(&out.edges);
-        Ok(out)
+        let graph = Graph::current(conn).await?;
+        let mut direct: Vec<u32> = ids
+            .iter()
+            .filter_map(|id| graph.of(id))
+            .flat_map(|i| graph.blockers[i].iter().copied())
+            .collect();
+        direct.sort_unstable();
+        direct.dedup();
+        let direct: Vec<String> = direct
+            .into_iter()
+            .map(|b| graph.ids[b as usize].clone())
+            .collect();
+        let links = issues::link_map_with(conn, &direct, statuses).await?;
+        Ok(Self { graph, links })
     }
 
     pub fn depth(&self, id: &str) -> u32 {
-        self.depth.get(id).copied().unwrap_or(0)
+        self.graph.of(id).map_or(0, |i| self.graph.depth[i])
+    }
+
+    /// True when `id` is closed and an open issue still waits for it.
+    pub fn has_open_dependents(&self, id: &str) -> bool {
+        self.graph.of(id).is_some_and(|i| self.graph.held[i])
     }
 
     pub fn open_blockers(&self, id: &str) -> Vec<IssueLink> {
-        self.edges.get(id).map_or_else(Vec::new, |blockers| {
-            blockers
+        self.graph.of(id).map_or_else(Vec::new, |i| {
+            self.graph.blockers[i]
                 .iter()
-                .filter_map(|b| self.links.get(b).cloned())
+                .filter_map(|&b| self.links.get(&self.graph.ids[b as usize]).cloned())
                 .collect()
         })
     }
 
     /// The keys along the longest chain, from the nearest blocker to the
     /// farthest. Between equal chains, the lowest key wins.
-    pub fn longest_chain(&self, id: &str) -> Vec<IssueKey> {
-        let mut chain = Vec::new();
-        let mut seen = HashSet::from([id]);
-        let mut current = id;
-        while let Some(next) = self.edges.get(current).and_then(|blockers| {
+    pub async fn longest_chain(
+        &self,
+        conn: &mut SqliteConnection,
+        id: &str,
+        statuses: &HashMap<String, teams::StatusRow>,
+    ) -> ApiResult<Vec<IssueKey>> {
+        let g = &self.graph;
+        let mut chain: Vec<String> = Vec::new();
+        if let Some(start) = g.of(id) {
+            let mut seen = vec![false; g.ids.len()];
+            seen[start] = true;
+            let mut current = start;
             // `max_by_key` keeps the last of equal items, so walk in reverse.
-            blockers.iter().rev().max_by_key(|b| self.depth(b))
-        }) {
-            if !seen.insert(next) {
-                break;
+            while let Some(&next) = g.blockers[current]
+                .iter()
+                .rev()
+                .max_by_key(|&&b| g.depth[b as usize])
+            {
+                let next = next as usize;
+                if seen[next] {
+                    break;
+                }
+                seen[next] = true;
+                chain.push(g.ids[next].clone());
+                current = next;
             }
-            if let Some(link) = self.links.get(next) {
-                chain.push(link.key.clone());
-            }
-            current = next;
         }
-        chain
+        Ok(issues::links(conn, &chain, statuses)
+            .await?
+            .into_iter()
+            .map(|l| l.key)
+            .collect())
     }
 }
 
-/// The longest path below each node. It runs on an explicit stack, so a very
-/// long chain cannot overflow the thread's stack. An edge back onto the
-/// current path is ignored, so a cycle in old data cannot hang it.
-fn chain_depths(edges: &HashMap<String, Vec<String>>) -> HashMap<String, u32> {
-    let mut depth: HashMap<String, u32> = HashMap::with_capacity(edges.len());
-    let mut on_path: HashSet<&str> = HashSet::new();
-    let mut stack: Vec<(&str, usize)> = Vec::new();
-    for root in edges.keys() {
-        if depth.contains_key(root) {
+/// The longest path below each node, from the blockers of each node. It
+/// runs on an explicit stack, so a very long chain cannot overflow the
+/// thread's stack. An edge back onto the current path is ignored, so a cycle
+/// in old data cannot hang it. Each node and edge is visited once.
+fn chain_depths(blockers: &[Vec<u32>]) -> Vec<u32> {
+    let mut depth: Vec<Option<u32>> = vec![None; blockers.len()];
+    let mut on_path = vec![false; blockers.len()];
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for root in 0..blockers.len() {
+        if depth[root].is_some() {
             continue;
         }
-        on_path.insert(root);
+        on_path[root] = true;
         stack.push((root, 0));
         while let Some((node, next)) = stack.last_mut() {
             let node = *node;
-            let blockers = edges.get(node).map_or(&[][..], Vec::as_slice);
-            if let Some(blocker) = blockers.get(*next) {
+            if let Some(&blocker) = blockers[node].get(*next) {
                 *next += 1;
-                if !depth.contains_key(blocker) && on_path.insert(blocker) {
+                let blocker = blocker as usize;
+                if depth[blocker].is_none() && !on_path[blocker] {
+                    on_path[blocker] = true;
                     stack.push((blocker, 0));
                 }
                 continue;
             }
-            let d = blockers
+            let d = blockers[node]
                 .iter()
-                .filter_map(|b| depth.get(b))
+                .filter_map(|&b| depth[b as usize])
                 .map(|d| d + 1)
                 .max()
                 .unwrap_or(0);
-            depth.insert(node.to_string(), d);
-            on_path.remove(node);
+            depth[node] = Some(d);
+            on_path[node] = false;
             stack.pop();
         }
     }
-    depth
+    depth.into_iter().map(|d| d.unwrap_or(0)).collect()
 }
 
 /// The open, live issues that wait for `start`, directly or through a chain.
@@ -196,56 +341,27 @@ pub async fn dependents(conn: &mut SqliteConnection, start: &str) -> ApiResult<V
     .await?)
 }
 
-/// The closed, live issues of `ids` that an open, live issue still waits
-/// for, directly or through other closed issues. One recursive query walks
-/// down from the closed issues of `ids` through closed issues, and visits
-/// each reachable issue once. It uses the unique index on
-/// `(type, from_id, to_id)`. The rest runs in Rust, once per edge.
-pub async fn held_open(conn: &mut SqliteConnection, ids: &[String]) -> ApiResult<HashSet<String>> {
-    let rows: Vec<(String, String, bool)> = sqlx::query_as(
-        "WITH RECURSIVE down(id) AS (
-            SELECT i.id FROM json_each(?) j
-            CROSS JOIN issues i ON i.id = j.value
-            CROSS JOIN statuses s ON s.id = i.status_id
-            WHERE i.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
-            UNION
-            SELECT d.id FROM down
-            CROSS JOIN relations r ON r.type = 'blocks' AND r.from_id = down.id
-            CROSS JOIN issues d ON d.id = r.to_id
-            CROSS JOIN statuses s ON s.id = d.status_id
-            WHERE d.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
-         )
-         SELECT down.id, d.id, s.type NOT IN ('completed', 'canceled')
-         FROM down
-         CROSS JOIN relations r ON r.type = 'blocks' AND r.from_id = down.id
-         CROSS JOIN issues d ON d.id = r.to_id
-         CROSS JOIN statuses s ON s.id = d.status_id
-         WHERE d.deleted_at IS NULL",
-    )
-    .bind(serde_json::to_string(ids)?)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(held_by(&rows))
-}
-
-/// The blockers held by an open dependent, from (blocker, dependent,
-/// dependent is open) edges. A closed blocker of a held issue is held too.
-fn held_by(edges: &[(String, String, bool)]) -> HashSet<String> {
-    let mut up: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut held: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<&str> = VecDeque::new();
-    for (blocker, dependent, open) in edges {
-        if *open {
-            if held.insert(blocker.clone()) {
+/// The closed issues held by an open dependent, from (closed blocker,
+/// dependent) edges and the open flag of each node. A closed blocker of a
+/// held issue is held too.
+fn held_by(edges: &[(u32, u32)], open: &[bool]) -> Vec<bool> {
+    let mut up: Vec<Vec<u32>> = vec![Vec::new(); open.len()];
+    let mut held = vec![false; open.len()];
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    for &(blocker, dependent) in edges {
+        if open[dependent as usize] {
+            if !held[blocker as usize] {
+                held[blocker as usize] = true;
                 queue.push_back(blocker);
             }
         } else {
-            up.entry(dependent).or_default().push(blocker);
+            up[dependent as usize].push(blocker);
         }
     }
     while let Some(node) = queue.pop_front() {
-        for b in up.get(node).into_iter().flatten() {
-            if held.insert((*b).to_string()) {
+        for &b in &up[node as usize] {
+            if !held[b as usize] {
+                held[b as usize] = true;
                 queue.push_back(b);
             }
         }
@@ -483,41 +599,70 @@ impl TreeBuilder<'_> {
 mod tests {
     use super::*;
 
-    fn edges(list: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
-        list.iter()
-            .map(|(a, b)| (a.to_string(), b.iter().map(ToString::to_string).collect()))
-            .collect()
+    /// Blockers by index, from (issue, blockers) pairs over `n` nodes.
+    fn blockers(n: usize, list: &[(u32, &[u32])]) -> Vec<Vec<u32>> {
+        let mut out = vec![Vec::new(); n];
+        for (a, b) in list {
+            out[*a as usize] = b.to_vec();
+        }
+        out
     }
 
     #[test]
     fn depth_is_the_longest_chain() {
-        let e = edges(&[("a", &["b"]), ("b", &["c"])]);
-        let d = chain_depths(&e);
-        assert_eq!((d["a"], d["b"], d["c"]), (2, 1, 0));
+        let d = chain_depths(&blockers(3, &[(0, &[1]), (1, &[2])]));
+        assert_eq!(d, vec![2, 1, 0]);
     }
 
     #[test]
     fn a_shared_blocker_counts_by_the_longest_way() {
-        // a waits for b and c, and b also waits for c.
-        let e = edges(&[("a", &["c", "b"]), ("b", &["c"])]);
-        assert_eq!(chain_depths(&e)["a"], 2);
+        // 0 waits for 1 and 2, and 1 also waits for 2.
+        let d = chain_depths(&blockers(3, &[(0, &[2, 1]), (1, &[2])]));
+        assert_eq!(d[0], 2);
     }
 
     #[test]
     fn a_cycle_in_old_data_ends() {
-        let e = edges(&[("a", &["b"]), ("b", &["a"])]);
-        let d = chain_depths(&e);
-        assert!(d["a"] <= 1 && d["b"] <= 1);
+        let d = chain_depths(&blockers(2, &[(0, &[1]), (1, &[0])]));
+        assert!(d[0] <= 1 && d[1] <= 1);
     }
 
     #[test]
     fn a_very_long_chain_does_not_overflow() {
-        let names: Vec<String> = (0..200_000).map(|n| format!("n{n}")).collect();
-        let e: HashMap<String, Vec<String>> = names
-            .windows(2)
-            .map(|w| (w[0].clone(), vec![w[1].clone()]))
+        let n = 200_000u32;
+        let b: Vec<Vec<u32>> = (0..n)
+            .map(|i| if i + 1 < n { vec![i + 1] } else { Vec::new() })
             .collect();
-        assert_eq!(chain_depths(&e)["n0"], 199_999);
+        assert_eq!(chain_depths(&b)[0], 199_999);
+    }
+
+    #[test]
+    fn a_closed_chain_is_held_through_closed_issues() {
+        // 0 and 1 are closed, 2 is open: 0 blocks 1, and 1 blocks 2. 3 is
+        // closed, and only a closed issue waits for it.
+        let open = [false, false, true, false];
+        let held = held_by(&[(0, 1), (1, 2), (3, 0)], &open);
+        assert_eq!(held, vec![true, true, false, true]);
+        let held = held_by(&[(3, 0)], &open);
+        assert_eq!(held, vec![false; 4]);
+    }
+
+    #[test]
+    fn the_graph_keeps_blockers_in_key_order_and_skips_trashed_issues() {
+        let s = SEP;
+        // b2 and b10 block x. Key order puts number 2 before 10. "gone" is
+        // trashed, so it is not in the nodes.
+        let nodes = format!("x{s}t{s}1{s}1{s}b10{s}t{s}10{s}1{s}b2{s}t{s}2{s}1");
+        let edges = format!("b10{s}x{s}b2{s}x{s}gone{s}x");
+        let on_edges: HashSet<&str> = edges.split(s).collect();
+        let g = Graph::build(Vec::new(), &edges, &nodes, &on_edges).unwrap();
+        let x = g.of("x").unwrap();
+        let names: Vec<&str> = g.blockers[x]
+            .iter()
+            .map(|&b| g.ids[b as usize].as_str())
+            .collect();
+        assert_eq!(names, vec!["b2", "b10"]);
+        assert_eq!(g.depth[x], 1);
     }
 
     #[test]

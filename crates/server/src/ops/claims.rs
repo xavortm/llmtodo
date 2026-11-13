@@ -384,7 +384,8 @@ async fn open_blockers_warning(
     if !open_blockers.is_empty() {
         let keys: Vec<String> = open_blockers.iter().map(|b| b.key.to_string()).collect();
         let chain: Vec<String> = blockers
-            .longest_chain(&row.id)
+            .longest_chain(w.c(), &row.id, &statuses)
+            .await?
             .iter()
             .map(ToString::to_string)
             .collect();
