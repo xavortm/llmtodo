@@ -2457,7 +2457,11 @@ fn an_open_commit_list_keeps_its_toggle_and_the_preview_in_reach(cx: &mut TestAp
         commits: (1..=20).map(|n| format!("abc{n:04} commit {n}")).collect(),
         ..Default::default()
     };
+    // A one-line title, so the title row takes no extra room (LLM-191).
+    let mut issue = cx.read(|cx| view.read(cx).issue(id, cx).clone());
+    issue.title = "Short title".into();
     view.update(cx, |this, cx| {
+        this.receive_issue(issue, cx);
         this.store().update(cx, |store, cx| {
             store.set_git(id, git);
             cx.notify();
@@ -2674,7 +2678,11 @@ fn a_drag_drops_its_task_after_a_snapshot_shifts_the_rows(cx: &mut TestAppContex
 /// Preview buttons sit in the description panel's header, below the head.
 #[gpui_kit::test]
 fn task_view_layout(cx: &mut TestAppContext) {
-    let (handle, _view) = open(cx);
+    let (handle, view) = open(cx);
+    // A short title fits on one line. LLM-191 tests a long one.
+    let mut issue = cx.read(|cx| view.read(cx).visible_issue(0, cx).clone());
+    issue.title = "Short title".into();
+    view.update(cx, |this, cx| this.receive_issue(issue, cx));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("enter", cx);
@@ -2722,6 +2730,49 @@ fn meta_line_wraps_when_narrow(cx: &mut TestAppContext) {
             let item = window.find(id).bounds();
             assert!(item.right() <= head.right(), "{id} {item:?} past {head:?}");
         }
+    })
+    .unwrap();
+}
+
+/// LLM-191: a long title wraps to more lines and is never cut off. The
+/// status icon and the key stay on the title's first line, and the meta
+/// line moves down under the taller title row.
+#[gpui_kit::test]
+fn long_title_wraps_in_task_view(cx: &mut TestAppContext) {
+    let (handle, view) = open_sized(cx, 520., 760.);
+    let mut issue = cx.read(|cx| view.read(cx).visible_issue(0, cx).clone());
+    issue.title = "A very long task title that cannot fit on one line of the task view, \
+        so it wraps to a second line and then to a third one"
+        .into();
+    view.update(cx, |this, cx| this.receive_issue(issue, cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let row = crate::shell::widgets::top_bar_height(window)
+            - crate::shell::widgets::focus_inset(window);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        let header = window.find("detail-header").bounds();
+        let title = window.find("detail-title").bounds();
+        let status = window.find("detail-status").bounds();
+        let key = window.find("detail-key").bounds();
+        assert!(
+            header.size.height > row * 1.5,
+            "the title did not wrap: {header:?}"
+        );
+        assert!(
+            title.bottom() <= header.bottom(),
+            "{title:?} past {header:?}"
+        );
+        assert!(title.right() <= header.right(), "{title:?} past {header:?}");
+        for item in [status, key] {
+            assert_eq!(item.top(), title.top(), "{item:?} not on {title:?}");
+        }
+        // The first line still sits where a one-line title sits: centered
+        // in a row of the filter bar's height.
+        let gap = status.top() - header.top();
+        assert_eq!(gap * 2. + status.size.height, row);
+        let meta = window.find("detail-meta").bounds();
+        assert_eq!(meta.top(), header.bottom());
     })
     .unwrap();
 }

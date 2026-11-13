@@ -1865,39 +1865,62 @@ impl TaskView {
         )
         .into_any_element();
         let theme = cx.theme();
+        // The panel sits inside the focus-ring padding and border, so the
+        // row is that much shorter. A one-line title then sits on the filter
+        // bar's line on the left. A long title wraps and the row grows down.
+        let row = widgets::top_bar_height(window) - widgets::focus_inset(window);
+        let line = window.rem_size() * HEADER_LINE_REM;
+        // Each item beside the title is one line tall, so it stays on the
+        // title's first line when the title wraps.
+        let on_first_line = |id: &'static str, child: gpui_kit::AnyElement| {
+            h_flex()
+                .id(id)
+                .test_support()
+                .flex_none()
+                .h(line)
+                .items_center()
+                .child(child)
+        };
         h_flex()
             .id("detail-header")
             .test_support()
-            // The panel sits inside the focus-ring padding and border, so
-            // the row is that much shorter. The title then sits on the
-            // filter bar's line on the left.
-            .h(widgets::top_bar_height(window) - widgets::focus_inset(window))
+            .min_h(row)
             .flex_none()
-            .items_center()
+            .items_start()
             .px_3()
+            .py((row - line) / 2.)
             .gap_2()
             .text_sm()
-            .child(with_card(
-                SharedString::from(format!("detail-status-{issue_id}")),
-                Icon::new(issue.status.icon())
-                    .small()
-                    .when(issue.status.is_done(), |i| i.text_color(theme.success)),
-                Card::text(format!("Status: {}", issue.status.name)),
+            .line_height(line)
+            .child(on_first_line(
+                "detail-status",
+                with_card(
+                    SharedString::from(format!("detail-status-{issue_id}")),
+                    Icon::new(issue.status.icon())
+                        .small()
+                        .when(issue.status.is_done(), |i| i.text_color(theme.success)),
+                    Card::text(format!("Status: {}", issue.status.name)),
+                )
+                .into_any_element(),
             ))
-            .child(key)
+            .child(on_first_line("detail-key", key))
             .child(
                 div()
+                    .id("detail-title")
+                    .test_support()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .child(issue.title.clone()),
             )
-            .children(widgets::waiting_on(
-                SharedString::from(format!("detail-waiting-{issue_id}")).into(),
-                issue.waiting_on,
-                cx,
-            ))
+            .children(
+                widgets::waiting_on(
+                    SharedString::from(format!("detail-waiting-{issue_id}")).into(),
+                    issue.waiting_on,
+                    cx,
+                )
+                .map(|w| on_first_line("detail-waiting", w.into_any_element())),
+            )
     }
 
     /// The second line under the title: the labels, the cost, time and
@@ -2194,6 +2217,10 @@ pub(crate) fn estimate_text(minutes: Option<u32>, cost: Option<f64>) -> String {
 
 /// The text of a value that has no data yet.
 const MISSING: &str = "—";
+
+/// The line height of the task view's title row, in rems. The items beside
+/// the title are this tall, so they sit on its first line.
+const HEADER_LINE_REM: f32 = 1.25;
 
 /// One group of the meta line. Its items sit close and wrap inside it.
 fn meta_group() -> gpui_kit::Div {
