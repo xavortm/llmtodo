@@ -10,6 +10,7 @@ pub mod init;
 pub mod issue;
 pub mod labels;
 pub mod milestones;
+pub mod order;
 pub mod projects;
 pub mod prune;
 pub mod review;

@@ -64,6 +64,7 @@ pub struct IssueRow {
     pub milestone_name: Option<String>,
     pub parent_id: Option<String>,
     pub parent_key: Option<String>,
+    pub order_step: Option<i64>,
     pub wanted_executor: String,
     pub waiting_on: Option<String>,
     pub estimate_minutes: Option<i64>,
@@ -84,7 +85,7 @@ impl IssueRow {
 const SELECT: &str = "SELECT i.id, i.key, i.team_id, t.key AS team_key, i.number, i.title,
     CASE WHEN ? THEN i.description END AS description, i.description_version, i.status_id, i.priority, i.assignee_id,
     i.project_id, p.slug AS project_slug, i.milestone_id, m.name AS milestone_name, i.parent_id, par.key AS parent_key,
-    i.wanted_executor, i.waiting_on, i.estimate_minutes, i.estimate_cost_usd, i.created_by, i.created_at, i.updated_at, i.completed_at, i.deleted_at
+    i.order_step, i.wanted_executor, i.waiting_on, i.estimate_minutes, i.estimate_cost_usd, i.created_by, i.created_at, i.updated_at, i.completed_at, i.deleted_at
     FROM issues i
     JOIN teams t ON t.id = i.team_id
     LEFT JOIN projects p ON p.id = i.project_id
@@ -285,6 +286,7 @@ pub async fn load_with(
             project: r.project_slug.clone(),
             milestone: r.milestone_name.clone(),
             parent: r.parent_key.as_deref().and_then(|k| k.parse().ok()),
+            order_step: r.order_step.map(|s| s as u32),
             wanted_executor: r.executor(),
             waiting_on: r.waiting_on.as_deref().and_then(|w| w.parse().ok()),
             description: r.description.clone(),
@@ -1249,8 +1251,11 @@ pub async fn merge_claim_git(
     Ok(())
 }
 
+/// The children lose their parent, and with it their order: their steps
+/// and order edges go too.
 pub async fn clear_parent(c: &mut SqliteConnection, parent_id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET parent_id = NULL WHERE parent_id = ?")
+    crate::store::order::delete_edges(c, parent_id).await?;
+    sqlx::query("UPDATE issues SET parent_id = NULL, order_step = NULL WHERE parent_id = ?")
         .bind(parent_id)
         .execute(&mut *c)
         .await?;

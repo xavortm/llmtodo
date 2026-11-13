@@ -30,6 +30,17 @@ pub async fn add(w: &mut Write<'_>, this: &str, kind: RelationInput, other: &str
     } else {
         (this.to_string(), other_row.id.clone())
     };
+    if stored == RelationType::Blocks
+        && let Some((rid, source)) = store::relations::blocks_edge(w.c(), &from, &to).await?
+    {
+        // The order already holds this edge. The manual relation takes it
+        // over, so it stays when the order changes.
+        if source == RelationSource::Order.as_str() {
+            store::relations::set_source(w.c(), &rid, RelationSource::Manual).await?;
+            relation_events(w, &rid, stored, &from, &to).await?;
+        }
+        return Ok(());
+    }
     let exists: Option<i64> = match stored {
         RelationType::Related => store::relations::related_exists(w.c(), &from, &to).await?,
         _ => store::relations::exists(w.c(), stored.as_str(), &from, &to).await?,
@@ -53,32 +64,37 @@ pub async fn add(w: &mut Write<'_>, this: &str, kind: RelationInput, other: &str
     }
     let rid = new_id();
     store::relations::insert(w.c(), &rid, stored.as_str(), &from, &to, ctx.actor_id()).await?;
-    let to_key = issues::row(w.c(), &to).await?.key;
-    let from_key = issues::row(w.c(), &from).await?.key;
-    w.event(
-        EntityType::Relation,
-        &rid,
-        Some(&from),
-        ActivityField::RelationAdded,
-        None,
-        j(json!({ "type": stored, "from": from_key, "to": to_key })),
-    )
-    .await?;
-    w.event(
-        EntityType::Relation,
-        &rid,
-        Some(&to),
-        ActivityField::RelationAdded,
-        None,
-        j(json!({ "type": stored, "from": from_key, "to": to_key })),
-    )
-    .await?;
+    relation_events(w, &rid, stored, &from, &to).await?;
     if stored == RelationType::Duplicate {
         let dup = issues::row(w.c(), &from).await?;
         let statuses = teams::statuses(w.c(), Some(&dup.team_id)).await?;
         if let Some(s) = statuses.iter().find(|s| is_duplicate_status(s)) {
             set_status(w, &dup, s).await?;
         }
+    }
+    Ok(())
+}
+
+/// Records a new relation in the logs of both issues.
+async fn relation_events(
+    w: &mut Write<'_>,
+    rid: &str,
+    stored: RelationType,
+    from: &str,
+    to: &str,
+) -> ApiResult<()> {
+    let to_key = issues::row(w.c(), to).await?.key;
+    let from_key = issues::row(w.c(), from).await?.key;
+    for side in [from, to] {
+        w.event(
+            EntityType::Relation,
+            rid,
+            Some(side),
+            ActivityField::RelationAdded,
+            None,
+            j(json!({ "type": stored, "from": from_key, "to": to_key })),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -102,7 +118,30 @@ pub async fn remove(w: &mut Write<'_>, r: &str, req: RemoveRelation) -> ApiResul
             &format!("{} {} {}", row.key, req.kind, req.issue),
         )
     })?;
+    if stored == RelationType::Blocks
+        && let Some((_, source)) = store::relations::blocks_edge(w.c(), &from, &to).await?
+        && source == RelationSource::Order.as_str()
+    {
+        let from_row = issues::row(w.c(), &from).await?;
+        let to_row = issues::row(w.c(), &to).await?;
+        let parent = from_row.parent_key.clone().unwrap_or_default();
+        return Err(ApiError::validation(format!(
+            "{} blocks {} comes from the order of {parent}, so it cannot be removed as a relation. Take a task out of the order with `llmtodo issue update {} --order-step none`, or write a new order with `llmtodo issue order set {parent} ...`.",
+            from_row.key, to_row.key, to_row.key
+        ))
+        .with_details(json!({ "reason": "order_edge", "parent": parent })));
+    }
     store::relations::delete(w.c(), &rid).await?;
+    // A manual edge can stand in for an order edge. Without it, the order
+    // needs its own edge again.
+    if stored == RelationType::Blocks {
+        let from_row = issues::row(w.c(), &from).await?;
+        if let Some(parent) = &from_row.parent_id
+            && from_row.order_step.is_some()
+        {
+            super::order::rewrite_edges(w, parent).await?;
+        }
+    }
     w.event(
         EntityType::Relation,
         &rid,

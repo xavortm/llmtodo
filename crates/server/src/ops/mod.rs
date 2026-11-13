@@ -11,6 +11,7 @@ pub mod comments;
 pub mod documents;
 pub mod issues;
 pub mod labels;
+pub mod order;
 pub mod projects;
 pub mod prune;
 pub mod questions;

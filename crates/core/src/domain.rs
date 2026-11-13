@@ -127,6 +127,24 @@ string_enum!(
 );
 
 string_enum!(
+    /// Who wrote a relation. `order` edges come from the order of a
+    /// parent's sub-issues, and the server rewrites them on each order
+    /// change. Every other relation is `manual`.
+    RelationSource {
+        Manual => "manual",
+        Order => "order",
+    }
+);
+
+// `string_enum!` cannot mark a variant `#[default]`, so this is by hand.
+#[allow(clippy::derivable_impls)]
+impl Default for RelationSource {
+    fn default() -> Self {
+        RelationSource::Manual
+    }
+}
+
+string_enum!(
     /// A relation as a user names it on the command line.
     RelationInput {
         Blocks => "blocks",

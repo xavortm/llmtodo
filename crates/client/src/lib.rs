@@ -660,6 +660,14 @@ impl Client {
     pub async fn delete_comment(&self, id: &str) -> Result<serde_json::Value> {
         self.call::<ep::DeleteComment, _>(id, &()).await
     }
+    /// The order of an issue's sub-issues.
+    pub async fn order(&self, r: &str) -> Result<OrderView> {
+        self.call::<ep::Order, _>(r, &()).await
+    }
+    /// Writes the whole order of an issue's sub-issues. No steps clears it.
+    pub async fn set_order(&self, r: &str, req: &SetOrder) -> Result<OrderView> {
+        self.call::<ep::SetOrder, _>(r, req).await
+    }
     pub async fn add_relation(&self, r: &str, c: &CreateRelation) -> Result<IssueDetail> {
         self.call::<ep::AddRelation, _>(r, c).await
     }

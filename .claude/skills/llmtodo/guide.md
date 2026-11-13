@@ -179,6 +179,33 @@ llmtodo issue query --depends-on ABC-9 --fields key,depth     # open tasks that 
 
 In the tree, each node has `key`, `title`, `status` and `depth`. The root has `depends_on` and `blocks`. A node with `truncated: true` has more behind it that the tree leaves out, because the node shows earlier in the tree or the chain is over 40 levels. A claim on a blocked task still works, and its warning lists the longest chain. The frontier skips tasks with open blockers.
 
+## Order an epic
+
+An epic's sub-issues can have an order in steps. Each step holds one task, or a group of tasks that can be done in any order. A task waits until every task of the step before it is done. The server stores the order as `blocked-by` relations with `source: order`, so the frontier, `depth`, `open_blockers` and claim warnings follow it.
+
+```sh
+llmtodo issue order show ABC-1                                # the steps, then the sub-issues with no step
+llmtodo issue order set ABC-1 18 28 42 11,23,4,2,5 94         # the whole order: one step per argument
+llmtodo issue update ABC-23 --order-step 2                    # move one task to step 2
+llmtodo issue update ABC-23 --order-step none                 # take one task out of the order
+llmtodo issue order clear ABC-1                               # no order at all
+```
+
+- A step is one key, or a comma list of keys. Bare numbers take the parent's team.
+- Every key must be a live, direct sub-issue of the epic, or the command fails with exit code 6. Sub-issues you leave out lose their step.
+- `--order-step` takes an existing step, the last step plus one for a new last step, or `none`.
+- A trashed task drops out of the order. A task moved to another parent leaves the old order. A closed task keeps its step.
+- A manual `blocked-by` from an earlier step to a later one makes a cycle, so the order write fails with exit code 6 and `details.reason` set to `order_cycle`.
+- `issue relation remove` refuses an order edge. Change the order instead.
+
+When the owner asks you to order an epic, or the epic waits on an agent with that request:
+
+1. Read the sub-issues: `llmtodo issue query --parent ABC-1 --description --fields key,title,status.name,description`. Read `issue order show ABC-1` for the current order.
+2. Decide the order from their content. A task goes after the tasks whose results it needs: a schema before the code that reads it, server work before the app work that calls it, shared code before its users. Tasks that do not depend on each other share a step.
+3. Keep manual `blocked-by` relations in mind. They must point from an earlier step to a later one, or the write fails.
+4. Write the whole order in one call with `issue order set`, and check it with `issue order show`.
+5. Put one line per step with the reason in the epic's Agent notes, then clear `waiting_on` with `-w none`.
+
 ## Keep the git panel current
 
 Each issue shows a git panel with its branch, worktree, PR and commits. A claim fills the branch and worktree from your checkout. The panel keeps them after the claim ends.

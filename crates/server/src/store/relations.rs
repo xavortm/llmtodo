@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use llmtodo_api_types::{IssueLink, Relation, RelationType};
+use llmtodo_api_types::{IssueLink, Relation, RelationSource, RelationType};
 use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_uuid};
@@ -15,8 +15,8 @@ pub async fn relations(
     issue_id: &str,
     statuses: &HashMap<String, teams::StatusRow>,
 ) -> ApiResult<Vec<Relation>> {
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT id, type, from_id, to_id, created_at FROM relations WHERE from_id = ? OR to_id = ? ORDER BY created_at",
+    let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, type, from_id, to_id, created_at, source FROM relations WHERE from_id = ? OR to_id = ? ORDER BY created_at",
     )
     .bind(issue_id)
     .bind(issue_id)
@@ -24,14 +24,14 @@ pub async fn relations(
     .await?;
     let others: Vec<String> = rows
         .iter()
-        .map(|(_, _, f, t, _)| if f == issue_id { t.clone() } else { f.clone() })
+        .map(|(_, _, f, t, _, _)| if f == issue_id { t.clone() } else { f.clone() })
         .collect();
     // Short forms only: the full issue loader would also read claims,
     // blockers and costs that a relation never shows.
     let links: HashMap<String, IssueLink> = issues::link_map_with(conn, &others, statuses).await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(id, kind, from, to, created)| {
+        .filter_map(|(id, kind, from, to, created, source)| {
             let outgoing = from == issue_id;
             let other = if outgoing { to } else { from };
             let kind: RelationType = kind.parse().ok()?;
@@ -46,6 +46,7 @@ pub async fn relations(
                 id: parse_uuid(&id),
                 direction: direction.into(),
                 kind,
+                source: source.parse().unwrap_or(RelationSource::Manual),
                 issue: links.get(&other)?.clone(),
                 created_at: parse_ts(&created),
             })
@@ -144,6 +145,34 @@ pub async fn id_of(
 
 pub async fn delete(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     sqlx::query("DELETE FROM relations WHERE id = ?")
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+/// The ID and source of the `blocks` edge from `from` to `to`.
+pub async fn blocks_edge(
+    c: &mut SqliteConnection,
+    from: &str,
+    to: &str,
+) -> ApiResult<Option<(String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, source FROM relations WHERE type = 'blocks' AND from_id = ? AND to_id = ?",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_optional(&mut *c)
+    .await?)
+}
+
+pub async fn set_source(
+    c: &mut SqliteConnection,
+    id: &str,
+    source: RelationSource,
+) -> ApiResult<()> {
+    sqlx::query("UPDATE relations SET source = ? WHERE id = ?")
+        .bind(source.as_str())
         .bind(id)
         .execute(&mut *c)
         .await?;

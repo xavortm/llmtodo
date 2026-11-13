@@ -29,7 +29,7 @@ use axum::handler::Handler;
 use axum::http::{HeaderValue, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodRouter, delete, get, patch, post};
+use axum::routing::{MethodRouter, delete, get, patch, post, put};
 use llmtodo_api_types::routes::{Endpoint, Method, ROUTES, ep};
 use llmtodo_api_types::{ErrorCode, IssueDetail, VERSION, VERSION_HEADER};
 
@@ -102,6 +102,8 @@ fn handlers() -> Vec<(Method, &'static str, MethodRouter<AppState>)> {
         on::<ep::AddComment, _>(comments::add),
         on::<ep::UpdateComment, _>(comments::update),
         on::<ep::DeleteComment, _>(comments::delete),
+        on::<ep::Order, _>(issues::order),
+        on::<ep::SetOrder, _>(issues::set_order),
         on::<ep::AddRelation, _>(relations::add_relation),
         on::<ep::RemoveRelation, _>(relations::remove_relation),
         on::<ep::Attach, _>(attachments::attach),
@@ -133,6 +135,7 @@ fn on<E: Endpoint, T: 'static>(
     let m = match E::METHOD {
         Method::Get => get(h),
         Method::Post => post(h),
+        Method::Put => put(h),
         Method::Patch => patch(h),
         Method::Delete => delete(h),
     };

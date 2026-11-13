@@ -218,6 +218,9 @@ pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateIssue) -> ApiResult<S
 
 pub async fn delete(w: &mut Write<'_>, r: &str) -> ApiResult<String> {
     let row = issues::resolve_live(w.c(), r).await?;
+    // A trashed task drops out of its parent's order. Closed tasks keep
+    // their step.
+    super::order::leave(w, &row).await?;
     store::issues::trash(w.c(), &row.id).await?;
     if let Some((claim_id, _, _)) = live_claim(w, &row.id).await? {
         end_claim(w, &row.id, &claim_id, "deleted").await?;
@@ -248,6 +251,11 @@ pub async fn restore(w: &mut Write<'_>, r: &str, req: RestoreRequest) -> ApiResu
                 )));
             }
             store::issues::untrash(w.c(), &id).await?;
+            // The task came back with no step, so the order stays as it
+            // is. The rewrite keeps the parent's order edges exact anyway.
+            if let Some(parent) = &row.parent_id {
+                super::order::rewrite_edges(w, parent).await?;
+            }
             w.event(
                 EntityType::Issue,
                 &id,
@@ -435,6 +443,11 @@ pub async fn apply_fields(
     }
     if let Some(p) = req.parent.as_deref() {
         changed |= apply_parent(w, &row, p).await?;
+    }
+    if let Some(step) = req.order_step.clone().into_option() {
+        // Read the row again: a parent change above cleared the step.
+        let fresh = issues::row(w.c(), &row.id).await?;
+        changed |= super::order::move_one(w, &fresh, step).await?;
     }
     if req.labels.is_some() || !req.add_labels.is_empty() || !req.remove_labels.is_empty() {
         changed |= apply_labels(w, &row.id, &req).await?;
@@ -728,6 +741,8 @@ async fn apply_parent(w: &mut Write<'_>, row: &IssueRow, p: Option<&str>) -> Api
         None => None,
     };
     if new.as_ref().map(|p| &p.id) != row.parent_id.as_ref() {
+        // A step belongs to one parent, so the task leaves the old order.
+        super::order::leave(w, row).await?;
         store::issues::set_parent(w.c(), new.as_ref().map(|p| p.id.clone()), &row.id).await?;
         w.event(
             EntityType::Issue,

@@ -3437,3 +3437,422 @@ async fn catalog_lists_match_each_view() {
     assert_eq!(d["relations"][0]["issue"]["status"]["name"], "Todo");
     t.stop().await;
 }
+
+/// The keys of an order view, step by step.
+fn order_steps(v: &Value) -> Vec<Vec<String>> {
+    v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            s["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["key"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect()
+}
+
+fn keys_of(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap().to_string())
+        .collect();
+    k.sort();
+    k
+}
+
+/// An epic with six sub-issues, `a` to `f`.
+async fn epic(t: &T) -> (String, Vec<String>) {
+    let p = t.issue("Epic", json!({})).await;
+    let mut kids = Vec::new();
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        kids.push(t.issue(name, json!({ "parent": p })).await);
+    }
+    (p, kids)
+}
+
+async fn set_order(t: &T, p: &str, steps: Value) -> (u16, Value) {
+    t.call(
+        &owner(),
+        "PUT",
+        &format!("/v1/issues/{p}/order"),
+        json!({ "steps": steps }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn order_set_show_and_the_frontier_follows_it() {
+    let t = T::new().await;
+    let (p, k) = epic(&t).await;
+    let start = t.ok(&owner(), "GET", "/v1/activity", Value::Null).await["last_seq"]
+        .as_i64()
+        .unwrap();
+    // a, then b and c in any order, then d. e and f have no step.
+    let (s, v) = set_order(&t, &p, json!([[k[0]], [k[1], k[2]], [k[3]]])).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        order_steps(&v),
+        [
+            vec![k[0].clone()],
+            vec![k[1].clone(), k[2].clone()],
+            vec![k[3].clone()]
+        ]
+    );
+    assert_eq!(keys_of(&v["unordered"]), [k[4].clone(), k[5].clone()]);
+    assert_eq!(v["steps"][0]["done"], false);
+    let shown = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{p}/order"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(order_steps(&shown), order_steps(&v));
+
+    // One live event, on the parent, for the whole change.
+    let events = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/activity?after_seq={start}"),
+            Value::Null,
+        )
+        .await;
+    let orders: Vec<&Value> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["field"] == "order")
+        .collect();
+    assert_eq!(orders.len(), 1, "{events}");
+    let relation_events = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["field"] == "relation_added")
+        .count();
+    assert_eq!(relation_events, 0);
+
+    let view = async |key: &str| {
+        t.ok(&owner(), "GET", &format!("/v1/issues/{key}"), Value::Null)
+            .await
+    };
+    // Steps and depth follow the order.
+    let d = view(&k[3]).await;
+    assert_eq!(d["order_step"], 3);
+    assert_eq!(d["depth"], 2);
+    assert_eq!(keys_of(&d["open_blockers"]), [k[1].clone(), k[2].clone()]);
+    assert_eq!(view(&k[4]).await["order_step"], Value::Null);
+    // The order edges show as relations with source `order`, and only
+    // between neighbouring steps.
+    let b = view(&k[1]).await;
+    let rels = b["relations"].as_array().unwrap();
+    assert_eq!(rels.len(), 2, "{rels:?}");
+    assert!(rels.iter().all(|r| r["source"] == "order"));
+    let a = view(&k[0]).await;
+    assert!(
+        a["relations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["issue"]["key"] != k[3]),
+        "no edge skips a step"
+    );
+
+    // The frontier offers the first step and the tasks with no step.
+    let frontier = async || {
+        t.ok(
+            &owner(),
+            "POST",
+            "/v1/issues/frontier",
+            json!({ "issue": p }),
+        )
+        .await
+    };
+    assert_eq!(
+        keys_of(&frontier().await),
+        [k[0].clone(), k[4].clone(), k[5].clone()]
+    );
+    t.ok(
+        &owner(),
+        "PATCH",
+        &format!("/v1/issues/{}", k[0]),
+        json!({ "status": "Done" }),
+    )
+    .await;
+    assert_eq!(
+        keys_of(&frontier().await),
+        [k[1].clone(), k[2].clone(), k[4].clone(), k[5].clone()]
+    );
+    // A closed task keeps its step, and its step reads as done.
+    let shown = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{p}/order"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(shown["steps"][0]["done"], true);
+    assert_eq!(order_steps(&shown)[0], [k[0].clone()]);
+
+    // Clearing the order removes every order edge.
+    let (s, v) = set_order(&t, &p, json!([])).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(order_steps(&v).is_empty());
+    assert!(
+        view(&k[1]).await["relations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(view(&k[3]).await["depth"], 0);
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn order_refuses_foreign_keys_and_repeats() {
+    let t = T::new().await;
+    let (p, k) = epic(&t).await;
+    let other = t.issue("Other", json!({})).await;
+    let nephew = t.issue("Nephew", json!({ "parent": other })).await;
+    for bad in [other.as_str(), nephew.as_str(), p.as_str(), "ALX-999"] {
+        let (s, v) = set_order(&t, &p, json!([[k[0]], [bad]])).await;
+        assert_eq!(s, 422, "{bad}: {v}");
+        assert_eq!(v["error"]["code"], "validation");
+        assert_eq!(v["error"]["details"]["reason"], "not_a_sub_issue");
+    }
+    let (s, v) = set_order(&t, &p, json!([[k[0]], [k[1], k[0]]])).await;
+    assert_eq!(s, 422, "{v}");
+    assert_eq!(v["error"]["details"]["reason"], "repeated");
+    // Nothing was written.
+    let shown = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{p}/order"),
+            Value::Null,
+        )
+        .await;
+    assert!(order_steps(&shown).is_empty());
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn order_and_manual_edges_never_make_a_cycle() {
+    let t = T::new().await;
+    let (p, k) = epic(&t).await;
+    // d blocks a by hand, so an order with a before d is a cycle.
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{}/relations", k[3]),
+        json!({ "type": "blocks", "issue": k[0] }),
+    )
+    .await;
+    let (s, v) = set_order(&t, &p, json!([[k[0]], [k[1]], [k[3]]])).await;
+    assert_eq!(s, 422, "{v}");
+    assert_eq!(v["error"]["details"]["reason"], "order_cycle");
+    let shown = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{p}/order"),
+            Value::Null,
+        )
+        .await;
+    assert!(order_steps(&shown).is_empty(), "the write rolled back");
+
+    // The other way round works, and a manual edge against it is refused.
+    let (s, v) = set_order(&t, &p, json!([[k[3]], [k[1]], [k[0]]])).await;
+    assert_eq!(s, 200, "{v}");
+    let code = t
+        .err(
+            &owner(),
+            "POST",
+            &format!("/v1/issues/{}/relations", k[0]),
+            json!({ "type": "blocks", "issue": k[1] }),
+        )
+        .await;
+    assert_eq!(code, "validation");
+
+    // `relation remove` refuses an order edge and names the way out.
+    let (s, v) = t
+        .call(
+            &owner(),
+            "POST",
+            &format!("/v1/issues/{}/relations/remove", k[1]),
+            json!({ "type": "blocks", "issue": k[0] }),
+        )
+        .await;
+    assert_eq!(s, 422, "{v}");
+    assert_eq!(v["error"]["details"]["reason"], "order_edge");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--order-step none"),
+        "{v}"
+    );
+
+    // A manual relation takes over an order edge, so it stays when the
+    // order goes.
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{}/relations", k[1]),
+        json!({ "type": "blocks", "issue": k[0] }),
+    )
+    .await;
+    set_order(&t, &p, json!([])).await;
+    let a = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{}", k[0]),
+            Value::Null,
+        )
+        .await;
+    let rels: Vec<(&str, &str)> = a["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["issue"]["key"].as_str().unwrap(),
+                r["source"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(rels.len(), 2, "{rels:?}");
+    assert!(rels.contains(&(k[1].as_str(), "manual")));
+    assert!(rels.contains(&(k[3].as_str(), "manual")));
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn order_step_moves_one_task_and_trash_rewrites_the_edges() {
+    let t = T::new().await;
+    let (p, k) = epic(&t).await;
+    set_order(&t, &p, json!([[k[0]], [k[1], k[2]], [k[3]]])).await;
+    let patch = async |key: &str, body: Value| {
+        t.call(&owner(), "PATCH", &format!("/v1/issues/{key}"), body)
+            .await
+    };
+    let steps = async || {
+        order_steps(
+            &t.ok(
+                &owner(),
+                "GET",
+                &format!("/v1/issues/{p}/order"),
+                Value::Null,
+            )
+            .await,
+        )
+    };
+    let depth = async |key: &str| {
+        t.ok(&owner(), "GET", &format!("/v1/issues/{key}"), Value::Null)
+            .await["depth"]
+            .as_u64()
+            .unwrap()
+    };
+
+    // e joins step 1, f starts a new last step.
+    assert_eq!(patch(&k[4], json!({ "order_step": 1 })).await.0, 200);
+    assert_eq!(patch(&k[5], json!({ "order_step": 4 })).await.0, 200);
+    assert_eq!(
+        steps().await,
+        [
+            vec![k[0].clone(), k[4].clone()],
+            vec![k[1].clone(), k[2].clone()],
+            vec![k[3].clone()],
+            vec![k[5].clone()],
+        ]
+    );
+    assert_eq!(depth(&k[5]).await, 3);
+    // Past the last step plus one is refused.
+    let (s, v) = patch(&k[5], json!({ "order_step": 9 })).await;
+    assert_eq!(s, 422, "{v}");
+    assert_eq!(v["error"]["details"]["reason"], "step_out_of_range");
+    // A task with no parent has no order.
+    let lone = t.issue("Lone", json!({})).await;
+    let (s, v) = patch(&lone, json!({ "order_step": 1 })).await;
+    assert_eq!(s, 422, "{v}");
+
+    // d leaves the order: its step closes up, and f follows b and c.
+    assert_eq!(patch(&k[3], json!({ "order_step": "" })).await.0, 200);
+    assert_eq!(steps().await.len(), 3);
+    assert_eq!(depth(&k[5]).await, 2);
+
+    // Trash drops b out of the order, and the edges follow.
+    t.ok(
+        &owner(),
+        "DELETE",
+        &format!("/v1/issues/{}", k[1]),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        steps().await,
+        [
+            vec![k[0].clone(), k[4].clone()],
+            vec![k[2].clone()],
+            vec![k[5].clone()],
+        ]
+    );
+    let f = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{}", k[5]),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(keys_of(&f["open_blockers"]), [k[2].clone()]);
+    // Restore brings b back with no step.
+    t.ok(
+        &owner(),
+        "POST",
+        &format!("/v1/issues/{}/restore", k[1]),
+        json!({}),
+    )
+    .await;
+    let b = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{}", k[1]),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(b["order_step"], Value::Null);
+    assert!(b["relations"].as_array().unwrap().is_empty());
+    assert_eq!(steps().await.len(), 3);
+
+    // A new parent takes the task out of the old order.
+    let other = t.issue("Other epic", json!({})).await;
+    assert_eq!(patch(&k[2], json!({ "parent": other })).await.0, 200);
+    assert_eq!(
+        steps().await,
+        [vec![k[0].clone(), k[4].clone()], vec![k[5].clone()]]
+    );
+    let c = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{}", k[2]),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(c["order_step"], Value::Null);
+    assert!(c["relations"].as_array().unwrap().is_empty());
+    assert_eq!(depth(&k[5]).await, 1);
+    t.stop().await;
+}

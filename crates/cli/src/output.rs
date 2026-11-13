@@ -2,7 +2,7 @@
 
 use std::io::IsTerminal;
 
-use llmtodo_api_types::{DepNode, Issue, IssueDetail, format_active_time};
+use llmtodo_api_types::{DepNode, Issue, IssueDetail, RelationSource, format_active_time};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone)]
@@ -127,6 +127,9 @@ impl Out {
         if let Some(p) = &i.parent {
             meta.push(format!("parent: {p}"));
         }
+        if let Some(n) = i.order_step {
+            meta.push(format!("step: {n}"));
+        }
         if !i.labels.is_empty() {
             meta.push(format!("labels: {}", i.labels.join(", ")));
         }
@@ -177,8 +180,16 @@ impl Out {
             println!("\nRelations:");
             for r in &d.relations {
                 println!(
-                    "  {} {}  [{}]  {}",
-                    r.direction, r.issue.key, r.issue.status.name, r.issue.title
+                    "  {} {}  [{}]  {}{}",
+                    r.direction,
+                    r.issue.key,
+                    r.issue.status.name,
+                    r.issue.title,
+                    if r.source == RelationSource::Order {
+                        "  (order)"
+                    } else {
+                        ""
+                    }
                 );
             }
         }

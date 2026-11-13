@@ -21,8 +21,9 @@ use uuid::Uuid;
 pub use llmtodo_core::{
     ASSIGNEE_NONE, ASSIGNEE_OWNER, ActorFields, ActorId, ActorKind, AssigneeRef, AttachmentId,
     AttachmentKind, CommentId, DocumentId, FilterSubject, IssueFilter, IssueId, IssueKey, LabelId,
-    MilestoneId, Patch, Priority, ProjectId, ProjectState, RelationId, RelationInput, RelationType,
-    SessionNoteId, StatusId, StatusType, TeamId, ViewId, WaitingOn, WantedExecutor, WorkSessionId,
+    MilestoneId, Patch, Priority, ProjectId, ProjectState, RelationId, RelationInput,
+    RelationSource, RelationType, SessionNoteId, StatusId, StatusType, TeamId, ViewId, WaitingOn,
+    WantedExecutor, WorkSessionId,
 };
 
 /// Version of this build. The server sends it in the `x-llmtodo-version`
@@ -550,6 +551,10 @@ pub struct Issue {
     pub project: Option<String>,
     pub milestone: Option<String>,
     pub parent: Option<IssueKey>,
+    /// The step of this issue in its parent's order, 1 first. Tasks of one
+    /// step can be done in any order. None when the issue has no step.
+    #[serde(default)]
+    pub order_step: Option<u32>,
     pub wanted_executor: WantedExecutor,
     /// `agent` when it is ready for an agent, `owner` when it needs the
     /// owner's input.
@@ -699,8 +704,42 @@ pub struct Relation {
     pub direction: String,
     #[serde(rename = "type")]
     pub kind: RelationType,
+    /// `order` when the edge comes from the order of the two issues'
+    /// parent. `relation remove` refuses such an edge.
+    #[serde(default)]
+    pub source: RelationSource,
     pub issue: IssueLink,
     pub created_at: Timestamp,
+}
+
+/// One step of a parent's order.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrderStep {
+    /// 1 for the first step, then 2, 3 ...
+    pub step: u32,
+    /// The tasks of the step. They can be done in any order.
+    pub issues: Vec<IssueLink>,
+    /// True when every task of the step is done or canceled.
+    pub done: bool,
+}
+
+/// The order of a parent's sub-issues: steps first, then the live sub-issues
+/// with no step.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrderView {
+    pub parent: IssueKey,
+    pub steps: Vec<OrderStep>,
+    /// Live sub-issues with no step, by key.
+    pub unordered: Vec<IssueLink>,
+}
+
+/// The whole order of a parent's sub-issues, first step first. Each step
+/// lists one task or several. Every key must be a live, direct sub-issue of
+/// the parent. Sub-issues left out lose their step. No steps clears the
+/// order.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SetOrder {
+    pub steps: Vec<Vec<IssueKey>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -888,6 +927,11 @@ pub struct UpdateIssue {
     pub milestone: Change<String>,
     #[serde(default, skip_serializing_if = "Change::is_keep")]
     pub parent: Change<String>,
+    /// The step in the parent's order: an existing step, the last step plus
+    /// one for a new last step, or clear to take the issue out of the order.
+    /// Needs a parent.
+    #[serde(default, skip_serializing_if = "Change::is_keep")]
+    pub order_step: Change<u32>,
     /// Moves the issue to another team. It gets a new key, and the old key
     /// stays as an alias.
     pub team: Option<String>,

@@ -115,3 +115,24 @@ pub async fn restore(
     w.commit().await?;
     issue_detail(&st, &id).await
 }
+
+pub async fn order(
+    State(st): State<AppState>,
+    Path(r): Path<String>,
+) -> ApiResult<Json<OrderView>> {
+    let mut c = st.pool().acquire().await?;
+    Ok(Json(ops::order::view(&mut c, &r).await?))
+}
+
+pub async fn set_order(
+    State(st): State<AppState>,
+    ctx: Ctx,
+    Path(r): Path<String>,
+    Json(req): Json<SetOrder>,
+) -> ApiResult<Json<OrderView>> {
+    let mut w = Write::begin(&st, &ctx).await?;
+    let id = ops::order::set(&mut w, &r, req).await?;
+    w.commit().await?;
+    let mut c = st.pool().acquire().await?;
+    Ok(Json(ops::order::view(&mut c, &id).await?))
+}

@@ -12,6 +12,7 @@ pub mod import;
 pub mod issue_detail;
 pub mod issues;
 pub mod labels;
+pub mod order;
 pub mod projects;
 pub mod questions;
 pub mod relations;

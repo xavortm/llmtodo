@@ -121,6 +121,7 @@ open_enum!(
         Project => "project",
         Milestone => "milestone",
         Parent => "parent",
+        Order => "order",
         WaitingOn => "waiting_on",
         WantedExecutor => "wanted_executor",
         EstimateMinutes => "estimate_minutes",

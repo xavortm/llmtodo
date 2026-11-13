@@ -153,6 +153,7 @@ Change an issue. Only the flags you pass change
 - `--project <project>`: Project, or `none` to clear
 - `--milestone <milestone>`: Milestone, or `none` to clear
 - `--parent <parent>`: Parent key, or `none` to clear
+- `--order-step <order_step>`: The step in the parent's order: an existing step, the last step plus one for a new last step, or `none` to take the task out of the order
 - `--team <team>`: Move to another team. The issue gets a new key and keeps the old one as an alias
 - `--for <for_executor>`: Wanted executor, or `none` to clear
 - `-w, --waiting-on <waiting_on>`: `agent`, `owner`, or `none` to clear
@@ -265,6 +266,25 @@ The dependency tree of an issue: what it waits for and what waits for it, with t
 - `<key>`
 - `<kind>`
 - `<other>`
+
+### `llmtodo issue order set`
+
+Write the whole order of an epic's sub-issues, first step first. A step is one key, or a comma list of keys that can be done in any order: `issue order set LLM-1 18 28 11,23,4 94`. Bare numbers take the parent's team. Sub-issues left out lose their step
+
+- `<parent>`: The epic
+- `<steps>` (repeatable): The steps, in order
+
+### `llmtodo issue order show`
+
+Show the steps of an epic, then its sub-issues with no step
+
+- `<parent>`
+
+### `llmtodo issue order clear`
+
+Take every sub-issue of an epic out of the order
+
+- `<parent>`
 
 ### `llmtodo issue attach`
 
@@ -825,6 +845,8 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | PATCH | `/v1/comments/{id}` | `issue comment update` | Edit a comment |
 | DELETE | `/v1/comments/{id}` | `issue comment delete` | Delete a comment |
 | GET | `/v1/issues/{issue}/deps` | `issue deps` | The dependency tree of an issue, both directions (?open=true hides closed issues) |
+| GET | `/v1/issues/{issue}/order` | `issue order show` | The order of an issue's sub-issues: its steps, then the sub-issues with no step |
+| PUT | `/v1/issues/{issue}/order` | `issue order set` | Write the whole order of an issue's sub-issues, as steps of keys |
 | POST | `/v1/issues/{issue}/relations` | `issue relation add` | Add a relation |
 | POST | `/v1/issues/{issue}/relations/remove` | `issue relation remove` | Remove a relation |
 | POST | `/v1/issues/{issue}/attachments` | `issue attach` | Attach a link or a local path |

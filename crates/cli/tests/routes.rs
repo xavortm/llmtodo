@@ -279,6 +279,8 @@ async fn every_route_is_called_by_its_command() {
         "issue relation remove",
         &["issue", "relation", "remove", "LLM-1", "blocks", "LLM-2"],
     );
+    h.run("issue order set", &["issue", "order", "set", "LLM-1", "2"]);
+    h.run("issue order show", &["issue", "order", "show", "LLM-1"]);
     let a = h.run(
         "issue attach",
         &["issue", "attach", "LLM-1", "https://example.com/x"],

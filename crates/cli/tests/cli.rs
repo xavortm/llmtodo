@@ -889,3 +889,99 @@ fn repo_skill_matches_the_installed_skill() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn order_set_show_step_and_clear() {
+    let t = T::new().await;
+    t.json("s1", &["team", "create", "LLM", "llmtodo"]);
+    t.json("s1", &["issue", "create", "-t", "Epic"]);
+    for name in ["a", "b", "c", "d"] {
+        t.json("s1", &["issue", "create", "-t", name, "--parent", "LLM-1"]);
+    }
+    let steps = |v: &Value| -> Vec<Vec<String>> {
+        v["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                s["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|l| l["key"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .collect()
+    };
+    // Bare numbers take the parent's team, and a comma list is one step.
+    let v = t.json("s1", &["issue", "order", "set", "LLM-1", "2", "3,LLM-4"]);
+    assert_eq!(
+        steps(&v),
+        [
+            vec!["LLM-2".to_string()],
+            vec!["LLM-3".into(), "LLM-4".into()]
+        ]
+    );
+    assert_eq!(v["unordered"][0]["key"], "LLM-5");
+    let v = t.json("s1", &["issue", "order", "show", "LLM-1"]);
+    assert_eq!(steps(&v).len(), 2);
+    let i = t.json("s1", &["issue", "view", "LLM-4"]);
+    assert_eq!(i["order_step"], 2);
+    assert_eq!(i["depth"], 1);
+    // The frontier holds the first step and the task with no step.
+    let f = t.json("s1", &["issue", "frontier", "LLM-1", "--fields", "key"]);
+    let keys: Vec<&str> = f
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys.len(), 2, "{f}");
+    assert!(keys.contains(&"LLM-2") && keys.contains(&"LLM-5"));
+
+    // A key that is not a sub-issue is a validation error.
+    t.json("s1", &["issue", "create", "-t", "Other"]);
+    assert_eq!(
+        t.code("s1", &["issue", "order", "set", "LLM-1", "2", "6"]),
+        6
+    );
+    // An order edge is not removed as a relation.
+    assert_eq!(
+        t.code(
+            "s1",
+            &[
+                "issue",
+                "relation",
+                "remove",
+                "LLM-3",
+                "blocked-by",
+                "LLM-2"
+            ]
+        ),
+        6
+    );
+
+    // --order-step moves one task.
+    let i = t.json("s1", &["issue", "update", "LLM-5", "--order-step", "3"]);
+    assert_eq!(i["order_step"], 3);
+    let i = t.json("s1", &["issue", "update", "LLM-3", "--order-step", "none"]);
+    assert_eq!(i["order_step"], Value::Null);
+    let v = t.json("s1", &["issue", "order", "show", "LLM-1"]);
+    assert_eq!(
+        steps(&v),
+        [
+            vec!["LLM-2".to_string()],
+            vec!["LLM-4".into()],
+            vec!["LLM-5".into()]
+        ]
+    );
+    assert_eq!(
+        t.code("s1", &["issue", "update", "LLM-3", "--order-step", "x"]),
+        2
+    );
+
+    let v = t.json("s1", &["issue", "order", "clear", "LLM-1"]);
+    assert!(steps(&v).is_empty());
+    assert_eq!(t.json("s1", &["issue", "view", "LLM-5"])["depth"], 0);
+    t.stop().await;
+}

@@ -76,6 +76,10 @@ pub enum IssueCmd {
     /// Relations: blocks, blocked-by, related, duplicate.
     #[command(subcommand)]
     Relation(RelationCmd),
+    /// The order of an epic's sub-issues, in steps. A task waits until every
+    /// task of the step before it is done.
+    #[command(subcommand)]
+    Order(super::order::OrderCmd),
     /// Attach a URL, a PR link or a local path.
     Attach {
         key: String,
@@ -373,6 +377,10 @@ pub struct UpdateArgs {
     /// Parent key, or `none` to clear.
     #[arg(long)]
     pub parent: Option<String>,
+    /// The step in the parent's order: an existing step, the last step plus
+    /// one for a new last step, or `none` to take the task out of the order.
+    #[arg(long, value_name = "N|none")]
+    pub order_step: Option<String>,
     /// Move to another team. The issue gets a new key and keeps the old one
     /// as an alias.
     #[arg(long)]
@@ -490,6 +498,23 @@ pub enum RelationCmd {
     },
 }
 
+/// `--order-step`: unset keeps, `none` clears, a number sets.
+fn step_change(s: Option<String>) -> CliResult<Change<u32>> {
+    let Some(s) = s else {
+        return Ok(Change::Keep);
+    };
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("none") || s.is_empty() {
+        return Ok(Change::Clear);
+    }
+    match s.parse::<u32>() {
+        Ok(n) if n > 0 => Ok(Change::Set(n)),
+        _ => Err(CliError::Usage(format!(
+            "--order-step takes a step number from 1, or none; got {s:?}"
+        ))),
+    }
+}
+
 /// A text flag as a change: unset keeps, `none` or blank clears.
 fn text_change(s: Option<String>) -> Change<String> {
     match s {
@@ -547,6 +572,7 @@ pub async fn run(app: &App, cmd: IssueCmd) -> CliResult {
         IssueCmd::Comment(cc) => run_comment(app, c, cc).await?,
         IssueCmd::Deps { key, open } => app.out.deps(&c.deps(&key, open).await?),
         IssueCmd::Relation(rc) => run_relation(app, c, rc).await?,
+        IssueCmd::Order(oc) => super::order::run(app, c, oc).await?,
         IssueCmd::Attach {
             key,
             url,
@@ -949,6 +975,7 @@ pub fn build_update(a: UpdateArgs) -> CliResult<UpdateIssue> {
         project: text_change(a.project),
         milestone: text_change(a.milestone),
         parent: text_change(a.parent),
+        order_step: step_change(a.order_step)?,
         team: a.team,
         wanted_executor,
         waiting_on: waiting_change(a.waiting_on)?,
@@ -975,6 +1002,7 @@ pub fn build_update(a: UpdateArgs) -> CliResult<UpdateIssue> {
         && u.project.is_keep()
         && u.milestone.is_keep()
         && u.parent.is_keep()
+        && u.order_step.is_keep()
         && u.team.is_none()
         && u.wanted_executor.is_none()
         && u.waiting_on.is_keep()

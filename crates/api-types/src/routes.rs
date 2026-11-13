@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 pub enum Method {
     Get,
     Post,
+    Put,
     Patch,
     Delete,
 }
@@ -25,6 +26,7 @@ impl Method {
         match self {
             Method::Get => "GET",
             Method::Post => "POST",
+            Method::Put => "PUT",
             Method::Patch => "PATCH",
             Method::Delete => "DELETE",
         }
@@ -35,6 +37,7 @@ impl Method {
         match s.to_ascii_uppercase().as_str() {
             "GET" => Some(Method::Get),
             "POST" => Some(Method::Post),
+            "PUT" => Some(Method::Put),
             "PATCH" => Some(Method::Patch),
             "DELETE" => Some(Method::Delete),
             _ => None,
@@ -263,6 +266,8 @@ endpoints! {
     UpdateComment: Patch "/v1/comments/{id}", "Edit a comment", (t::UpdateComment), (t::Comment), "issue comment update";
     DeleteComment: Delete "/v1/comments/{id}", "Delete a comment", -, -, "issue comment delete";
     Deps: Get "/v1/issues/{issue}/deps", "The dependency tree of an issue, both directions (?open=true hides closed issues)", (t::DepsQuery), (t::DepNode), "issue deps";
+    Order: Get "/v1/issues/{issue}/order", "The order of an issue's sub-issues: its steps, then the sub-issues with no step", -, (t::OrderView), "issue order show";
+    SetOrder: Put "/v1/issues/{issue}/order", "Write the whole order of an issue's sub-issues, as steps of keys", (t::SetOrder), (t::OrderView), "issue order set";
     AddRelation: Post "/v1/issues/{issue}/relations", "Add a relation", (t::CreateRelation), (t::IssueDetail), "issue relation add";
     RemoveRelation: Post "/v1/issues/{issue}/relations/remove", "Remove a relation", (t::RemoveRelation), (t::IssueDetail), "issue relation remove";
     Attach: Post "/v1/issues/{issue}/attachments", "Attach a link or a local path", (t::CreateAttachment), (t::Attachment), "issue attach";
