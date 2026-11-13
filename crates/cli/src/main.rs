@@ -207,8 +207,10 @@ impl App {
 
     /// Saves the repo's main checkout as the project's local folder, when
     /// this call runs in a repo whose `.llmtodo.toml` names a project that
-    /// has no folder yet. The app shows the folder. A failure here never
-    /// fails the command.
+    /// has no folder yet. It runs once per process, on the first request,
+    /// whether or not that request started the server. The check costs one
+    /// project read. The app shows the folder and reads gone worktrees'
+    /// commits from it. A failure here never fails the command.
     async fn remember_local_path(&self, c: &llmtodo_client::Client) {
         let (Some(project), Some(root)) = (&self.detected.repo.project, &self.detected.repo_root)
         else {

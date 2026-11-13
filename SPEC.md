@@ -125,7 +125,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 - **Team**: key such as `ALX`, name, statuses, and the next issue number.
 - **Status**: belongs to a team. It has a name, a type, a color and a position.
 - **Label** and **label group**: workspace-wide, so every team shares them.
-- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. A CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet. `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213).
+- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. Any CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet, whether or not the call starts the server. The check runs once per CLI process and costs one project read (LLM-215). `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213).
 - **Milestone**: belongs to one project.
 - **Issue**: belongs to one team. It has an optional project, milestone and parent. It also has `waiting_on`, which is empty, `agent` or `owner`.
 - **Relation**: a typed edge between two issues.
@@ -243,7 +243,7 @@ Gap review additions:
 - A claim succeeds on an issue with open blockers. The response lists those blockers, and the CLI prints a warning.
 - A claim ends when the issue moves to a completed or canceled status. It also ends when someone sets a different assignee. The activity log records both cases.
 - A generated session ID only lives for one CLI call. The CLI prints a warning on claim, because a later `release` cannot match it. Agents should set `LLMTODO_SESSION`.
-- A claim copies its branch, worktree and host to the issue. The issue keeps them after the claim ends, in a git panel with the PR and the commits. Agents update them with `issue update --git-here`, `--branch`, `--worktree` and `--pr`.
+- A claim copies its branch, worktree and host to the issue. The issue keeps them after the claim ends, in a git panel with the PR and the commits. Agents update them with `issue update --git-here`, `--branch`, `--worktree` and `--pr`. When a session's worktree is gone, the app reads its commits from the project's local folder. `LLMTODO_PROJECT_DIR` wins for development runs. The app's working folder never counts (LLM-215).
 
 ### Analyzing (LLM-98)
 

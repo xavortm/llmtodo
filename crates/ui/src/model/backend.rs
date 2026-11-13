@@ -754,7 +754,7 @@ async fn session(
                 Some(Request::Create(c)) => match client.create_issue(&c).await {
                     Ok(detail) => {
                         let (id, key) = (detail.issue.id, detail.issue.key.to_string());
-                        send_detail(detail, events).await;
+                        send_detail(&client, detail, events).await;
                         send(events, Event::Created { id, key });
                     }
                     Err(ClientError::Unreachable(e)) => {
@@ -1165,7 +1165,7 @@ fn last_copy_of_each<T, K: std::hash::Hash + Eq>(items: Vec<T>, key: impl Fn(&T)
 
 /// The host name the CLI stores with claims and work sessions, so the app
 /// reads commits only for sessions that ran on this machine.
-fn local_host() -> Option<String> {
+pub(crate) fn local_host() -> Option<String> {
     static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     HOST.get_or_init(|| {
         std::env::var("LLMTODO_HOST")
@@ -1186,8 +1186,9 @@ fn local_host() -> Option<String> {
 /// Sends the issue with its relations, reviews and git panel, as one
 /// event. The commits come from each session's worktree, or from the
 /// project folder once a worktree is gone. Git runs off the async runtime.
-async fn send_detail(detail: IssueDetail, events: &Events) {
-    let detail = with_commits(detail).await;
+async fn send_detail(client: &Client, detail: IssueDetail, events: &Events) {
+    let fallback = project_folder(client, &detail).await;
+    let detail = with_commits(detail, fallback).await;
     send(
         events,
         Event::IssueDetail(Box::new(DetailParts {
@@ -1200,16 +1201,26 @@ async fn send_detail(detail: IssueDetail, events: &Events) {
     );
 }
 
+/// The folder the git panel reads once a session's worktree is gone:
+/// `LLMTODO_PROJECT_DIR` for a development run, else the local folder the
+/// CLI saved on the issue's project. The app's working folder never
+/// counts: an app started from the Dock runs in `/`.
+async fn project_folder(client: &Client, detail: &IssueDetail) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("LLMTODO_PROJECT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let slug = detail.issue.project.as_deref()?;
+    let path = client.project(slug).await.ok()?.local_path?;
+    Some(PathBuf::from(path))
+}
+
 /// Fills in the commits of each session that ran on this machine, from its
-/// worktree, or from the project folder once the worktree is gone. Git
-/// runs off the async runtime. A failed git run leaves the commits empty.
-async fn with_commits(detail: IssueDetail) -> IssueDetail {
+/// worktree, or from `fallback` once the worktree is gone. Git runs off
+/// the async runtime. A failed git run leaves the commits empty.
+async fn with_commits(detail: IssueDetail, fallback: Option<PathBuf>) -> IssueDetail {
     let plain = detail.clone();
     tokio::task::spawn_blocking(move || {
         let mut detail = detail;
-        let fallback = std::env::var_os("LLMTODO_PROJECT_DIR")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok());
         llmtodo_client::git::fill_commits(
             &mut detail,
             local_host().as_deref(),
@@ -1226,7 +1237,7 @@ async fn with_commits(detail: IssueDetail) -> IssueDetail {
 async fn refresh(client: &Client, key: &str, events: &Events) -> Result<(), String> {
     match client.issue(key).await {
         Ok(detail) => {
-            send_detail(detail, events).await;
+            send_detail(client, detail, events).await;
             Ok(())
         }
         Err(ClientError::Unreachable(e)) => Err(e),
@@ -1334,7 +1345,7 @@ async fn apply_write(
             let version = issue.description_version;
             // Only the open task needs its detail and a git run.
             match detail {
-                Some(d) if Some(d.issue.id) == open => send_detail(d, events).await,
+                Some(d) if Some(d.issue.id) == open => send_detail(client, d, events).await,
                 _ => send(events, Event::Issue(Box::new(issue))),
             }
             send(

@@ -688,6 +688,99 @@ fn backend_sends_the_git_panel_after_a_claim_ends() {
     assert_eq!(git.worktree.as_deref(), Some("/work/llmtodo"));
 }
 
+/// A session whose worktree is gone reads its commits from the local
+/// folder the CLI saved on the project, not from the app's working folder.
+#[test]
+fn the_git_panel_reads_a_gone_worktree_from_the_projects_folder() {
+    let live = Live::new();
+    let repo = live.dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "the fix"]);
+    let last = git(&["rev-parse", "HEAD"]);
+
+    let owner = live.client(None);
+    live.rt.block_on(async {
+        owner
+            .create_project(
+                &serde_json::from_value(json!({"name": "App", "slug": "app", "teams": ["LLM"]}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        owner
+            .update_project(
+                "app",
+                &serde_json::from_value(json!({"local_path": repo.to_string_lossy()})).unwrap(),
+            )
+            .await
+            .unwrap();
+        owner
+            .update_issue(
+                "LLM-1",
+                &serde_json::from_value(json!({"project": "app"})).unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+    // The agent worked in a worktree that no longer exists.
+    let agent = |head: &str| {
+        let url = live.server.as_ref().unwrap().url();
+        let context = ClientContext {
+            actor: ActorInput {
+                kind: ActorKind::Agent,
+                name: None,
+                harness: Some("claude-code".into()),
+                model: Some("opus-5.5".into()),
+                effort: Some("high".into()),
+            },
+            session_id: Some("agent-gone".into()),
+            host: crate::model::backend::local_host(),
+            worktree: Some("/gone/llmtodo-wt".into()),
+            branch: Some("gone-branch".into()),
+            head: Some(head.into()),
+            ..Default::default()
+        };
+        Client::new(url, &context)
+    };
+    live.rt.block_on(async {
+        agent(&first)
+            .claim("LLM-1", &ClaimRequest::default())
+            .await
+            .unwrap();
+        agent(&last)
+            .release("LLM-1", &ReleaseRequest::default())
+            .await
+            .unwrap();
+    });
+
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    backend.fetch("LLM-1");
+    let git = live.wait(&mut events, "git panel", |e| match e {
+        Event::IssueDetail(parts) => Some(parts.git.clone()),
+        _ => None,
+    });
+    assert_eq!(git.commits.len(), 1, "{:?}", git.commits);
+    assert!(git.commits[0].ends_with("the fix"), "{:?}", git.commits);
+    assert_eq!(git.repo_url.as_deref(), Some("https://github.com/o/r"));
+}
+
 /// The owner saves while the server is down. The save fails with an
 /// offline message, not as stale, so the app keeps the owner's text. After
 /// the reconnect, the thread fetches the issue again, which puts the

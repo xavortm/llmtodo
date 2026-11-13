@@ -1029,7 +1029,8 @@ async fn projects_remember_their_local_folder() {
     t.json("s1", &["project", "update", "app", "--local-path", ""]);
     assert_eq!(path(&t), Value::Null);
 
-    // A call from a worktree saves the main checkout, not the worktree.
+    // The server already runs, so this call does not start it. A call
+    // from a worktree saves the main checkout, not the worktree.
     git(&["add", ".llmtodo.toml"]);
     git(&["commit", "-q", "-m", "init"]);
     git(&["worktree", "add", "-q", "-b", "side", "wt"]);
