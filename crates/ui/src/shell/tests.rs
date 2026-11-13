@@ -3963,3 +3963,70 @@ fn the_locked_badge_shows_the_model_and_it_fits(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-189: a click on another task during an edit saves the edit and
+/// opens that task. In the conflict view, the click keeps the editor.
+#[gpui_kit::test]
+fn a_click_on_another_task_saves_the_edit_and_opens_it(cx: &mut TestAppContext) {
+    use crate::issues::list::RowClick;
+    let (handle, view) = open(cx);
+    let (backend, mut requests) = crate::model::backend::Backend::detached();
+    view.update(cx, |this, _| this.attach_backend(backend));
+    let click = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let id = this.issue_by_key(key, cx).id;
+                this.click_row(id, RowClick::Plain, window, cx)
+            })
+        })
+        .unwrap();
+    };
+
+    edit_llm_104(handle, cx);
+    set_editor_text(handle, &view, "Owner text.\n", cx);
+    click("LLM-101", cx);
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let this = view.read(cx);
+        let detail = this.detail(cx).unwrap();
+        assert_eq!(detail.mode, DetailMode::Preview);
+        assert_eq!(this.issue(detail.issue, cx).key.as_ref(), "LLM-101");
+        assert_eq!(llm_104_text(this, cx), "Owner text.\n");
+    });
+    let sent = sent_descriptions(&mut requests);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "Owner text.\n");
+
+    // The conflict view keeps the editor open on LLM-104.
+    edit_llm_104_again(handle, &view, cx);
+    view.update(cx, |this, cx| {
+        this.task()
+            .update(cx, |task, cx| task.set_conflict(true, cx));
+    });
+    click("LLM-101", cx);
+    cx.read(|cx| {
+        let this = view.read(cx);
+        let detail = this.detail(cx).unwrap();
+        assert_eq!(detail.mode, DetailMode::Editing);
+        assert_eq!(this.issue(detail.issue, cx).key.as_ref(), "LLM-104");
+        assert_eq!(this.message(), "Resolve the conflict first");
+    });
+}
+
+fn llm_104_text(this: &Workspace, cx: &gpui_kit::App) -> String {
+    this.issue_by_key("LLM-104", cx).description.to_string()
+}
+
+/// Opens LLM-104 in the editor from wherever the list selection is.
+fn edit_llm_104_again(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let id = this.issue_by_key("LLM-104", cx).id;
+            this.click_row(id, crate::issues::list::RowClick::Plain, window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.press("e", cx);
+    })
+    .unwrap();
+}

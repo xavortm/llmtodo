@@ -1837,8 +1837,6 @@ impl Workspace {
         self.record_view(true, cx);
     }
 
-    /// A click on a task row: select it and open it to the side. Focus
-    /// stays in the list, so j / k keep working.
     /// Opens the issue with `key` in the task view, from a link in the
     /// preview. The list selects it too when it shows the issue.
     pub fn open_key(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1870,6 +1868,8 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A click on a task row: select it and open it to the side. Focus
+    /// stays in the list, so j / k keep working.
     pub fn click_row(
         &mut self,
         id: IssueId,
@@ -1944,9 +1944,19 @@ impl Workspace {
         let Some(id) = self.selected_issue(cx) else {
             return;
         };
-        if self.detail(cx).is_some_and(|d| d.issue == id) || self.editing(cx) {
-            // Clicking another task while editing keeps the edit.
+        if self.detail(cx).is_some_and(|d| d.issue == id) {
             return;
+        }
+        if self.editing(cx) {
+            // A click on another task saves the edit and opens that task.
+            // A conflict waits for the owner, so a stray click never
+            // writes over the agent's text.
+            if self.task.read(cx).conflict {
+                self.message = "Resolve the conflict first".into();
+                cx.notify();
+                return;
+            }
+            self.save_editor(cx);
         }
         self.task.update(cx, |task, cx| task.show(id, cx));
         self.fetch_open_details(cx);
