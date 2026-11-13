@@ -305,6 +305,39 @@ async fn repeated_claim_warns_on_stderr() {
     t.stop().await;
 }
 
+/// A label named for a workflow state is refused with exit code 6 and
+/// names the field to use. `--force` creates it anyway (LLM-161).
+#[tokio::test(flavor = "multi_thread")]
+async fn label_create_refuses_workflow_names() {
+    let t = T::new().await;
+    let out = t
+        .cmd("s1", &["--json", "label", "create", "ready-for-agent"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6));
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "validation");
+    let msg = err["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("-w agent") && msg.contains("--force"), "{msg}");
+    assert_eq!(t.json("s1", &["label", "list"]), serde_json::json!([]));
+
+    t.json("s1", &["label", "create", "cli"]);
+    assert_eq!(
+        t.code("s1", &["label", "update", "cli", "--name", "needs-owner"]),
+        6
+    );
+    t.json("s1", &["label", "create", "blocked", "--force"]);
+    let names: Vec<Value> = t
+        .json("s1", &["label", "list"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].clone())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    t.stop().await;
+}
+
 /// `--with` without `--replace`, or no change at all, must fail instead of
 /// exiting 0 with nothing changed.
 #[tokio::test(flavor = "multi_thread")]

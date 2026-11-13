@@ -52,9 +52,10 @@ where
     let connect = || async {
         app.connect().await.map_err(|e| match e {
             CliError::Client(e) => e,
-            CliError::Usage(m) | CliError::InputNeeded(m) | CliError::Other(m) => {
-                llmtodo_client::ClientError::Other(m)
-            }
+            CliError::Usage(m)
+            | CliError::Validation(m)
+            | CliError::InputNeeded(m)
+            | CliError::Other(m) => llmtodo_client::ClientError::Other(m),
         })
     };
     let warn = |w: llmtodo_client::live::Warning| {

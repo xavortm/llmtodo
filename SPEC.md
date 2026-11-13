@@ -20,7 +20,7 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 | Parent and sub-issues | Wayfinder maps, sub-tasks | 44% |
 | Relations | `related` (254) and `blocks` (42) | heavy |
 | Attachments | GitHub PR links (212), commits, API links | 85% |
-| Labels | Flat labels plus one group (`Area` → fe, be, design). Triage labels such as `needs-triage` and `ready-for-agent` | all |
+| Labels | Flat labels plus one group (`Area` → fe, be, design). Workflow states use waiting on, relations and statuses, not labels | all |
 | Priority | Default sort order | 20% |
 | Projects | One per product, with a state | all |
 | Project documents | Long Markdown docs inside a project | one project |
@@ -609,3 +609,4 @@ Build decisions, 2026-11-10:
 44. **Trackers are a development tool (LLM-126).** The owner answered Q2 on LLM-122 on 2026-11-11. The app can switch between data folders through environment variables only, so a preview can look up a real ticket. One installation stays one workspace. Real tracker settings are possible future work, so no code may assume one data folder for the life of a process: the client takes the folder as an input and resolves it in one place.
 45. **Shared client logic lives in `client` (LLM-126).** The live event stream, the data folder choice and the caller's identity are modules of the client crate. The app and the CLI use them, so a later client such as an MCP server gets them for free. A `Harness` trait reads an agent's session, transcript, usage and active time. Claude Code is the first harness. An agent from another harness names itself with `LLMTODO_ACTOR` and sends no usage.
 46. **A status flag marks review, not a name (LLM-151).** The owner's Astro team uses In Review for the step that llmtodo's own team calls User review. A status has a `review` flag, and every review rule reads it: the claim end, the review section gate, the frontier, the review panel, the inbox list and review answers.
+47. **Workflow states are fields, not labels (LLM-161).** Ready for an agent and needs the owner are `waiting_on`. Blocked is a `blocked-by` relation, and in review is a review status. `label create` and `label update --name` refuse a name with a workflow word, such as ready, owner or blocked, with exit code 6. `--force` creates it anyway. The check lives in the CLI, so the owner can still make any label in the app.

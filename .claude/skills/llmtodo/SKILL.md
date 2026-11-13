@@ -28,12 +28,13 @@ On a terminal, `llmtodo init` with no flags asks for each value. `llmtodo init` 
 6. `llmtodo issue update <KEY> --upsert-section "Agent notes" --body-file -` for notes. The description is the record, not comments.
 7. Keep the git panel current. When the branch or worktree changes, run `llmtodo issue update <KEY> --git-here`. When you open a PR, run `llmtodo issue update <KEY> --pr <url>`.
 8. Need a decision from the owner? `llmtodo issue ask <KEY> "Question?" -o "a=One" -o "b=Two"`. Leave out `-o` for free text. It sets `waiting_on owner`. Read answers with `llmtodo issue questions <KEY> --all`.
-9. Dependencies: `llmtodo issue relation add <KEY> blocked-by <OTHER>` means KEY waits for OTHER. `llmtodo issue deps <KEY>` prints the tree. `issue view` and lists carry `depth` and `open_blockers`. A cycle exits with code 6. See the Dependencies section of the guide.
-10. `llmtodo issue update <KEY> --status Done` when the work is merged. Make this status change last: token usage is counted at each write. If the ticket has UI work the owner can review, do not close it. Write its review section, then move it to the team's review status, such as User review or In Review:
+9. Ready for an agent? Set waiting on: `llmtodo issue update <KEY> -w agent`, or `-w agent` on `issue create`. Never use a label for a workflow state. The app shows waiting on only from the field. Waiting on the owner is `-w owner` or `issue ask`. Blocked is a `blocked-by` relation. In review is a review status. `label create` refuses such names without `--force`.
+10. Dependencies: `llmtodo issue relation add <KEY> blocked-by <OTHER>` means KEY waits for OTHER. `llmtodo issue deps <KEY>` prints the tree. `issue view` and lists carry `depth` and `open_blockers`. A cycle exits with code 6. See the Dependencies section of the guide.
+11. `llmtodo issue update <KEY> --status Done` when the work is merged. Make this status change last: token usage is counted at each write. If the ticket has UI work the owner can review, do not close it. Write its review section, then move it to the team's review status, such as User review or In Review:
     `llmtodo issue review set <KEY> --step "Open the inbox." --check "The text is black."`
     `llmtodo issue update <KEY> --status "User review" -w owner`
     A review status has the review flag: `llmtodo status list` shows `review: true`. The move hands the ticket to the owner and ends your claim. It fails with exit code 6 without both headings. Use very simple words, one action per line, and no reasons. The owner must not need to read anything twice.
-11. The owner answers with Approve or Request changes. `llmtodo issue review wait` blocks until the next answer and prints it. Approve with an open PR: merge it, then mark the ticket Done. Request changes: read the feedback, fix it, write the section again and send it back to the review status. See "Act on the owner's answer" in the guide.
+12. The owner answers with Approve or Request changes. `llmtodo issue review wait` blocks until the next answer and prints it. Approve with an open PR: merge it, then mark the ticket Done. Request changes: read the feedback, fix it, write the section again and send it back to the review status. See "Act on the owner's answer" in the guide.
 
 Pass `--no-input` on every call. Never run `llmtodo prune`.
 

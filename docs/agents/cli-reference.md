@@ -369,6 +369,7 @@ Create a label, or a group with --group-label
 - `--group-label` (one of: true, false): Create a label group instead of a label
 - `--color <color>`
 - `-d, --description <description>`
+- `--force` (one of: true, false): Create the label even when its name looks like a workflow state, such as `ready-for-agent`
 
 ### `llmtodo label update`
 
@@ -376,6 +377,7 @@ Create a label, or a group with --group-label
 - `--name <name>`
 - `--color <color>`
 - `--description <description>`
+- `--force` (one of: true, false): Rename the label even when the new name looks like a workflow state
 
 ### `llmtodo label delete`
 

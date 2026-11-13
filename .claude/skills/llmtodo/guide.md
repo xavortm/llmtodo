@@ -12,6 +12,7 @@ The full guide to the `llmtodo` CLI for agents. `SKILL.md` in this folder has th
 - **Never prompt.** Pass `--no-input`. Commands that delete ask first, so pass `-y` when you mean it.
 - **Exit codes are stable.** 3 not found, 4 claim held by another session, 5 stale version, 6 validation, 10 patch matched zero or several times. The full list is in the reference.
 - **Agents may do anything except prune.** Trash and restore are fine. Prune is the owner's.
+- **Workflow states are fields, not labels.** Mark a ticket ready with `-w agent`, never with a label such as `ready-for-agent`. The section "Use fields for workflow states" lists the field for each state.
 - `.llmtodo.toml` at the git root sets the default team and project, so most commands need neither flag. `llmtodo init` writes it. See "Set up a repo" in `SKILL.md`.
 
 ## Pick and claim work
@@ -30,7 +31,7 @@ A claim refuses a task that lacks a time estimate or a cost estimate, with exit 
 Every task needs an estimated working time and an estimated token cost before work starts. Read the task, estimate both, and set them. The owner can create tasks without estimates, so the agent that picks up a task adds them.
 
 ```sh
-llmtodo issue create -t "Title" --estimate-minutes 45 --estimate-cost 2.50
+llmtodo issue create -t "Title" --estimate-minutes 45 --estimate-cost 2.50 -w agent
 llmtodo issue update ABC-12 --estimate-minutes 45 --estimate-cost 2.50
 llmtodo issue claim ABC-12
 ```
@@ -104,7 +105,7 @@ llmtodo issue update ABC-12 --description-file desc.md --base-version 4
 Other writes:
 
 ```sh
-llmtodo issue update ABC-12 --status "In Review" --add-label Area/cli --remove-label needs-triage
+llmtodo issue update ABC-12 --status "In Review" --add-label Area/cli --remove-label Area/app
 llmtodo issue attach ABC-12 https://github.com/owner/repo/pull/7
 llmtodo issue relation add ABC-12 blocked-by ABC-9
 llmtodo issue update ABC-12 --status Done                     # ends your claim
@@ -204,6 +205,22 @@ llmtodo issue update ABC-12 -w none
 llmtodo issue query --waiting-on owner --open
 ```
 
+Set `-w agent` when a ticket is ready for work, also on `issue create`. `issue create` leaves waiting on empty, so a new ticket without the flag shows no icon in the app.
+
+## Use fields for workflow states
+
+Do not make labels for a state the tracker already has. The app shows the waiting icon only for the `waiting_on` field, so a label such as `ready-for-agent` shows nothing.
+
+| State | Use | Not a label such as |
+|---|---|---|
+| Ready for an agent | `issue update ABC-12 -w agent` | `ready-for-agent` |
+| Needs the owner | `issue ask ABC-12 "Question?"`, or `-w owner` | `needs-owner` |
+| Blocked | `issue relation add ABC-12 blocked-by ABC-9` | `blocked` |
+| In review | a review status, see "Send a ticket to a review status" | `in-review` |
+| In progress or done | `issue claim ABC-12`, or `--status <name>` | `wip`, `done` |
+
+`label create` refuses a name with one of these words, with exit code 6. The words are ready, agent, owner, human, waiting, blocked, review, progress, wip and done. The error names the field or command to use. Pass `--force` only when the owner asks for such a label. `label update --name` has the same check.
+
 ## Ask the owner
 
 When you need a decision from the owner, ask it as an owner question. Do not write the question in prose in your notes. The owner answers every question in one place, the inbox in the app.
@@ -247,8 +264,10 @@ Search for duplicates first. `--similar` searches every project. Other queries u
 
 ```sh
 llmtodo issue query --similar "websocket catch up test" --fields key,title,score --limit 5
-llmtodo issue create -t "Title" --parent ABC-1 -l Area/server --description-file body.md --for kind=agent
+llmtodo issue create -t "Title" --parent ABC-1 -l Area/server --description-file body.md --for kind=agent -w agent
 ```
+
+Pass `-w agent` when the ticket is ready for an agent to pick up. Leave it out for a ticket that still needs the owner's input, and ask the owner with `issue ask`.
 
 `--for` sets the wanted executor, such as `kind=agent`, `model=opus-5.5,effort=high` or `kind=human`.
 
@@ -280,5 +299,5 @@ Active time is the sum of the gaps between the user and assistant lines of your 
 ```sh
 llmtodo issue query -q "claim conflict"                       # full text: titles, descriptions, comments
 llmtodo issue query --open --assignee me
-llmtodo issue query --label needs-owner --open
+llmtodo issue query --label Area/cli --open
 ```

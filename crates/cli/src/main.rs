@@ -126,6 +126,9 @@ pub enum Cmd {
 pub enum CliError {
     Client(ClientError),
     Usage(String),
+    /// A check in the CLI refused the input, such as a label name that
+    /// names a workflow state. Exit code 6, like the server's validation.
+    Validation(String),
     InputNeeded(String),
     Other(String),
 }
@@ -135,6 +138,7 @@ impl CliError {
         match self {
             CliError::Client(e) => e.exit_code(),
             CliError::Usage(_) => 2,
+            CliError::Validation(_) => ErrorCode::Validation.exit_code(),
             CliError::InputNeeded(_) => 8,
             CliError::Other(_) => 1,
         }
@@ -144,6 +148,7 @@ impl CliError {
         match self {
             CliError::Client(e) => serde_json::to_value(e.to_body()).unwrap_or_default(),
             CliError::Usage(m) => error_body(ErrorCode::BadRequest, m),
+            CliError::Validation(m) => error_body(ErrorCode::Validation, m),
             CliError::InputNeeded(m) => error_body(ErrorCode::InputNeeded, m),
             CliError::Other(m) => error_body(ErrorCode::Internal, m),
         }
