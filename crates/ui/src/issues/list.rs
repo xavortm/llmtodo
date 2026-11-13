@@ -139,6 +139,9 @@ pub struct IssueList {
     pub hide_closed_after: Option<u32>,
     /// Experimental: draw a light line through the titles of Done tasks.
     pub strike_done: bool,
+    /// The groups that just opened and when, while their rows cascade in
+    /// (LLM-195). None in the list opens every group.
+    cascade: Option<(Option<Vec<SharedString>>, std::time::Instant)>,
     /// How many tasks the scope and filter would show but that setting hides.
     hidden_closed: usize,
     /// The issues that pass the filter, in sort order.
@@ -246,6 +249,7 @@ impl IssueList {
             scope: Scope::All,
             hide_closed_after: None,
             strike_done: true,
+            cascade: None,
             hidden_closed: 0,
             visible: Vec::new(),
             rows: Vec::new(),
@@ -594,8 +598,8 @@ impl IssueList {
         let key = self.group_key(title);
         if collapsed {
             self.collapsed.insert(key);
-        } else {
-            self.collapsed.remove(&key);
+        } else if self.collapsed.remove(&key) {
+            self.start_cascade(Some(vec![SharedString::from(title.to_string())]), cx);
         }
         // Keep the header selected while its group opens or closes.
         if let Some(row) = self.header_row(title) {
@@ -644,8 +648,38 @@ impl IssueList {
 
     pub fn open_all_groups(&mut self, cx: &mut Context<Self>) {
         let prefix = format!("{}:", self.group.label().to_lowercase());
+        let before = self.collapsed.len();
         self.collapsed.retain(|k| !k.starts_with(&prefix));
+        if self.collapsed.len() != before {
+            self.start_cascade(None, cx);
+        }
         self.refresh_keeping_selection(cx);
+    }
+
+    /// With animations on, the rows of the groups that just opened cascade
+    /// in over the next frames.
+    fn start_cascade(&mut self, titles: Option<Vec<SharedString>>, cx: &App) {
+        if crate::shell::motion::on(cx) {
+            self.cascade = Some((titles, cx.background_executor().now()));
+        }
+    }
+
+    /// Where `row` is in a running cascade, from 0 to 1. 1 when no cascade
+    /// runs or the row's group did not just open.
+    fn cascade_step(&self, row: usize, now: std::time::Instant) -> f32 {
+        let Some((titles, at)) = &self.cascade else {
+            return 1.;
+        };
+        let Some(header) = self.group_header_above(row) else {
+            return 1.;
+        };
+        let Row::Header { title, .. } = &self.rows[header] else {
+            return 1.;
+        };
+        if titles.as_ref().is_some_and(|t| !t.contains(title)) {
+            return 1.;
+        }
+        crate::shell::motion::cascade_step(now.saturating_duration_since(*at), row - header - 1)
     }
 
     /// Whether any group in the list is open.
@@ -975,9 +1009,27 @@ impl IssueList {
         status: Option<Status>,
         collapsed: bool,
         list_focused: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let color = label.map(|l| label_color(l.color, cx));
+        // With animations on, one chevron turns between closed and open.
+        let chevron = if crate::shell::motion::on(cx) {
+            let turn = crate::shell::motion::turn(
+                gpui_kit::ElementId::Name(format!("group-turn-{}", self.group_key(&title)).into()),
+                !collapsed,
+                window,
+                cx,
+            );
+            Icon::new(IconName::ChevronRight)
+                .rotate(gpui_kit::radians(turn * std::f32::consts::FRAC_PI_2))
+        } else {
+            Icon::new(if collapsed {
+                IconName::ChevronRight
+            } else {
+                IconName::ChevronDown
+            })
+        };
         let theme = cx.theme();
         let selected = row == self.selected;
         let rest = theme.muted.opacity(0.5);
@@ -989,8 +1041,23 @@ impl IssueList {
         let toggle_title = title.clone();
         let events = self.events.clone();
         let drop_events = self.events.clone();
-        h_flex()
-            .id(("row", row))
+        let fill = crate::shell::motion::Fill {
+            rest: Some(if selected { selected_bg } else { rest }),
+            hover: if selected { selected_hover } else { hover },
+            pressed,
+        };
+        let muted_fg = theme.muted_foreground;
+        let fg = theme.foreground;
+        let mono = theme.mono_font_family.clone();
+        let success = theme.success;
+        let frame = crate::shell::motion::fill(
+            h_flex().id(("row", row)),
+            gpui_kit::ElementId::Name(format!("group-fill-{}", self.group_key(&title)).into()),
+            fill,
+            window,
+            cx,
+        );
+        frame
             .test_support()
             .w_full()
             .h_7()
@@ -998,18 +1065,7 @@ impl IssueList {
             .gap_2()
             .text_xs()
             .cursor_pointer()
-            .bg(if selected { selected_bg } else { rest })
-            .hover(move |s| s.bg(if selected { selected_hover } else { hover }))
-            .active(move |s| s.bg(pressed))
-            .child(
-                Icon::new(if collapsed {
-                    IconName::ChevronRight
-                } else {
-                    IconName::ChevronDown
-                })
-                .small()
-                .text_color(theme.muted_foreground),
-            )
+            .child(chevron.small().text_color(muted_fg))
             .when_some(color, |this, color| {
                 this.child(div().size_2().rounded_full().bg(color))
             })
@@ -1017,35 +1073,23 @@ impl IssueList {
                 this.child(
                     Icon::new(status.icon())
                         .small()
-                        .text_color(if status.is_done() {
-                            theme.success
-                        } else {
-                            theme.muted_foreground
-                        }),
+                        .text_color(if status.is_done() { success } else { muted_fg }),
                 )
             })
             .child(
                 div()
                     .flex_none()
-                    .text_color(theme.foreground)
-                    .when(subtitle.is_some(), |this| {
-                        this.font_family(theme.mono_font_family.clone())
-                    })
+                    .text_color(fg)
+                    .when(subtitle.is_some(), |this| this.font_family(mono.clone()))
                     .child(title.clone()),
             )
             .when_some(subtitle, |this, subtitle| {
-                this.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.foreground)
-                        .child(subtitle),
-                )
+                this.child(div().min_w_0().truncate().text_color(fg).child(subtitle))
             })
             .child(
                 div()
                     .flex_none()
-                    .text_color(theme.muted_foreground)
+                    .text_color(muted_fg)
                     .child(count.to_string()),
             )
             .on_click(move |_, window, cx| {
@@ -1119,6 +1163,7 @@ impl IssueList {
                     status.clone(),
                     *collapsed,
                     list_focused,
+                    window,
                     cx,
                 );
             }
@@ -1269,7 +1314,8 @@ impl IssueList {
             window,
             cx,
         );
-        frame
+        let step = self.cascade_step(row, cx.background_executor().now());
+        crate::shell::motion::cascade(frame, step)
             .test_support()
             .group(ROW_GROUP)
             .relative()
@@ -1815,6 +1861,15 @@ impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
+        // A cascade draws the list each frame until its last row lands.
+        if let Some((_, at)) = &self.cascade {
+            let now = cx.background_executor().now();
+            if now.saturating_duration_since(*at) < crate::shell::motion::CASCADE_TOTAL {
+                window.request_animation_frame();
+            } else {
+                self.cascade = None;
+            }
+        }
         let rem_size = window.rem_size();
         let demand = self.demand(cx);
         let layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);

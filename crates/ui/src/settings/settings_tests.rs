@@ -577,7 +577,7 @@ fn open_palette(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mut Test
 fn animations_are_off_by_default_and_a_switch_turns_them_on(cx: &mut TestAppContext) {
     let (_dir, store) = saved_store();
     let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
-    assert!(!cx.read(crate::shell::motion::on));
+    assert!(!cx.read(crate::shell::motion::enabled));
     open_palette(handle, &view, cx);
     // The first frame after the open may ask for one more, for focus.
     frames_asked(handle, cx);
@@ -587,7 +587,7 @@ fn animations_are_off_by_default_and_a_switch_turns_them_on(cx: &mut TestAppCont
     run(handle, &view, "settings", cx);
     click(handle, "settings-row-animations", cx);
     assert!(store.load().animations);
-    assert!(cx.read(crate::shell::motion::on));
+    assert!(cx.read(crate::shell::motion::enabled));
     press(handle, &["escape"], cx);
 
     open_palette(handle, &view, cx);
@@ -603,5 +603,47 @@ fn animations_are_off_by_default_and_a_switch_turns_them_on(cx: &mut TestAppCont
     // The choice survives a restart.
     cx.update(|cx| crate::shell::motion::set(false, cx));
     let (_handle, _view) = open_with(store.load(), store.clone(), cx);
-    assert!(cx.read(crate::shell::motion::on));
+    assert!(cx.read(crate::shell::motion::enabled));
+}
+
+/// LLM-195: with animations on, an opened group's rows cascade in. The
+/// list asks for frames only until the last row lands.
+#[gpui_kit::test]
+fn an_opened_group_cascades_in_and_then_stops(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    let list = cx.read(|cx| view.read(cx).list().clone());
+    let title = cx.update(|cx| {
+        list.update(cx, |list, cx| {
+            list.group_by(crate::issues::list::GroupBy::Status, cx);
+            list.rows()
+                .iter()
+                .find_map(|row| match row {
+                    crate::issues::list::Row::Header { title, .. } => Some(title.to_string()),
+                    _ => None,
+                })
+                .expect("a group")
+        })
+    });
+    cx.update(|cx| list.update(cx, |list, cx| list.set_group_collapsed(&title, true, cx)));
+    // The chevron turns and the open task slides in. The test clock
+    // stands still, so move it past them.
+    frames_asked(handle, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    assert_eq!(
+        frames_asked(handle, cx),
+        0,
+        "closing leaves nothing running"
+    );
+
+    cx.update(|cx| list.update(cx, |list, cx| list.set_group_collapsed(&title, false, cx)));
+    frames_asked(handle, cx);
+    assert!(frames_asked(handle, cx) > 0, "the rows cascade in");
+    cx.executor()
+        .advance_clock(crate::shell::motion::CASCADE_TOTAL + std::time::Duration::from_millis(50));
+    frames_asked(handle, cx);
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0, "the cascade stops");
 }

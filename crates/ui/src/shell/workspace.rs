@@ -1528,7 +1528,7 @@ impl Workspace {
                 .collect(),
             mascot: self.mascot_on,
             strike_done: list.strike_done,
-            animations: crate::shell::motion::on(cx),
+            animations: crate::shell::motion::enabled(cx),
         }
     }
 

@@ -1508,11 +1508,19 @@ impl TaskView {
                                 }),
                             ))
                         } else {
-                            this.px_4().py_3().children(
-                                views
-                                    .into_iter()
-                                    .map(|(ix, read_only, view)| body(ix, read_only, view)),
-                            )
+                            // With animations on, a newly picked tab's
+                            // content fades in and rises a little. Keyed by
+                            // the tab, so moving to another task on the
+                            // same tab does not replay it.
+                            this.px_4().py_3().children(views.into_iter().map(
+                                |(ix, read_only, view)| {
+                                    crate::shell::motion::swap_in(
+                                        body(ix, read_only, view),
+                                        ("tab-swap", ix),
+                                        cx,
+                                    )
+                                },
+                            ))
                         }
                     }),
             )

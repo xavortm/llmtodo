@@ -24,9 +24,16 @@ struct Motion(bool);
 
 impl Global for Motion {}
 
-/// Whether the Animations switch is on.
-pub fn on(cx: &App) -> bool {
+/// Whether the Animations switch is on. This is what Settings shows and
+/// saves.
+pub fn enabled(cx: &App) -> bool {
     cx.try_global::<Motion>().is_some_and(|m| m.0)
+}
+
+/// Whether to animate now: the switch is on, and the system's Reduce
+/// motion setting is off. GPUI's own animations follow that setting too.
+pub fn on(cx: &App) -> bool {
+    enabled(cx) && !cx.reduce_motion()
 }
 
 pub fn set(on: bool, cx: &mut App) {
@@ -44,6 +51,18 @@ const SLIDE: Duration = Duration::from_millis(220);
 const FILL_IN: Duration = Duration::from_millis(90);
 /// A hover, press or selection fill going away.
 const FILL_OUT: Duration = Duration::from_millis(240);
+/// A group's chevron turning.
+const TURN: Duration = Duration::from_millis(180);
+/// One row of a cascade fading in.
+const CASCADE_ROW: Duration = Duration::from_millis(200);
+/// The wait between one cascading row and the next.
+const CASCADE_STEP: Duration = Duration::from_millis(16);
+/// Rows after this many come in with the last one.
+const CASCADE_ROWS: usize = 10;
+/// How far a cascading row drops.
+const CASCADE_TRAVEL: f32 = 8.;
+/// How far new content rises into place.
+const SWAP_TRAVEL: f32 = 4.;
 /// How far an overlay drops into place.
 const ENTER_TRAVEL: f32 = 10.;
 
@@ -71,6 +90,47 @@ where
     .into_any_element()
 }
 
+/// The chevron of a group header turning, from 0 for closed to 1 for open.
+/// Off, it is the end value at once.
+pub fn turn(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut App) -> f32 {
+    let target = if open { 1. } else { 0. };
+    if !on(cx) {
+        return target;
+    }
+    let id: ElementId = id.into();
+    gpui_kit::base::transition(
+        id,
+        target,
+        gpui_kit::base::Transition::new(TURN).ease(ease_out),
+        window,
+        cx,
+    )
+}
+
+/// One row's step in a cascade: the rows of a group that just opened fade
+/// in and drop into place, each a little after the row above it. `index`
+/// counts rows under the header from 0. Returns 1 when the row is in
+/// place. Only the first [`CASCADE_ROWS`] rows wait their turn, so a long
+/// group is never slow.
+pub fn cascade_step(elapsed: Duration, index: usize) -> f32 {
+    let delay = CASCADE_STEP * index.min(CASCADE_ROWS) as u32;
+    let t = elapsed.saturating_sub(delay).as_secs_f32() / CASCADE_ROW.as_secs_f32();
+    ease_out(t)
+}
+
+/// How long a whole cascade runs.
+pub const CASCADE_TOTAL: Duration =
+    Duration::from_millis(CASCADE_STEP.as_millis() as u64 * CASCADE_ROWS as u64)
+        .saturating_add(CASCADE_ROW);
+
+/// Places a cascading row at its step `t`.
+pub fn cascade<E: Styled>(el: E, t: f32) -> E {
+    if t >= 1. {
+        return el;
+    }
+    el.opacity(t).top(px(-CASCADE_TRAVEL * (1. - t)))
+}
+
 /// A small card, such as a tooltip, fading in where it stands.
 pub fn fade_in<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
 where
@@ -81,6 +141,21 @@ where
     }
     el.with_animation(id, Animation::new(FADE).with_easing(ease_out), |el, t| {
         el.opacity(t)
+    })
+    .into_any_element()
+}
+
+/// New content in the same place, such as another tab: it fades in and
+/// rises a few pixels. The rise is a top margin.
+pub fn swap_in<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if !on(cx) {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(FADE).with_easing(ease_out), |el, t| {
+        el.opacity(t).mt(px(SWAP_TRAVEL * (1. - t)))
     })
     .into_any_element()
 }
@@ -286,6 +361,25 @@ mod tests {
             rest: None,
             hover: gpui_kit::hsla(0., 0., 0.5, 0.1),
             pressed: gpui_kit::hsla(0., 0., 0.5, 0.2),
+        }
+    }
+
+    #[test]
+    fn a_cascade_staggers_the_first_rows_and_ends_on_time() {
+        assert_eq!(cascade_step(Duration::ZERO, 0), 0.);
+        let early = cascade_step(Duration::from_millis(50), 0);
+        let later = cascade_step(Duration::from_millis(50), 2);
+        assert!(early > later, "a lower row starts later");
+        assert_eq!(
+            cascade_step(Duration::from_millis(50), 30),
+            cascade_step(Duration::from_millis(50), CASCADE_ROWS)
+        );
+        for index in [0, 5, CASCADE_ROWS, 200] {
+            assert_eq!(
+                cascade_step(CASCADE_TOTAL, index),
+                1.,
+                "row {index} is in place"
+            );
         }
     }
 
