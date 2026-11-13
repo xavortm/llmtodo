@@ -98,6 +98,9 @@ pub struct TaskView {
     /// The preview's width in the last frame. Wide enough, and the tabs
     /// show side by side as columns.
     preview_width: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
+    /// The room the tab bar's tabs had in the last frame. It decides which
+    /// tabs show and which go under the More button.
+    tab_room: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
     pub editor: Entity<EditorState>,
     pub editor_vim: VimMode,
     /// Whether the editor has vim keys. Off, it stays in insert mode.
@@ -172,6 +175,7 @@ impl TaskView {
             focus: cx.focus_handle(),
             preview_scroll: ScrollHandle::new(),
             preview_width: Default::default(),
+            tab_room: Default::default(),
             editor,
             editor_vim: VimMode::Normal,
             vim_enabled: true,
@@ -1360,7 +1364,17 @@ impl TaskView {
                 if columns {
                     this.child(Self::render_column_titles(&titles, active, toggle, cx))
                 } else if titles.len() > 1 {
-                    this.child(self.render_tab_bar(&titles, active, toggle, cx))
+                    this.child(
+                        crate::task::tab_bar::TabBar {
+                            titles: &titles,
+                            active,
+                            toggle,
+                            events: self.events.clone(),
+                            room: self.tab_room.clone(),
+                            view: cx.entity_id(),
+                        }
+                        .render(window, cx),
+                    )
                 } else {
                     this.child(description_title_row(toggle, cx))
                 }
@@ -1690,96 +1704,6 @@ impl TaskView {
         .size_full()
     }
 
-    /// The tabs of a description that shows one tab at a time.
-    fn render_tab_bar(
-        &self,
-        titles: &[(String, Option<&'static str>)],
-        active: usize,
-        toggle: Option<gpui_kit::AnyElement>,
-        cx: &App,
-    ) -> impl IntoElement + use<> {
-        let events = self.events.clone();
-        let theme = cx.theme();
-        let border = theme.border;
-        let muted = theme.muted_foreground;
-        let eye = move || read_only_eye(muted);
-        let why = read_only_card;
-        let fg = theme.foreground;
-        let accent = theme.primary;
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
-        // Our own tabs, not GPUI Kit's: a kit tab has a fixed height in
-        // pixels, so its label runs out of room when the app zooms in. These
-        // are sized in rems, like the column titles, and grow with the text.
-        h_flex()
-            .id("detail-tabs")
-            .test_support()
-            .flex_none()
-            .w_full()
-            .h_8()
-            .px_1()
-            .text_sm()
-            .border_b_1()
-            .border_color(border)
-            // The bar's px_1 plus each tab's px_3 puts the first
-            // label on the content's px_4 edge. Tabs that do not fit
-            // scroll sideways, so the Edit and Preview buttons stay put.
-            .child(
-                h_flex()
-                    .id("detail-tabs-scroll")
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .overflow_x_scroll()
-                    .children(titles.iter().enumerate().map(|(ix, (title, read_only))| {
-                        let events = events.clone();
-                        let selected = ix == active;
-                        h_flex()
-                            .id(("detail-tab", ix))
-                            .test_support()
-                            .flex_none()
-                            .h_full()
-                            .gap_1()
-                            .px_3()
-                            .cursor_pointer()
-                            .whitespace_nowrap()
-                            .border_b_2()
-                            .border_color(if selected {
-                                accent
-                            } else {
-                                gpui_kit::transparent_black()
-                            })
-                            .text_color(if selected { fg } else { muted })
-                            .hover(move |s| s.bg(hover).text_color(fg))
-                            .active(move |s| s.bg(pressed))
-                            .when(read_only.is_some(), |tab| {
-                                tab.child(
-                                    div().id(("tab-read-only", ix)).test_support().child(eye()),
-                                )
-                                .tooltip(why(title))
-                            })
-                            .child(
-                                div()
-                                    .when(read_only.is_some(), |d| widgets::card_underline(d, cx))
-                                    .child(title.clone()),
-                            )
-                            .on_click(move |_, window, cx| {
-                                events.emit(ViewEvent::SetTab(ix), window, cx);
-                            })
-                    })),
-            )
-            .when_some(toggle, |bar, toggle| {
-                bar.child(
-                    h_flex()
-                        .flex_none()
-                        .h_full()
-                        .items_center()
-                        .pr_1()
-                        .child(toggle),
-                )
-            })
-    }
-
     /// The titles above the columns of a wide preview. The tab that `gt`
     /// and `gT` pick has the brighter title.
     fn render_column_titles(
@@ -2048,12 +1972,12 @@ fn has_git(g: &IssueGit) -> bool {
 }
 
 /// The eye before the title of a read-only tab.
-fn read_only_eye(muted: gpui_kit::Hsla) -> Icon {
+pub(super) fn read_only_eye(muted: gpui_kit::Hsla) -> Icon {
     Icon::new(IconName::Eye).xsmall().text_color(muted)
 }
 
 /// The card that says why a read-only tab cannot be edited.
-fn read_only_card(
+pub(super) fn read_only_card(
     title: &str,
 ) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView + 'static + use<> {
     Card::titled(format!("{title} is read only"))

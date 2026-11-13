@@ -6,6 +6,7 @@ pub mod panel_resize;
 pub mod preview;
 pub mod review;
 pub mod sections;
+pub mod tab_bar;
 pub mod task_view;
 pub mod vim_editor;
 
@@ -17,3 +18,6 @@ mod review_tests;
 
 #[cfg(test)]
 mod prepared_tests;
+
+#[cfg(test)]
+mod tab_bar_tests;
