@@ -337,6 +337,7 @@ A dependency is the `blocks` relation. There is no new relation type. "A depends
 - **The queries use CROSS JOIN and a covering index.** CROSS JOIN keeps SQLite's join order. The index `relations_blocked_by` serves the walk up the chain. Without them, a page of 1,000 issues took 25 seconds on 50,000 issues.
 - **Cycles are refused** when a relation is added, with exit code 6. The error names the cycle in its message and in `details.cycle`. The check follows closed and trashed tasks too, so reopening one cannot complete a cycle.
 - **Live updates.** Closing a blocker changes the depth of tasks that get no event of their own. When the app hears a status, title, trash or relation event, it asks for the dependents with `issue query --depends-on` and applies only their depth and open blockers. Rows in the task view read status and title from the app's live copy.
+- **Closed tasks in open chains (LLM-214).** `Issue.has_open_dependents` is true on a closed, live task that an open, live task still waits for, directly or through other closed tasks. It is false on open and trashed tasks. One more recursive query per list page computes it. The query walks down from the page's closed tasks through closed tasks, with the unique index on `(type, from_id, to_id)`, and Rust marks the held tasks once per edge. On the 50,000-issue test, a snapshot over one closed chain of 49,000 tasks takes 16 s, less than the 31 s that depth already takes over one open chain. `issue query --closed-blockers-of <KEY>` lists the closed tasks that KEY waits for through closed tasks. The app asks for them in the same live refresh as `--depends-on`, so the flag follows when a task closes, reopens, goes to the Trash or gets a new relation.
 - **`issue deps`** expands each task once per direction and stops at 40 levels. A node that stops early has `truncated: true`. This keeps the output small and within the JSON nesting limit of the client.
 - **In the app**, the list has a narrow Dependencies column, so the icon and depth do not take room from the title at narrow widths. It hides after the labels, assignee and waiting columns. The palette commands are `:depends`, `:blocks`, `:undepend` and `:unblock`.
 
@@ -469,6 +470,10 @@ Zed is the visual target. The app should feel like a Zed window that shows issue
 - Claims list: which agent holds which ticket, in which worktree and herdr pane
 - Inbox: every open owner question, answered in place
 - Trash, with restore
+
+### Hide closed tasks (LLM-214)
+
+Settings has "Hide old closed tasks" and "Hide after", in days. The field takes 0 to 3650. 0 hides every Done and Canceled task at once, also one with no close time. At every value, a closed task stays while `has_open_dependents` is true, so the done steps of an ordered epic stay while later steps are open. When every task in the chain is closed, the chain hides like any other closed task. A held task sets no hide timer. The live refresh of the flag builds the rows again.
 
 ### Keys
 

@@ -92,15 +92,23 @@ impl Workspace {
                 self.message = format!("View {name}: {message}").into();
             }
             backend::Event::Dependents(issues) => {
-                self.store.update(cx, |store, cx| {
+                // A new `has_open_dependents` can hide or show a closed task.
+                let held = self.store.update(cx, |store, cx| {
+                    let mut held = false;
                     for api in &issues {
                         store.modify(api.id, |issue| {
+                            held |= issue.has_open_dependents != api.has_open_dependents;
                             issue.depth = api.depth;
                             issue.open_blockers = crate::model::data::Blocker::from_api(api);
+                            issue.has_open_dependents = api.has_open_dependents;
                         });
                     }
                     cx.notify();
+                    held
                 });
+                if held {
+                    self.list_do(cx, |list, cx| list.refilter(cx));
+                }
             }
             backend::Event::WriteDone { key, kind, version } => {
                 self.on_write_done(key, kind, version, cx)

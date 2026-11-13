@@ -456,6 +456,10 @@ pub struct Issue {
     pub depth: u32,
     /// The open tasks this one waits for directly.
     pub open_blockers: Vec<Blocker>,
+    /// LLM-214: a closed task that an open task still waits for, directly
+    /// or through other closed tasks. The server computes it. Such a task
+    /// never hides from the list.
+    pub has_open_dependents: bool,
     /// The token cost so far, in dollars. None when no usage is known.
     pub cost: Option<f64>,
     /// Active agent working time so far, in seconds. None when unknown.
@@ -499,7 +503,12 @@ impl Blocker {
 }
 
 /// The moment a closed task must be older than to count as `days` old.
+/// 0 days gives the latest moment there is, so every closed task counts,
+/// also one with no close time.
 pub fn hide_cutoff(days: u32, now: jiff::Timestamp) -> jiff::Timestamp {
+    if days == 0 {
+        return jiff::Timestamp::MAX;
+    }
     let age = jiff::SignedDuration::from_hours(i64::from(days) * 24);
     now.checked_sub(age).unwrap_or(now)
 }
@@ -552,9 +561,15 @@ impl Issue {
         }
     }
 
-    /// Whether the task is closed and closed before `cutoff`.
-    pub fn closed_before(&self, cutoff: jiff::Timestamp) -> bool {
-        self.status.is_closed() && self.closed_at.is_some_and(|at| at < cutoff)
+    /// Whether "Hide after" hides the task at `cutoff`: it is closed,
+    /// closed before `cutoff`, and no open task waits for it. The cutoff
+    /// for 0 days hides a closed task with no close time too.
+    pub fn hidden_by(&self, cutoff: jiff::Timestamp) -> bool {
+        self.status.is_closed()
+            && !self.has_open_dependents
+            && self
+                .closed_at
+                .map_or(cutoff == jiff::Timestamp::MAX, |at| at < cutoff)
     }
 
     /// Keeps the text of `old`, the app's earlier copy, when this copy came
@@ -613,6 +628,7 @@ impl Issue {
             waiting_on: issue.waiting_on,
             depth: issue.depth,
             open_blockers: Blocker::from_api(issue),
+            has_open_dependents: issue.has_open_dependents,
             cost: issue.cost_usd,
             active_seconds: issue.active_seconds,
             estimate_minutes: issue.estimate_minutes,

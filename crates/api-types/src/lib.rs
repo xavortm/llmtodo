@@ -578,6 +578,11 @@ pub struct Issue {
     /// The open, live issues that block this one directly.
     #[serde(default)]
     pub open_blockers: Vec<IssueLink>,
+    /// A closed, live issue that an open, live issue still waits for,
+    /// directly or through other closed issues. Always false on an open or
+    /// trashed issue. The app keeps such a closed issue on screen.
+    #[serde(default)]
+    pub has_open_dependents: bool,
     /// The token cost of the issue so far, in USD. Missing when the issue
     /// has no usage, or when no model it used has a price.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -995,6 +1000,11 @@ pub struct IssueQuery {
     pub waiting_on: Option<String>,
     /// Open issues that wait for this issue, directly or through a chain.
     pub depends_on: Option<String>,
+    /// Closed, live issues that this issue waits for, directly or through
+    /// other closed issues. Their `has_open_dependents` can change when
+    /// this issue opens, closes or gets a new relation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_blockers_of: Option<String>,
     /// Full-text search over titles, descriptions and comments.
     pub text: Option<String>,
     /// Duplicate search: issues whose title and description look like this

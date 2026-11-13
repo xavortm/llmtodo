@@ -194,6 +194,28 @@ async fn list_with_large_dependency_graphs() {
         .unwrap();
     let worst = timed_list(&url, &http, 1000).await;
     println!("one chain through all {ISSUES} issues, page of 1000: {worst:?}");
+    let (t, pages) = timed_walk(&url, &http, 1000).await;
+    println!("every issue in ID order on one open chain, pages of 1000: {t:?} in {pages} pages");
+
+    // LLM-214: every issue but the last 1000 is closed, and the page holds
+    // the closed head of the chain. The walk down for `has_open_dependents`
+    // then crosses every closed issue.
+    sqlx::query(
+        "UPDATE issues SET status_id = (SELECT id FROM statuses WHERE type = 'completed' LIMIT 1),
+         completed_at = created_at WHERE number <= ?",
+    )
+    .bind(ISSUES - 1000)
+    .execute(&mut db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE issues SET updated_at = '2099-01-01T00:00:00Z' WHERE number <= 1000")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    let closed = timed_list(&url, &http, 1000).await;
+    println!("closed chain head held by open issues, page of 1000: {closed:?}");
+    let (t, pages) = timed_walk(&url, &http, 1000).await;
+    println!("every issue in ID order with closed chains, pages of 1000: {t:?} in {pages} pages");
 
     db.close().await.unwrap();
     running.stop().await.unwrap();

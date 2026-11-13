@@ -306,6 +306,7 @@ fn merge_query(mut base: IssueQuery, extra: IssueQuery) -> IssueQuery {
         for_executor,
         waiting_on,
         depends_on,
+        closed_blockers_of,
         text,
         similar,
         updated_after,

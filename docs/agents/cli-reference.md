@@ -103,6 +103,7 @@ List issues that match filters. Sorted by priority, then last update
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
 - `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
+- `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
 - `--analyzing` (one of: true, false): Only issues an agent is analyzing. With `--claimed`, keeps either
 - `-q, --text <text>`: Full-text search over titles, descriptions and comments
@@ -599,6 +600,7 @@ Save the filters of `issue query` under a name
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
 - `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
+- `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
 - `--analyzing` (one of: true, false): Only issues an agent is analyzing. With `--claimed`, keeps either
 - `-q, --text <text>`: Full-text search over titles, descriptions and comments
@@ -630,6 +632,7 @@ Save the filters of `issue query` under a name
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
 - `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
+- `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
 - `--analyzing` (one of: true, false): Only issues an agent is analyzing. With `--claimed`, keeps either
 - `-q, --text <text>`: Full-text search over titles, descriptions and comments

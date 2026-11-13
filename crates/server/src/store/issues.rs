@@ -246,6 +246,7 @@ pub async fn load_with(
     let claims = live_claims(conn, ids, actors).await?;
     let analyzing = live_analyzing(conn, ids, actors).await?;
     let blockers = deps::Blockers::load(conn, ids, statuses).await?;
+    let held = deps::held_open(conn, ids).await?;
     let mut costs = crate::store::usage::cost_by_issue(conn, ids).await?;
     let open_questions = crate::store::questions::open_counts(conn, ids).await?;
     let mut times = crate::store::usage::active_seconds_by_issue(conn, ids).await?;
@@ -295,6 +296,7 @@ pub async fn load_with(
             analyzing: analyzing.get(&r.id).cloned(),
             depth: blockers.depth(&r.id),
             open_blockers: blockers.open_blockers(&r.id),
+            has_open_dependents: held.contains(&r.id),
             cost_usd: costs.remove(&r.id),
             open_questions: open_questions.get(&r.id).copied().unwrap_or(0),
             active_seconds: times.remove(&r.id),
@@ -572,6 +574,13 @@ async fn push_filters(
     if let Some(d) = &q.depends_on {
         let start = resolve_id(conn, d).await?;
         let ids = deps::dependents(conn, &start).await?;
+        b.push(" AND i.id IN (SELECT value FROM json_each(")
+            .push_bind(serde_json::to_string(&ids)?)
+            .push("))");
+    }
+    if let Some(d) = &q.closed_blockers_of {
+        let start = resolve_id(conn, d).await?;
+        let ids = deps::closed_blockers(conn, &start).await?;
         b.push(" AND i.id IN (SELECT value FROM json_each(")
             .push_bind(serde_json::to_string(&ids)?)
             .push("))");

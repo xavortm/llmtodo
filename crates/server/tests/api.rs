@@ -699,6 +699,97 @@ async fn dependencies_depth_tree_and_cycles() {
     t.stop().await;
 }
 
+/// LLM-214: a closed issue that an open issue still waits for, directly or
+/// through other closed issues, has `has_open_dependents`.
+#[tokio::test]
+async fn closed_issues_held_by_open_dependents() {
+    let t = T::new().await;
+    // A blocks B blocks C. E is closed and only a closed issue waits for it.
+    let a = t.issue("A", json!({})).await;
+    let b = t
+        .issue("B", json!({ "relations": { "blocked-by": [a.clone()] } }))
+        .await;
+    let c = t
+        .issue("C", json!({ "relations": { "blocked-by": [b.clone()] } }))
+        .await;
+    let e = t.issue("E", json!({})).await;
+    let f = t
+        .issue("F", json!({ "relations": { "blocked-by": [e.clone()] } }))
+        .await;
+    let status = async |key: &str, name: &str| {
+        t.ok(
+            &owner(),
+            "PATCH",
+            &format!("/v1/issues/{key}"),
+            json!({ "status": name }),
+        )
+        .await;
+    };
+    let held = async |key: &str| -> bool {
+        t.ok(&owner(), "GET", &format!("/v1/issues/{key}"), Value::Null)
+            .await["has_open_dependents"]
+            .as_bool()
+            .unwrap()
+    };
+    // An open issue is never held.
+    assert!(!held(&a).await);
+    for key in [&a, &b, &e, &f] {
+        status(key, "Done").await;
+    }
+    // C is open, so A and B stay held, A through the closed B.
+    assert!(held(&a).await);
+    assert!(held(&b).await);
+    assert!(!held(&c).await);
+    // Only a closed issue waits for E.
+    assert!(!held(&e).await);
+    assert!(!held(&f).await);
+
+    // The list carries the same flag.
+    let page = t.ok(&owner(), "POST", "/v1/issues/query", json!({})).await;
+    let flag = |key: &str| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["key"] == key)
+            .unwrap()["has_open_dependents"]
+            .clone()
+    };
+    assert_eq!(flag(&a), true);
+    assert_eq!(flag(&e), false);
+
+    // The closed blockers of C, through closed issues.
+    let found = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "closed_blockers_of": c }),
+        )
+        .await;
+    let mut keys: Vec<&str> = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, [a.as_str(), b.as_str()]);
+
+    // When the whole chain is closed, nothing holds it.
+    status(&c, "Canceled").await;
+    assert!(!held(&a).await);
+    assert!(!held(&b).await);
+    // Reopening the last step holds the chain again.
+    status(&c, "Todo").await;
+    assert!(held(&a).await);
+    // A trashed dependent holds nothing.
+    t.ok(&owner(), "DELETE", &format!("/v1/issues/{c}"), json!({}))
+        .await;
+    assert!(!held(&a).await);
+    t.stop().await;
+}
+
 #[tokio::test]
 async fn relations_cycles_and_duplicates() {
     let t = T::new().await;

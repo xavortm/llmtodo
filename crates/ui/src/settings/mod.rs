@@ -49,7 +49,8 @@ pub struct UiSettings {
     pub window: Option<[f32; 4]>,
     /// UI zoom, 1.0 for actual size.
     pub zoom: f32,
-    /// Hide closed tasks once they are `hide_closed_days` old.
+    /// Hide closed tasks once they are `hide_closed_days` old. 0 hides them
+    /// at once. A closed task that an open task waits for stays.
     pub hide_closed: bool,
     pub hide_closed_days: u32,
     /// Vim keys in the description editor.

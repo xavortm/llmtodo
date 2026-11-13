@@ -372,6 +372,31 @@ fn old_closed_tasks_hide_and_the_list_counts_them(cx: &mut TestAppContext) {
     );
 }
 
+/// LLM-214: 0 in the field saves, and a task closed a moment ago hides.
+#[gpui_kit::test]
+fn zero_days_saves_and_hides_a_task_closed_just_now(cx: &mut TestAppContext) {
+    let settings = UiSettings {
+        hide_closed: true,
+        ..Default::default()
+    };
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(settings, store.clone(), cx);
+    let recent = close_first_done(&view, 0, cx);
+    run(handle, &view, "settings", cx);
+    press(handle, &["j", "enter"], cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("cmd-a", cx);
+        window.input("0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(store.load().hide_closed_days, 0);
+    assert!(!visible_keys(&view, cx).contains(&recent));
+    // The stepper stays at 0 below it.
+    view.update(cx, |this, cx| this.set_hide_closed_days(0, cx));
+    assert_eq!(store.load().hide_closed_days, 0);
+}
+
 #[gpui_kit::test]
 fn a_recently_closed_task_stays_visible(cx: &mut TestAppContext) {
     let (_handle, view) = open(cx);

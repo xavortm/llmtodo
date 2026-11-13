@@ -504,9 +504,9 @@ impl IssueList {
         let now = jiff::Timestamp::now();
         let cutoff = self.hide_closed_after.map(|days| hide_cutoff(days, now));
         // A new close time moves the hide timer too.
-        cutoff.is_some_and(|c| {
-            old.closed_before(c) != new.closed_before(c) || old.closed_at != new.closed_at
-        }) || (self.reads_llm_status() && old.llm_rank(now) != new.llm_rank(now))
+        cutoff
+            .is_some_and(|c| old.hidden_by(c) != new.hidden_by(c) || old.closed_at != new.closed_at)
+            || (self.reads_llm_status() && old.llm_rank(now) != new.llm_rank(now))
             || old.deleted != new.deleted
             || old.key != new.key
             || old.title != new.title

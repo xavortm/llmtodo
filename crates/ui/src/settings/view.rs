@@ -143,17 +143,22 @@ impl Row {
 
 /// The line under the "Hide after" field: how many tasks the setting hides,
 /// or would hide while it is off.
-pub fn hidden_hint(on: bool, count: usize) -> String {
+pub fn hidden_hint(on: bool, days: u32, count: usize) -> String {
     let tasks = if count == 1 {
         "1 closed task".to_string()
     } else {
         format!("{count} closed tasks")
     };
-    match (on, count) {
+    let hint = match (on, count) {
         (_, 0) => "No closed task is this old".into(),
         (true, _) => format!("Hiding {tasks}"),
         (false, 1) => format!("{tasks} is this old"),
         (false, _) => format!("{tasks} are this old"),
+    };
+    if days == 0 {
+        format!("0 hides closed tasks at once. {hint}")
+    } else {
+        hint
     }
 }
 
@@ -209,7 +214,7 @@ impl SettingsView {
         let max_zoom = f64::from(percent(ZOOM_STEPS[ZOOM_STEPS.len() - 1]));
         let days = number_field(
             values.read(cx).hide_closed_days.to_string(),
-            1.,
+            0.,
             f64::from(MAX_HIDE_DAYS),
             cx,
         );
@@ -314,9 +319,7 @@ impl SettingsView {
         let Ok(days) = self.days.read(cx).value().parse::<u32>() else {
             return;
         };
-        if days >= 1 {
-            self.write(ViewEvent::SetHideClosedDays(days), window, cx);
-        }
+        self.write(ViewEvent::SetHideClosedDays(days), window, cx);
     }
 
     /// Replaces an empty or out-of-range entry with the value in use.
@@ -366,7 +369,7 @@ impl SettingsView {
                 } else {
                     values.hide_closed_days.saturating_sub(1)
                 }
-                .clamp(1, MAX_HIDE_DAYS);
+                .min(MAX_HIDE_DAYS);
                 self.write(ViewEvent::SetHideClosedDays(days), window, cx);
                 self.show_saved_days(window, cx);
             }
@@ -430,15 +433,16 @@ impl SettingsView {
         self.store
             .read(cx)
             .iter()
-            .filter(|i| !i.deleted && i.closed_before(cutoff))
+            .filter(|i| !i.deleted && i.hidden_by(cutoff))
             .count()
     }
 
     fn help(&self, row: Row, values: &UiSettings, cx: &App) -> Option<SharedString> {
         let text: SharedString = match row {
-            Row::HideClosed => "Hide Done and Canceled tasks from the list".into(),
+            Row::HideClosed => "Hide Done and Canceled tasks from the list. A task that an open task waits for stays".into(),
             Row::HideClosedDays => hidden_hint(
                 values.hide_closed,
+                values.hide_closed_days,
                 self.hidden_count(values.hide_closed_days, cx),
             )
             .into(),
@@ -778,11 +782,15 @@ mod tests {
 
     #[test]
     fn the_hint_counts_the_hidden_tasks() {
-        assert_eq!(hidden_hint(true, 0), "No closed task is this old");
-        assert_eq!(hidden_hint(false, 0), "No closed task is this old");
-        assert_eq!(hidden_hint(true, 1), "Hiding 1 closed task");
-        assert_eq!(hidden_hint(true, 23), "Hiding 23 closed tasks");
-        assert_eq!(hidden_hint(false, 1), "1 closed task is this old");
-        assert_eq!(hidden_hint(false, 23), "23 closed tasks are this old");
+        assert_eq!(hidden_hint(true, 14, 0), "No closed task is this old");
+        assert_eq!(hidden_hint(false, 14, 0), "No closed task is this old");
+        assert_eq!(hidden_hint(true, 14, 1), "Hiding 1 closed task");
+        assert_eq!(hidden_hint(true, 14, 23), "Hiding 23 closed tasks");
+        assert_eq!(hidden_hint(false, 14, 1), "1 closed task is this old");
+        assert_eq!(hidden_hint(false, 14, 23), "23 closed tasks are this old");
+        assert_eq!(
+            hidden_hint(true, 0, 3),
+            "0 hides closed tasks at once. Hiding 3 closed tasks"
+        );
     }
 }

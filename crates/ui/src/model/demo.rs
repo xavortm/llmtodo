@@ -342,6 +342,7 @@ pub fn issues(catalog: &Catalog) -> Vec<Issue> {
                 } else {
                     Vec::new()
                 },
+                has_open_dependents: false,
                 // Only tasks with usage have a cost.
                 cost: match ix {
                     0 => Some(4.27),

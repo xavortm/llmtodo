@@ -196,6 +196,84 @@ pub async fn dependents(conn: &mut SqliteConnection, start: &str) -> ApiResult<V
     .await?)
 }
 
+/// The closed, live issues of `ids` that an open, live issue still waits
+/// for, directly or through other closed issues. One recursive query walks
+/// down from the closed issues of `ids` through closed issues, and visits
+/// each reachable issue once. It uses the unique index on
+/// `(type, from_id, to_id)`. The rest runs in Rust, once per edge.
+pub async fn held_open(conn: &mut SqliteConnection, ids: &[String]) -> ApiResult<HashSet<String>> {
+    let rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "WITH RECURSIVE down(id) AS (
+            SELECT i.id FROM json_each(?) j
+            CROSS JOIN issues i ON i.id = j.value
+            CROSS JOIN statuses s ON s.id = i.status_id
+            WHERE i.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
+            UNION
+            SELECT d.id FROM down
+            CROSS JOIN relations r ON r.type = 'blocks' AND r.from_id = down.id
+            CROSS JOIN issues d ON d.id = r.to_id
+            CROSS JOIN statuses s ON s.id = d.status_id
+            WHERE d.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
+         )
+         SELECT down.id, d.id, s.type NOT IN ('completed', 'canceled')
+         FROM down
+         CROSS JOIN relations r ON r.type = 'blocks' AND r.from_id = down.id
+         CROSS JOIN issues d ON d.id = r.to_id
+         CROSS JOIN statuses s ON s.id = d.status_id
+         WHERE d.deleted_at IS NULL",
+    )
+    .bind(serde_json::to_string(ids)?)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(held_by(&rows))
+}
+
+/// The blockers held by an open dependent, from (blocker, dependent,
+/// dependent is open) edges. A closed blocker of a held issue is held too.
+fn held_by(edges: &[(String, String, bool)]) -> HashSet<String> {
+    let mut up: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut held: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<&str> = VecDeque::new();
+    for (blocker, dependent, open) in edges {
+        if *open {
+            if held.insert(blocker.clone()) {
+                queue.push_back(blocker);
+            }
+        } else {
+            up.entry(dependent).or_default().push(blocker);
+        }
+    }
+    while let Some(node) = queue.pop_front() {
+        for b in up.get(node).into_iter().flatten() {
+            if held.insert((*b).to_string()) {
+                queue.push_back(b);
+            }
+        }
+    }
+    held
+}
+
+/// The closed, live issues that `start` waits for, directly or through
+/// other closed issues. `start` itself is left out.
+pub async fn closed_blockers(conn: &mut SqliteConnection, start: &str) -> ApiResult<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "WITH RECURSIVE up(id) AS (
+            SELECT ?
+            UNION
+            SELECT b.id FROM up
+            CROSS JOIN relations r ON r.type = 'blocks' AND r.to_id = up.id
+            CROSS JOIN issues b ON b.id = r.from_id
+            CROSS JOIN statuses s ON s.id = b.status_id
+            WHERE b.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
+         )
+         SELECT id FROM up WHERE id <> ?",
+    )
+    .bind(start)
+    .bind(start)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 /// The keys on a shortest `blocks` path from `start` to `target`, both ends
 /// included. Closed and trashed issues count: reopening one must not be able
 /// to complete a cycle.

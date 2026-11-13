@@ -178,11 +178,13 @@ fn build_with<'i>(
         })
         .filter(|issue| {
             // The Trash shows what it holds, however old.
-            let hide = !issue.deleted && input.cutoff.is_some_and(|c| issue.closed_before(c));
+            let hide = !issue.deleted && input.cutoff.is_some_and(|c| issue.hidden_by(c));
             hidden += usize::from(hide);
+            // A task an open task waits for stays until its flag changes.
             if !hide
                 && !issue.deleted
                 && issue.status.is_closed()
+                && !issue.has_open_dependents
                 && let (Some(age), Some(at)) = (hide_age, issue.closed_at)
                 && let Ok(when) = at.checked_add(age)
             {

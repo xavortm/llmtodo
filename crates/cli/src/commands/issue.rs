@@ -214,6 +214,10 @@ pub struct QueryArgs {
     /// Open issues that wait for this issue, directly or through a chain.
     #[arg(long)]
     pub depends_on: Option<String>,
+    /// Closed issues that this issue waits for, directly or through other
+    /// closed issues.
+    #[arg(long)]
+    pub closed_blockers_of: Option<String>,
     /// Only issues an agent has claimed. With `--analyzing`, keeps either.
     #[arg(long)]
     pub claimed: bool,
@@ -287,6 +291,7 @@ impl QueryArgs {
             for_executor: self.for_executor,
             waiting_on: self.waiting_on,
             depends_on: self.depends_on,
+            closed_blockers_of: self.closed_blockers_of,
             text: self.text,
             similar: self.similar,
             trashed: self.trashed,

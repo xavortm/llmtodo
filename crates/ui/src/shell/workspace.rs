@@ -1409,7 +1409,7 @@ impl Workspace {
         self.mascot_on = settings.mascot;
         self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
-        self.hide_closed_days = settings.hide_closed_days.clamp(1, MAX_HIDE_DAYS);
+        self.hide_closed_days = settings.hide_closed_days.min(MAX_HIDE_DAYS);
         self.open_last_view = settings.open_last_view;
         let vim = settings.vim_editor;
         self.task.update(cx, |task, cx| {
@@ -2297,7 +2297,7 @@ impl Workspace {
     }
 
     pub fn set_hide_closed_days(&mut self, days: u32, cx: &mut Context<Self>) {
-        let days = days.clamp(1, MAX_HIDE_DAYS);
+        let days = days.min(MAX_HIDE_DAYS);
         if days != self.hide_closed_days {
             self.hide_closed_days = days;
             self.apply_hide_closed(cx);

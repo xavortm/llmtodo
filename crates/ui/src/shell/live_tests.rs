@@ -1174,6 +1174,88 @@ fn closing_a_blocker_updates_the_depth_of_its_dependents_live() {
     drop(backend);
 }
 
+/// LLM-214: a closed step stays held while a later step is open. When the
+/// last step closes or opens again, the app refreshes the closed steps
+/// before it, which get no event of their own.
+#[test]
+fn closing_the_last_step_refreshes_the_closed_steps_before_it_live() {
+    let live = Live::new();
+    let owner = live.client(None);
+    let create = |title: &str, blocked_by: Option<&str>| {
+        let mut relations = std::collections::BTreeMap::new();
+        if let Some(b) = blocked_by {
+            relations.insert(RelationInput::BlockedBy, vec![b.to_string()]);
+        }
+        live.rt
+            .block_on(owner.create_issue(&CreateIssue {
+                title: title.into(),
+                description: String::new(),
+                team: Some("LLM".into()),
+                status: None,
+                priority: None,
+                assignee: None,
+                labels: Vec::new(),
+                project: None,
+                milestone: None,
+                parent: None,
+                wanted_executor: None,
+                waiting_on: None,
+                relations,
+                estimate_minutes: None,
+                estimate_cost_usd: None,
+            }))
+            .unwrap()
+            .issue
+            .key
+            .to_string()
+    };
+    let first = create("First", None);
+    let second = create("Second", Some(&first));
+    let third = create("Third", Some(&second));
+    let set = |key: &str, status: &str| {
+        let update = UpdateIssue {
+            status: Some(status.into()),
+            ..Default::default()
+        };
+        live.rt.block_on(owner.update_issue(key, &update)).unwrap();
+    };
+    set(&first, "Done");
+    set(&second, "Done");
+
+    let (backend, mut events) = live.backend();
+    let held = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => s
+            .issues
+            .iter()
+            .find(|i| i.key.as_ref() == first)
+            .map(|i| i.has_open_dependents),
+        _ => None,
+    });
+    assert!(held, "the open third step holds the first");
+
+    let flags = |events: &mut _, label: &str| {
+        live.wait(events, label, |e| match e {
+            Event::Dependents(issues) => Some(
+                issues
+                    .iter()
+                    .map(|i| (i.key.to_string(), i.has_open_dependents))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            ),
+            _ => None,
+        })
+    };
+    set(&third, "Done");
+    let closed = flags(&mut events, "dependents after the close");
+    assert_eq!(closed.get(&first), Some(&false));
+    assert_eq!(closed.get(&second), Some(&false));
+
+    set(&third, "Todo");
+    let reopened = flags(&mut events, "dependents after the reopen");
+    assert_eq!(reopened.get(&first), Some(&true));
+    assert_eq!(reopened.get(&second), Some(&true));
+    drop(backend);
+}
+
 /// LLM-208: an order change writes one event, on the parent. The app
 /// refreshes every sub-issue, so the steps, depths and open blockers show.
 #[test]

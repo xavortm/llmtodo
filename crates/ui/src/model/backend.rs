@@ -1021,22 +1021,31 @@ async fn children(client: &Client, parent: &str) -> Result<Vec<String>, String> 
     }
 }
 
-/// Sends fresh copies of the tasks that wait for `key`. An unknown key is
-/// skipped.
+/// Sends fresh copies of the tasks that wait for `key`, and of the closed
+/// tasks that `key` waits for through closed tasks. A change to `key` can
+/// move the depth of the first and the `has_open_dependents` of the second
+/// (LLM-214). An unknown key is skipped.
 async fn dependents(client: &Client, key: &str, events: &Events) -> Result<(), String> {
-    let query = IssueQuery {
+    let down = IssueQuery {
         depends_on: Some(key.to_string()),
         ..Default::default()
     };
-    match client.query_all(&query).await {
-        Ok(issues) if issues.is_empty() => Ok(()),
-        Ok(issues) => {
-            send(events, Event::Dependents(issues));
-            Ok(())
+    let up = IssueQuery {
+        closed_blockers_of: Some(key.to_string()),
+        ..Default::default()
+    };
+    let mut issues = Vec::new();
+    for query in [down, up] {
+        match client.query_all(&query).await {
+            Ok(found) => issues.extend(found),
+            Err(ClientError::Unreachable(e)) => return Err(e),
+            Err(_) => {}
         }
-        Err(ClientError::Unreachable(e)) => Err(e),
-        Err(_) => Ok(()),
     }
+    if !issues.is_empty() {
+        send(events, Event::Dependents(issues));
+    }
+    Ok(())
 }
 
 async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
