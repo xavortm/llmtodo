@@ -284,6 +284,26 @@ fn style_colors(theme: &mut Theme, name: ColorTheme) {
     theme.primary_foreground = text_on(theme.primary, theme.primary_foreground, theme);
     theme.button_primary_foreground =
         text_on(theme.button_primary, theme.button_primary_foreground, theme);
+
+    // Apple's system green is too faint on white rows for the done check.
+    // It keeps 3:1, the WCAG rule for icons, on every row fill.
+    if name == ColorTheme::MacOs {
+        theme.success = ensure_contrast(theme.success, &row_fills(theme), 3.0);
+    }
+}
+
+/// Every fill a task row can have: plain, hovered, selected with and
+/// without focus, selected and hovered, marked, and pressed.
+pub fn row_fills(theme: &Theme) -> [Hsla; 7] {
+    [
+        theme.background,
+        theme.list_hover,
+        selection_bg(theme, true),
+        selection_bg(theme, false),
+        selection_hover(theme),
+        theme.list_active,
+        row_pressed(theme),
+    ]
 }
 
 fn monochrome(theme: &mut Theme) {
@@ -549,6 +569,23 @@ mod tests {
                     contrast(t.button_primary_foreground, fill) >= 4.5,
                     "{name:?} {mode:?} button text"
                 );
+            });
+        }
+    }
+
+    /// LLM-211: the done check reads on every row fill, at 3:1 or more.
+    #[gpui_kit::test]
+    fn macos_done_check_keeps_3_to_1_on_every_row(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            cx.update(|cx| {
+                set_theme(ColorTheme::MacOs, mode, cx);
+                let t = cx.theme();
+                for (ix, fill) in row_fills(t).into_iter().enumerate() {
+                    let fill = blend(fill, t.background);
+                    let ratio = contrast(t.success, fill);
+                    assert!(ratio >= 3.0, "{mode:?} fill {ix}: {ratio:.2}");
+                }
             });
         }
     }
