@@ -237,7 +237,7 @@ impl Workspace {
                 })
                 .tooltip(crate::shell::tooltip::Card::text(tip).builder())
                 .child(Icon::new(IconName::Database).xsmall())
-                .child(label)
+                .child(crate::shell::widgets::card_text(label, cx))
         });
         // Owner rule: the title bar is the plain page color, with no fill
         // and no bottom border.
@@ -282,7 +282,7 @@ impl Workspace {
                             .hover(move |s| s.bg(hover))
                             .active(move |s| s.bg(pressed))
                             .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
-                            .child(path.clone())
+                            .child(crate::shell::widgets::card_text(path.clone(), cx))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                                     path.to_string(),

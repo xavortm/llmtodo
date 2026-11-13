@@ -749,12 +749,14 @@ impl TaskView {
             .filter(|(id, _)| *id == issue.id)
             .map(|(_, breakdown)| breakdown);
         let theme = cx.theme();
-        let pair = |name: &'static str, text: String| {
+        // `card` marks a value that opens a hover card.
+        let pair = |name: &'static str, text: String, card: bool| {
             h_flex()
                 .gap_2()
                 .child(div().text_color(theme.muted_foreground).child(name))
                 .child(
                     div()
+                        .when(card, |d| widgets::card_underline(d, cx))
                         .font_family(theme.mono_font_family.clone())
                         .text_color(if text == MISSING {
                             theme.muted_foreground
@@ -772,16 +774,17 @@ impl TaskView {
         let cost = match issue.cost {
             Some(cost) => {
                 let card = Card::cost(cost, issue.status.is_closed(), breakdown);
-                let content = h_flex()
-                    .gap_2()
-                    .child(icon())
-                    .child(pair("Cost", crate::model::data::format_cost(cost)));
+                let content = h_flex().gap_2().child(icon()).child(pair(
+                    "Cost",
+                    crate::model::data::format_cost(cost),
+                    true,
+                ));
                 with_card("cost-tip", content, card).into_any_element()
             }
             None => h_flex()
                 .gap_2()
                 .child(icon())
-                .child(pair("Cost", MISSING.to_string()))
+                .child(pair("Cost", MISSING.to_string(), false))
                 .into_any_element(),
         };
         h_flex()
@@ -793,8 +796,8 @@ impl TaskView {
             .gap_x_3()
             .gap_y_1()
             .child(cost)
-            .child(pair("Time", time))
-            .child(pair("Estimate", estimate))
+            .child(pair("Time", time, false))
+            .child(pair("Estimate", estimate, false))
     }
 
     /// The button that starts a new dependency. It opens the palette with
@@ -924,10 +927,9 @@ impl TaskView {
             .active(move |s| s.bg(pressed))
             .child(Icon::new(status.icon()).xsmall().text_color(icon_color))
             .child(
-                div()
+                widgets::card_text(key.clone(), cx)
                     .font_family(mono)
-                    .text_color(text_color)
-                    .child(key.clone()),
+                    .text_color(text_color),
             )
             .on_click(move |_, window, cx| {
                 open_events.emit(ViewEvent::OpenKey(open_key.to_string()), window, cx);
@@ -1756,7 +1758,11 @@ impl TaskView {
                                 )
                                 .tooltip(why(title))
                             })
-                            .child(title.clone())
+                            .child(
+                                div()
+                                    .when(read_only.is_some(), |d| widgets::card_underline(d, cx))
+                                    .child(title.clone()),
+                            )
                             .on_click(move |_, window, cx| {
                                 events.emit(ViewEvent::SetTab(ix), window, cx);
                             })
@@ -1810,7 +1816,15 @@ impl TaskView {
                     .when(ix > 0, |d| d.border_l_1().border_color(border))
                     .text_color(if ix == active { fg } else { muted })
                     .when(read_only.is_some(), |d| d.child(eye()).tooltip(why(title)))
-                    .child(div().flex_1().min_w_0().truncate().child(title.clone()))
+                    .child(
+                        h_flex().flex_1().min_w_0().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .when(read_only.is_some(), |d| widgets::card_underline(d, cx))
+                                .child(title.clone()),
+                        ),
+                    )
                     // The last column's title ends with the Edit and
                     // Preview buttons, so the titles stay over their columns.
                     .when(ix == last, |d| d.pr_2().children(toggle.take()))

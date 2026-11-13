@@ -19,6 +19,23 @@ use gpui_kit::{
 use crate::model::data::{Issue, IssueId, LabelColor, WaitingOn};
 use crate::shell::view_events::{IssueAction, ViewEvent, ViewEvents};
 
+/// Gives text that opens a hover card a dashed underline, so the owner sees
+/// that hovering shows more (LLM-193). Every such text uses this helper, so
+/// they all look the same. GPUI text has no dashed underline, so this is a
+/// dashed bottom border in the muted text color. Icons, buttons and whole
+/// rows with a card do not take it, and neither does the LLM badge.
+pub fn card_underline<E: gpui_kit::Styled>(element: E, cx: &App) -> E {
+    element
+        .border_b_1()
+        .border_dashed()
+        .border_color(cx.theme().muted_foreground)
+}
+
+/// `child` in a div with the hover card underline. See [`card_underline`].
+pub fn card_text(child: impl IntoElement, cx: &App) -> gpui_kit::Div {
+    card_underline(div().child(child), cx)
+}
+
 /// The fill and the text color of the `Locked` badge. The owner chose
 /// color here, as an exception to the monochrome theme.
 pub fn lock_colors(cx: &App) -> (gpui_kit::Hsla, gpui_kit::Hsla) {
@@ -112,7 +129,7 @@ pub fn issue_key(
         .hover(move |s| s.bg(hover))
         .active(move |s| s.bg(pressed))
         .tooltip(crate::shell::tooltip::Card::text("Copy ID").builder())
-        .child(issue.key.clone())
+        .child(card_text(issue.key.clone(), cx))
         .on_click(move |_, window, cx| {
             events.emit(
                 ViewEvent::OnIssue(issue_id, IssueAction::CopyKey),
@@ -185,7 +202,7 @@ pub fn dependency_badge(issue: &Issue, text: gpui_kit::Hsla, cx: &App) -> Option
             .font_family(cx.theme().mono_font_family.clone())
             .text_color(text)
             .child(Icon::new(IconName::Workflow).xsmall())
-            .child(issue.depth.to_string())
+            .child(card_text(issue.depth.to_string(), cx))
             .tooltip(card.builder())
             .into_any_element(),
     )

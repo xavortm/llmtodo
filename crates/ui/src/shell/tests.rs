@@ -2777,6 +2777,23 @@ fn long_title_wraps_in_task_view(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// LLM-193: text that opens a hover card has a dashed underline in the
+/// muted text color.
+#[gpui_kit::test]
+fn hover_card_text_has_a_dashed_underline(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use gpui_kit::component::ActiveTheme as _;
+    cx.update(crate::init);
+    cx.update(|cx| {
+        let mut text = crate::shell::widgets::card_text("LLM-1", cx);
+        let style = text.style();
+        assert_eq!(style.border_style, Some(gpui_kit::BorderStyle::Dashed));
+        assert_eq!(style.border_widths.bottom, Some(px(1.).into()));
+        assert_eq!(style.border_widths.top, None);
+        assert_eq!(style.border_color, Some(cx.theme().muted_foreground));
+    });
+}
+
 /// LLM-63: the claim timer reads in whole minutes.
 #[test]
 fn claim_age_reads_in_minutes() {
