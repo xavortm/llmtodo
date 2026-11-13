@@ -3,6 +3,9 @@
 use super::*;
 use crate::model::pipeline::FailedSave;
 
+/// The start of the status message while the server is offline.
+const OFFLINE_PREFIX: &str = "Offline: ";
+
 impl Workspace {
     /// Applies one message from the API thread.
     pub fn apply_event(&mut self, event: backend::Event, cx: &mut Context<Self>) {
@@ -12,13 +15,18 @@ impl Workspace {
                     store.server_url = Some(url.clone().into());
                 });
                 let url = url.trim_start_matches("http://").to_string();
-                self.message = format!("Connected to {url}").into();
+                // The right side of the status bar shows "Live · url", so
+                // the left side says nothing. A reconnect clears the
+                // offline message.
+                if self.message.starts_with(OFFLINE_PREFIX) {
+                    self.message = SharedString::default();
+                }
                 self.set_connection(Connection::Online(url.into()), cx);
                 self.probe_trackers(cx);
             }
             backend::Event::Teams { data_dir, teams } => self.on_teams(data_dir, teams, cx),
             backend::Event::Offline { reason } => {
-                self.message = format!("Offline: {reason}. Retrying").into();
+                self.message = format!("{OFFLINE_PREFIX}{reason}. Retrying").into();
                 self.set_connection(Connection::Offline(reason.into()), cx);
             }
             backend::Event::Snapshot(snapshot) => {

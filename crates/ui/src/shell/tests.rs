@@ -4195,3 +4195,27 @@ fn the_status_count_opens_the_project_switcher(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-202: a connection says nothing on the left of the status bar, and a
+/// reconnect clears the offline message.
+#[gpui_kit::test]
+fn a_connection_leaves_the_status_message_empty(cx: &mut TestAppContext) {
+    use crate::model::backend::Event;
+    let (_handle, view) = open(cx);
+    let connected = || Event::Connected {
+        url: "http://127.0.0.1:7777".into(),
+    };
+    view.update(cx, |this, cx| this.apply_event(connected(), cx));
+    cx.read(|cx| assert_eq!(view.read(cx).message(), ""));
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            Event::Offline {
+                reason: "refused".into(),
+            },
+            cx,
+        )
+    });
+    cx.read(|cx| assert!(view.read(cx).message().starts_with("Offline")));
+    view.update(cx, |this, cx| this.apply_event(connected(), cx));
+    cx.read(|cx| assert_eq!(view.read(cx).message(), ""));
+}
