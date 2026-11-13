@@ -201,7 +201,7 @@ impl Render for CreateForm {
                 muted,
             ),
         };
-        div()
+        let root = div()
             .absolute()
             .top_12()
             .bottom_12()
@@ -284,7 +284,8 @@ impl Render for CreateForm {
                                     ),
                             ),
                     ),
-            )
+            );
+        crate::shell::motion::enter(root, "create-enter", cx)
     }
 }
 

@@ -77,10 +77,11 @@ pub enum Row {
     Zoom,
     OpenLast,
     Mascot,
+    Animations,
     StrikeDone,
 }
 
-const ROWS: [Row; 9] = [
+const ROWS: [Row; 10] = [
     Row::HideClosed,
     Row::HideClosedDays,
     Row::Vim,
@@ -89,6 +90,7 @@ const ROWS: [Row; 9] = [
     Row::Zoom,
     Row::OpenLast,
     Row::Mascot,
+    Row::Animations,
     Row::StrikeDone,
 ];
 
@@ -103,6 +105,7 @@ impl Row {
             Self::Zoom => "settings-row-zoom",
             Self::OpenLast => "settings-row-open-last",
             Self::Mascot => "settings-row-mascot",
+            Self::Animations => "settings-row-animations",
             Self::StrikeDone => "settings-row-strike-done",
         }
     }
@@ -117,6 +120,7 @@ impl Row {
             Self::Zoom => "Zoom",
             Self::OpenLast => "Open the last view at start",
             Self::Mascot => "Sudo the cat",
+            Self::Animations => "Animations",
             Self::StrikeDone => "Line through done tasks",
         }
     }
@@ -409,6 +413,7 @@ impl SettingsView {
                 );
             }
             Row::Mascot => self.write(ViewEvent::SetMascot(!values.mascot), window, cx),
+            Row::Animations => self.write(ViewEvent::SetAnimations(!values.animations), window, cx),
             Row::StrikeDone => {
                 self.write(ViewEvent::SetStrikeDone(!values.strike_done), window, cx)
             }
@@ -452,6 +457,8 @@ impl SettingsView {
                  and sleeps when nothing happens"
                 .into(),
             Row::Theme => "Every theme has a light and a dark mode".into(),
+            Row::Animations => "Short movement when panels open, menus appear, and you hover or click"
+                .into(),
             Row::StrikeDone => "A light line through the titles of Done tasks in the list".into(),
             Row::DarkMode | Row::Zoom => return None,
         };
@@ -522,6 +529,7 @@ impl SettingsView {
             Row::Zoom => self.number_field(row, &self.zoom, "%", false, window, cx),
             Row::OpenLast => switch(values.open_last_view),
             Row::Mascot => switch(values.mascot),
+            Row::Animations => switch(values.animations),
             Row::StrikeDone => switch(values.strike_done),
         }
     }

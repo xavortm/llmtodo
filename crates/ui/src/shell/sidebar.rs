@@ -267,13 +267,23 @@ impl Render for Sidebar {
         crate::render_count::bump::<Self>();
         // Borrowed for the whole render: the store does not change during it.
         let store = self.store.read(cx);
-        let catalog = &store.catalog;
+        // A copy, so a row's motion can take `cx`. The catalog is small.
+        let catalog = &store.catalog.clone();
         let rows = scopes(catalog);
         let counts = ScopeCounts::of(store);
+        // Each row's count and lock, read now, so the store's borrow ends
+        // before a row's motion takes `cx`.
+        let tallies: Vec<(usize, bool)> = rows
+            .iter()
+            .map(|row| (counts.get(&row.scope), counts.locked(&row.scope)))
+            .collect();
+        drop(counts);
         let active_row = self.active_row(&rows);
         let sidebar = cx.entity().downgrade();
         let focused = self.focus.is_focused(window);
-        let theme = cx.theme();
+        // A copy, so a row's motion can take `cx` while the colors stay
+        // in reach.
+        let theme = &cx.theme().clone();
         let hover = theme.list_hover;
         let pressed = crate::shell::theme::row_pressed(theme);
         let active_hover = crate::shell::theme::selection_hover(theme);
@@ -312,9 +322,19 @@ impl Render for Sidebar {
                 } else {
                     "real"
                 };
+                let frame = crate::shell::motion::fill(
+                    h_flex().id(ElementId::Name(format!("sidebar-tracker-{ix}").into())),
+                    ElementId::Name(format!("sidebar-tracker-fill-{ix}").into()),
+                    crate::shell::motion::Fill {
+                        rest: active.then_some(active_bg),
+                        hover: if active { active_hover } else { hover },
+                        pressed,
+                    },
+                    window,
+                    cx,
+                );
                 column = column.child(
-                    h_flex()
-                        .id(ElementId::Name(format!("sidebar-tracker-{ix}").into()))
+                    frame
                         .test_support()
                         .w_full()
                         .h_7()
@@ -324,9 +344,6 @@ impl Render for Sidebar {
                         .text_sm()
                         .rounded(theme.radius)
                         .cursor_pointer()
-                        .when(active, |this| this.bg(active_bg))
-                        .hover(move |s| s.bg(if active { active_hover } else { hover }))
-                        .active(move |s| s.bg(pressed))
                         .child(
                             Icon::new(IconName::Database)
                                 .small()
@@ -359,7 +376,7 @@ impl Render for Sidebar {
             column = column.child(div().my_2().mx_2().h_px().bg(theme.sidebar_border));
         }
         let mut seen: HashSet<String> = HashSet::new();
-        for (ix, row) in rows.into_iter().enumerate() {
+        for ((ix, row), (count, locked)) in rows.into_iter().enumerate().zip(tallies) {
             let Row {
                 heading,
                 scope,
@@ -380,8 +397,6 @@ impl Render for Sidebar {
             }
             let team = matches!(scope, Scope::Team(_));
             let active = active_row == Some(ix);
-            let count = counts.get(&scope);
-            let locked = counts.locked(&scope);
             let name = scope.name(catalog);
             let events = self.events.clone();
             let sidebar = sidebar.clone();
@@ -394,53 +409,60 @@ impl Render for Sidebar {
             } else {
                 format!("sidebar-{setting}-{ix}")
             };
-            let row = h_flex()
-                .id(ElementId::Name(id.into()))
-                .test_support()
-                .w_full()
-                .h_7()
-                .flex_none()
-                .when(team, |this| this.mt_3())
-                .px_2()
-                .when(nested, |this| this.pl_6())
-                .gap_2()
-                .text_sm()
-                .when(team, |this| this.font_weight(gpui_kit::FontWeight::MEDIUM))
-                .rounded(theme.radius)
-                .cursor_pointer()
-                .when(active, |this| this.bg(active_bg))
-                .hover(move |s| s.bg(if active { active_hover } else { hover }))
-                .active(move |s| s.bg(pressed))
-                // The dot sits in the left padding, so the icon and the
-                // name stay where they are.
-                .when(locked, |this| {
-                    this.relative().child(locked_dot(nested, locked_fill))
-                })
-                .child(match &scope {
-                    Scope::Project(slug) => crate::shell::icons::project_icon(
-                        &catalog.project_style(slug),
-                        theme.muted_foreground,
-                        cx,
-                    )
-                    .small(),
-                    _ => Icon::new(scope.icon())
-                        .small()
-                        .text_color(theme.muted_foreground),
-                })
-                .child(div().flex_1().min_w_0().truncate().child(name))
-                .when(count > 0, |this| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(count.to_string()),
-                    )
-                })
-                .on_click(move |_, window, cx| {
-                    sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
-                    events.emit(ViewEvent::PickScope(target.clone()), window, cx);
-                });
+            let fill_key = ElementId::Name(format!("{id}-fill").into());
+            let row = crate::shell::motion::fill(
+                h_flex().id(ElementId::Name(id.into())),
+                fill_key,
+                crate::shell::motion::Fill {
+                    rest: active.then_some(active_bg),
+                    hover: if active { active_hover } else { hover },
+                    pressed,
+                },
+                window,
+                cx,
+            )
+            .test_support()
+            .w_full()
+            .h_7()
+            .flex_none()
+            .when(team, |this| this.mt_3())
+            .px_2()
+            .when(nested, |this| this.pl_6())
+            .gap_2()
+            .text_sm()
+            .when(team, |this| this.font_weight(gpui_kit::FontWeight::MEDIUM))
+            .rounded(theme.radius)
+            .cursor_pointer()
+            // The dot sits in the left padding, so the icon and the
+            // name stay where they are.
+            .when(locked, |this| {
+                this.relative().child(locked_dot(nested, locked_fill))
+            })
+            .child(match &scope {
+                Scope::Project(slug) => crate::shell::icons::project_icon(
+                    &catalog.project_style(slug),
+                    theme.muted_foreground,
+                    cx,
+                )
+                .small(),
+                _ => Icon::new(scope.icon())
+                    .small()
+                    .text_color(theme.muted_foreground),
+            })
+            .child(div().flex_1().min_w_0().truncate().child(name))
+            .when(count > 0, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(count.to_string()),
+                )
+            })
+            .on_click(move |_, window, cx| {
+                sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
+                events.emit(ViewEvent::PickScope(target.clone()), window, cx);
+            });
             // A project row has a menu with the project colors.
             column = column.child(match &scope {
                 Scope::Project(slug) => row

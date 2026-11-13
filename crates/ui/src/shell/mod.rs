@@ -7,6 +7,7 @@ pub mod icons;
 pub mod issue_menu;
 pub mod layout;
 pub mod mascot;
+pub mod motion;
 pub mod palette;
 pub mod sidebar;
 pub mod split;

@@ -231,7 +231,7 @@ impl Render for ClaimsList {
                 }))
                 .into_any_element()
         };
-        div()
+        let root = div()
             .absolute()
             .top_10()
             .left_4()
@@ -273,6 +273,7 @@ impl Render for ClaimsList {
                             .child("Enter opens · Esc closes"),
                     )
                     .child(body),
-            )
+            );
+        crate::shell::motion::enter(root, "claims-enter", cx)
     }
 }

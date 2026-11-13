@@ -1250,20 +1250,31 @@ impl IssueList {
             (false, true) => selected_hover,
             (false, false) => hover,
         };
+        let rest = match (selected, marked) {
+            (true, true) => Some(cursor_on_marked),
+            (true, false) => Some(selected_bg),
+            (false, true) => Some(marked_bg),
+            (false, false) => None,
+        };
         let check = self.mark_box(row, id, marked, cx);
         let click_events = self.events.clone();
-        columns::row_frame()
-            .id(("row", row))
+        let frame = crate::shell::motion::fill(
+            columns::row_frame().id(("row", row)),
+            widgets::issue_part("row-fill", issue.id),
+            crate::shell::motion::Fill {
+                rest,
+                hover,
+                pressed,
+            },
+            window,
+            cx,
+        );
+        frame
             .test_support()
             .group(ROW_GROUP)
             .relative()
             .text_sm()
             .cursor_pointer()
-            .when(marked, |this| this.bg(marked_bg))
-            .when(selected, |this| this.bg(selected_bg))
-            .when(selected && marked, |this| this.bg(cursor_on_marked))
-            .hover(move |s| s.bg(hover))
-            .active(move |s| s.bg(pressed))
             .when(self.shows(Column::Check), |this| {
                 this.child(cell_with(Column::Check, &layout, check))
             })

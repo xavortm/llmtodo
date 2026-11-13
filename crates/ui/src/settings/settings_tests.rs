@@ -549,3 +549,59 @@ fn the_line_through_done_tasks_is_on_by_default_and_a_switch_turns_it_off(cx: &m
     let done = row_where(&view, |i| i.status.is_done(), cx);
     assert!(!struck(handle, done, cx));
 }
+
+/// Renders a frame, then counts the next-frame requests it left, which is
+/// what a running animation asks for.
+fn frames_asked(handle: AnyWindowHandle, cx: &mut TestAppContext) -> usize {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx)
+    })
+    .unwrap()
+}
+
+fn open_palette(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.open_palette(&crate::shell::workspace::OpenPalette, window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// LLM-195: animations are off by default, and then the palette opens
+/// with no animation frames. The switch turns them on and saves at once.
+/// On, the palette's entrance asks for frames only while it runs.
+#[gpui_kit::test]
+fn animations_are_off_by_default_and_a_switch_turns_them_on(cx: &mut TestAppContext) {
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
+    assert!(!cx.read(crate::shell::motion::on));
+    open_palette(handle, &view, cx);
+    // The first frame after the open may ask for one more, for focus.
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0, "off: nothing animates");
+    press(handle, &["escape"], cx);
+
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-animations", cx);
+    assert!(store.load().animations);
+    assert!(cx.read(crate::shell::motion::on));
+    press(handle, &["escape"], cx);
+
+    open_palette(handle, &view, cx);
+    frames_asked(handle, cx);
+    // The test clock stands still, so the entrance is still running.
+    assert!(frames_asked(handle, cx) > 0, "on: the palette animates in");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0, "the entrance stops when done");
+    press(handle, &["escape"], cx);
+
+    // The choice survives a restart.
+    cx.update(|cx| crate::shell::motion::set(false, cx));
+    let (_handle, _view) = open_with(store.load(), store.clone(), cx);
+    assert!(cx.read(crate::shell::motion::on));
+}

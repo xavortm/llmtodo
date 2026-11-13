@@ -66,6 +66,9 @@ pub struct UiSettings {
     /// Experimental: a light line through the titles of Done tasks in the
     /// task list.
     pub strike_done: bool,
+    /// Short animations for actions: panels, overlays, hover and press
+    /// (LLM-195). Off, the app changes state at once.
+    pub animations: bool,
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -96,6 +99,7 @@ impl Default for UiSettings {
             hidden_columns: Vec::new(),
             mascot: true,
             strike_done: true,
+            animations: false,
         }
     }
 }

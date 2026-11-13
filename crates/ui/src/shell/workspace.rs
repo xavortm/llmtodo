@@ -1418,6 +1418,7 @@ impl Workspace {
         self.window_frame = settings.window;
         self.layout.sidebar_open = settings.sidebar_open;
         self.mascot_on = settings.mascot;
+        crate::shell::motion::set(settings.animations, cx);
         self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
         self.hide_closed_days = settings.hide_closed_days.min(MAX_HIDE_DAYS);
@@ -1527,6 +1528,7 @@ impl Workspace {
                 .collect(),
             mascot: self.mascot_on,
             strike_done: list.strike_done,
+            animations: crate::shell::motion::on(cx),
         }
     }
 
@@ -2349,6 +2351,14 @@ impl Workspace {
         self.mascot_on = on;
         self.sync_mascot(cx);
         cx.notify();
+        self.persist(cx);
+    }
+
+    /// The Settings switch for animations. The change shows at once:
+    /// every view draws again with or without motion.
+    pub fn set_animations(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        crate::shell::motion::set(on, cx);
+        window.refresh();
         self.persist(cx);
     }
 
@@ -3386,7 +3396,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_palette(
+        &mut self,
+        _: &OpenPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.palette
             .update(cx, |palette, cx| palette.open(window, cx));
         cx.notify();

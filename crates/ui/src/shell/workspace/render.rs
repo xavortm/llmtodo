@@ -128,7 +128,19 @@ impl Workspace {
                     .size(size)
                     .size_range(range)
                     .fixed()
-                    .when(open, |this| this.child(cached(&self.task))),
+                    .when(open, |this| {
+                        this.child(
+                            div()
+                                .relative()
+                                .size_full()
+                                .child(cached(&self.task))
+                                .children(crate::shell::motion::reveal(
+                                    "task-reveal",
+                                    cx.theme().background,
+                                    cx,
+                                )),
+                        )
+                    }),
             )
     }
 
@@ -182,10 +194,16 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
+            .relative()
             .child(div().flex_1().min_h_0().child(cached(&self.sidebar)))
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
             })
+            .children(crate::shell::motion::reveal(
+                "sidebar-reveal",
+                theme.sidebar,
+                cx,
+            ))
     }
 
     /// The project of the scope on the left, its repo or folder on the
@@ -439,7 +457,7 @@ impl Workspace {
         )
     }
 
-    fn render_help(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_help(&self, cx: &mut Context<Self>) -> gpui_kit::Div {
         let theme = cx.theme();
         let mono = theme.mono_font_family.clone();
         div()
@@ -768,7 +786,13 @@ impl Render for Workspace {
             .when(self.create.read(cx).is_open(), |this| {
                 this.child(self.create.clone())
             })
-            .when(self.help_open, |this| this.child(self.render_help(cx)))
+            .when(self.help_open, |this| {
+                this.child(crate::shell::motion::enter(
+                    self.render_help(cx),
+                    "help-enter",
+                    cx,
+                ))
+            })
             .when(claims_open, |this| this.child(self.claims.clone()))
             .children(self.render_flash())
     }

@@ -71,6 +71,7 @@ impl Workspace {
             ViewEvent::SetColorTheme(name) => self.set_color_theme(name, window, cx),
             ViewEvent::SetOpenLastView(on) => self.set_open_last_view(on, cx),
             ViewEvent::SetMascot(on) => self.set_mascot(on, cx),
+            ViewEvent::SetAnimations(on) => self.set_animations(on, window, cx),
             ViewEvent::SetStrikeDone(on) => self.set_strike_done(on, cx),
             ViewEvent::SetZoom(level) => self.set_zoom(level, cx),
         }

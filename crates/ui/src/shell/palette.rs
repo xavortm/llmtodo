@@ -235,7 +235,7 @@ impl Render for Palette {
         let active_bg = theme.list_active;
         let fg = theme.foreground;
         let muted = theme.muted_foreground;
-        div()
+        let root = div()
             .absolute()
             .top_10()
             .left_0()
@@ -297,7 +297,8 @@ impl Render for Palette {
                                 cx.emit(PaletteEvent::Run(command.clone()));
                             }))
                     })),
-            )
+            );
+        crate::shell::motion::enter(root, "palette-enter", cx)
     }
 }
 

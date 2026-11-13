@@ -248,12 +248,27 @@ impl Card {
     /// Builds the tooltip view, for `.tooltip(...)` on any element.
     pub fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
         let card = self.clone();
-        Tooltip::element(move |_, cx| card.render(cx)).build(window, cx)
+        let view = Tooltip::element(move |_, cx| card.render(cx)).build(window, cx);
+        if crate::shell::motion::on(cx) {
+            gpui_kit::AppContext::new(cx, |_| FadeIn(view)).into()
+        } else {
+            view
+        }
     }
 
     /// The builder closure that `.tooltip(...)` takes.
     pub fn builder(self) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         move |window, cx| self.build(window, cx)
+    }
+}
+
+/// A tooltip that fades in when it appears, while animations are on. Each
+/// tooltip is a new view, so the fade plays once per tooltip.
+struct FadeIn(AnyView);
+
+impl gpui_kit::Render for FadeIn {
+    fn render(&mut self, _: &mut Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+        crate::shell::motion::fade_in(div().child(self.0.clone()), "tooltip-fade", cx)
     }
 }
 
