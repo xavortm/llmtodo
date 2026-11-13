@@ -15,6 +15,8 @@ use crate::model::data::Claim;
 
 /// The widest a card grows before its text wraps, in rems.
 pub const MAX_WIDTH: f32 = 20.;
+/// Line height of card text, as a multiple of its font size.
+pub const CARD_LINE_HEIGHT: f32 = 1.3;
 
 /// The content of one card tooltip.
 /// The most blockers one tooltip lists.
@@ -189,42 +191,56 @@ impl Card {
             .id("tooltip-card")
             .test_support()
             .max_w(gpui_kit::rems(MAX_WIDTH))
+            // Small info text: smaller than body text, with a tight line
+            // height, so the body never outsizes the heading (SPEC.md).
+            .text_xs()
+            .line_height(gpui_kit::relative(CARD_LINE_HEIGHT))
             .gap_1()
             .when(multi, |d| d.py_1())
             .when_some(self.heading.clone(), |d, heading| {
                 d.child(
                     div()
-                        .text_xs()
+                        .id("tooltip-card-heading")
+                        .test_support()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.popover_foreground)
                         .child(heading),
                 )
             })
             .when_some(self.body.clone(), |d, body| {
-                d.child(div().w_full().whitespace_normal().child(body))
+                d.child(
+                    div()
+                        .id("tooltip-card-body")
+                        .test_support()
+                        .w_full()
+                        .whitespace_normal()
+                        .child(body),
+                )
             })
             .when(!self.rows.is_empty(), |d| {
-                d.child(v_flex().gap_0p5().text_xs().children(self.rows.iter().map(
-                    |(label, value)| {
-                        h_flex()
-                            .items_start()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .w_16()
-                                    .flex_none()
-                                    .text_color(muted)
-                                    .child(label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .whitespace_normal()
-                                    .child(value.clone()),
-                            )
-                    },
-                )))
+                d.child(
+                    v_flex()
+                        .gap_0p5()
+                        .children(self.rows.iter().map(|(label, value)| {
+                            h_flex()
+                                .items_start()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w_16()
+                                        .flex_none()
+                                        .text_color(muted)
+                                        .child(label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .whitespace_normal()
+                                        .child(value.clone()),
+                                )
+                        })),
+                )
             })
             .into_any_element()
     }
@@ -251,4 +267,52 @@ pub fn with_card(id: impl Into<ElementId>, child: impl IntoElement, card: Card) 
         .child(child)
         .tooltip(card.builder())
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Context, IntoElement, ParentElement as _, Render, TestAppContext, Window,
+    };
+
+    use super::Card;
+
+    struct Host(Card);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            gpui_kit::div().child(self.0.render(cx))
+        }
+    }
+
+    /// LLM-198: a card's body text is no larger than its heading, and its
+    /// lines sit at 1.3 times the font size.
+    #[gpui_kit::test]
+    fn card_body_is_small_text_with_a_tight_line_height(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (handle, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |_, cx| {
+                    cx.new(|_| Host(Card::titled("Activity is read only").body("Short.")))
+                })
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let heading = window.find("tooltip-card-heading").bounds();
+            let body = window.find("tooltip-card-body").bounds();
+            assert!(
+                body.size.height <= heading.size.height,
+                "body {body:?} taller than heading {heading:?}"
+            );
+            let font = gpui_kit::rems(0.75).to_pixels(window.rem_size());
+            let ratio = body.size.height / font;
+            assert!(
+                (ratio - super::CARD_LINE_HEIGHT).abs() < 0.05,
+                "ratio {ratio}"
+            );
+        })
+        .unwrap();
+    }
 }

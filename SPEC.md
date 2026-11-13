@@ -431,6 +431,7 @@ Zed is the visual target. The app should feel like a Zed window that shows issue
 - A title bar, a sidebar panel, a main pane and a status bar, like Zed's workspace.
 - Dark theme by default, with a light theme. Colors come from theme tokens, so a Zed theme file can map onto them later.
 - Zed's text sizes and spacing. Monospace font for issue keys, branches and paths.
+- Small info elements, such as hover cards, captions and badges, use a smaller font than body text, the same size as their label, and a line height near 1.3 (LLM-198).
 - Icons come from Lucide, bundled as SVG files. Each status type, priority level and relation type gets one fixed icon.
 - Keyboard first. Every action has a key or a palette command, and the mouse is optional.
 
