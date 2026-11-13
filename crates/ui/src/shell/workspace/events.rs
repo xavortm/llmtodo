@@ -88,6 +88,9 @@ impl Workspace {
             backend::Event::CreateFailed { title, message } => {
                 self.message = format!("Could not create \"{title}\": {message}").into();
             }
+            backend::Event::ProjectFailed { slug, message } => {
+                self.message = format!("Project {slug}: {message}").into();
+            }
             backend::Event::ViewFailed { name, message } => {
                 self.message = format!("View {name}: {message}").into();
             }

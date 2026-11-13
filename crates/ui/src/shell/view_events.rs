@@ -54,6 +54,11 @@ pub enum ViewEvent {
     // The sidebar.
     PickScope(Scope),
     SwitchTracker(usize),
+    /// Set or clear a project's color, as `#rrggbb`.
+    SetProjectColor {
+        slug: String,
+        color: Option<String>,
+    },
     // The task view.
     EditDescription,
     ShowPreview,

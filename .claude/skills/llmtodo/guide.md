@@ -285,6 +285,17 @@ Optional context.
 
 Each question starts with a `### Q<n>.` heading. `- a)` lines are options. The answer runs from `**Answer:**` to the next question, and an empty answer means the question is open.
 
+## Give a new project an icon
+
+Every project gets a Lucide icon, and the agent picks it. The app draws it in the sidebar and the title bar. Do this when you create a project, or run `llmtodo init --create`:
+
+1. Read the project's name and description, and think of a word for what it is, such as `rocket`, `book`, `server` or `palette`.
+2. `llmtodo project icons <word>` lists the valid names that contain the word. Run it with no word for the full list.
+3. Pick one name from that list, and pass it on create: `llmtodo project create "Name" --icon rocket`, or `llmtodo init --create --project-icon rocket`.
+4. For an existing project, run `llmtodo project update <slug> --icon rocket`. `--icon none` clears it.
+
+The server refuses a name that is not in the list, with exit code 6. Leave the color alone: `--color` takes `#rrggbb`, but the owner picks colors in the app.
+
 ## Create tickets
 
 Search for duplicates first. `--similar` searches every project. Other queries use the default project from `.llmtodo.toml`; pass `--all-projects` to search them all.

@@ -57,6 +57,7 @@ Set up llmtodo in this repo: write .llmtodo.toml at the git root and install the
 - `--team-name <team_name>`: Name for a new team. Defaults to the key
 - `--project <project>`: Project slug or name. Asks on a terminal when left out. Without a terminal, the file names no project
 - `--project-name <project_name>`: Name for a new project. Defaults to the --project value
+- `--project-icon <project_icon>`: A Lucide icon for a new project, such as `rocket`. `llmtodo project icons` lists the valid names
 - `--create` (one of: true, false): Create the team or the project when it does not exist
 - `--force` (one of: true, false): Replace an existing .llmtodo.toml
 - `--no-skill` (one of: true, false): Do not install the skill in ~/.claude/skills/llmtodo
@@ -451,6 +452,8 @@ Delete a status no issue uses
 - `-d, --description <description>`
 - `--state <state>`
 - `--team <team>` (repeatable)
+- `--icon <icon>`: A Lucide icon name, such as `rocket`. `llmtodo project icons` lists the valid names
+- `--color <color>`: The icon's color as `#rrggbb`
 
 ### `llmtodo project update`
 
@@ -462,6 +465,14 @@ Delete a status no issue uses
 - `--add-team <add_team>` (repeatable)
 - `--remove-team <remove_team>` (repeatable)
 - `--local-path <local_path>`: The project's local folder, which the app shows when the project has no linked repo. `""` clears it. `llmtodo init` and calls from the repo set it on their own
+- `--icon <icon>`: A Lucide icon name, such as `rocket`. `llmtodo project icons` lists the valid names. `none` clears it
+- `--color <color>`: The icon's color as `#rrggbb`. `none` clears it
+
+### `llmtodo project icons`
+
+List the icon names a project can use. It needs no server
+
+- `<filter>`: Keep only names that contain this text, such as `rocket`
 
 ### `llmtodo project delete`
 

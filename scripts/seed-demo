@@ -82,8 +82,8 @@ as_agent() {
 owner team create DEMO "Demo"
 owner status create DEMO "User review" --type started --color "#5e6ad2" --review
 owner settings set --default-team DEMO --workspace-name "llmtodo demo"
-owner project create "Demo App" --slug demo-app --team DEMO -d "A sample project with every kind of content."
-owner project create "Website" --slug website --team DEMO --state planned
+owner project create "Demo App" --slug demo-app --team DEMO -d "A sample project with every kind of content." --icon rocket --color "#0090ff"
+owner project create "Website" --slug website --team DEMO --state planned --icon globe --color "#d6409f"
 owner milestone create "Beta" --project demo-app --target-date 2026-12-15 -d "First public beta."
 owner milestone create "1.0" --project demo-app --target-date 2027-02-01
 

@@ -125,7 +125,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 - **Team**: key such as `ALX`, name, statuses, and the next issue number.
 - **Status**: belongs to a team. It has a name, a type, a color and a position.
 - **Label** and **label group**: workspace-wide, so every team shares them.
-- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. Any CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet, whether or not the call starts the server. The check runs once per CLI process and costs one project read (LLM-215). `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213).
+- **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. Any CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet, whether or not the call starts the server. The check runs once per CLI process and costs one project read (LLM-215). `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213). A project also has an optional icon, a Lucide name, and an optional color, `#rrggbb`. Agents pick the icon through the CLI, from `llmtodo project icons`. The owner picks the color in the app. The server refuses an icon that is not in the app's icon list, and a color in another form (LLM-196).
 - **Milestone**: belongs to one project.
 - **Issue**: belongs to one team. It has an optional project, milestone and parent. It also has `waiting_on`, which is empty, `agent` or `owner`.
 - **Relation**: a typed edge between two issues.
@@ -461,6 +461,8 @@ Zed is the visual target. The app should feel like a Zed window that shows issue
 - Zed's text sizes and spacing. Monospace font for issue keys, branches and paths.
 - Small info elements, such as hover cards, captions and badges, use a smaller font than body text, the same size as their label, and a line height near 1.3 (LLM-198).
 - Icons come from Lucide, bundled as SVG files. Each status type, priority level and relation type gets one fixed icon.
+- Each project shows its own icon in the sidebar and the title bar. A project without one shows a folder. The icon takes the project's color. Like tag colors, project colors are an exception to the monochrome theme. Without a color, the icon stays monochrome. The owner sets the color from the project row's right-click menu or `:project-color`, out of 8 presets that keep 3:1 contrast in every theme, plus None (LLM-196).
+- The app embeds every Lucide icon, so it can draw any icon an agent picks. `llmtodo_core::project_style` holds the one list of names. The server checks it, and a test in `ui` checks that it matches GPUI Kit's icons (LLM-196).
 - Keyboard first. Every action has a key or a palette command, and the mouse is optional.
 
 ### Views in v1

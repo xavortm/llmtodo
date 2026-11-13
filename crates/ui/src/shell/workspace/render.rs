@@ -195,6 +195,7 @@ impl Workspace {
         let update = self.render_update_button();
         let (name, place) = self.title_place(cx);
         let place = self.render_title_place(place, cx);
+        let project_icon = self.title_project_icon(cx);
         let theme = cx.theme();
         let sidebar_open = self.sidebar_shown();
         // Which tracker is open, when there is a choice. The real one says
@@ -272,6 +273,7 @@ impl Workspace {
                                         "Show sidebar (Cmd-B)"
                                     }),
                                 ))
+                                .children(project_icon)
                                 .child(
                                     div()
                                         .id("project-name")
@@ -282,6 +284,28 @@ impl Workspace {
                                 .children(tracker),
                         )
                         .child(h_flex().gap_2().children(update).children(place)),
+                ),
+        )
+    }
+
+    /// The icon of the scope's project, in its color, before its name in
+    /// the title bar. None for other scopes and for development runs.
+    fn title_project_icon(&self, cx: &App) -> Option<impl IntoElement> {
+        if self.project_dir.is_some() {
+            return None;
+        }
+        let catalog = &self.store.read(cx).catalog;
+        let slug = super::scope_project(&self.list.read(cx).scope, catalog)?;
+        catalog.projects.iter().find(|p| p.key == slug)?;
+        let style = catalog.project_style(&slug);
+        Some(
+            div()
+                .id("title-project-icon")
+                .test_support()
+                .flex_none()
+                .child(
+                    crate::shell::icons::project_icon(&style, cx.theme().muted_foreground, cx)
+                        .small(),
                 ),
         )
     }

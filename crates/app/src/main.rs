@@ -12,8 +12,8 @@ use llmtodo_ui::shell::workspace::{self, Workspace};
 use llmtodo_ui::shell::{app_icon, app_menus, theme};
 
 fn main() {
-    // AllAssets bundles every Lucide icon. The real app should list the
-    // icons it uses with `icon_assets!` to keep the binary small.
+    // AllAssets bundles every Lucide icon, so the app can draw any project
+    // icon an agent picks. It adds 0.9 MiB to the release binary (LLM-196).
     gpui_kit::application().with_assets(AllAssets).run(|cx| {
         llmtodo_ui::init(cx);
         // GPUI loads remote images in the Markdown preview through this.

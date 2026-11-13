@@ -15,10 +15,11 @@ pub struct ProjectRow {
     pub updated_at: String,
     pub deleted_at: Option<String>,
     pub local_path: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
 }
 
-const COLS: &str =
-    "id, slug, name, description, state, created_at, updated_at, deleted_at, local_path";
+const COLS: &str = "id, slug, name, description, state, created_at, updated_at, deleted_at, local_path, icon, color";
 
 /// Turns a name into a slug: lower case, words joined by `-`.
 pub fn slugify(name: &str) -> String {
@@ -92,6 +93,8 @@ pub async fn all_to_api(
             name: p.name,
             description: p.description,
             local_path: p.local_path,
+            icon: p.icon,
+            color: p.color,
             state: p.state.parse().unwrap_or(ProjectState::Backlog),
             created_at: parse_ts(&p.created_at),
             updated_at: parse_ts(&p.updated_at),
@@ -224,6 +227,26 @@ pub async fn add_team(
 pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
     sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
         .bind(name)
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+/// Sets or clears the project's icon name.
+pub async fn set_icon(c: &mut SqliteConnection, icon: Option<&str>, id: &str) -> ApiResult<()> {
+    sqlx::query("UPDATE projects SET icon = ? WHERE id = ?")
+        .bind(icon)
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+/// Sets or clears the project's color.
+pub async fn set_color(c: &mut SqliteConnection, color: Option<&str>, id: &str) -> ApiResult<()> {
+    sqlx::query("UPDATE projects SET color = ? WHERE id = ?")
+        .bind(color)
         .bind(id)
         .execute(&mut *c)
         .await?;

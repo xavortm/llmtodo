@@ -4,6 +4,88 @@
 use super::*;
 
 impl Workspace {
+    /// `:project-color <color>` colors the scope's project, or the project
+    /// of the selected task. `:project-color <project> <color>` names the
+    /// project. The color is a preset name, `none` or `#rrggbb`.
+    fn command_project_color(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        let catalog = self.store.read(cx).catalog.clone();
+        let (slug, color) = match words.as_slice() {
+            [color] => (self.current_project(cx), *color),
+            [project, color] => match Self::find_place(&catalog.projects, project) {
+                Some(slug) => (Some(slug), *color),
+                None => return format!("Unknown project: {project}"),
+            },
+            _ => return "Pick a color: :project-color <color>".into(),
+        };
+        let Some(slug) = slug else {
+            return "Open a project first, or name one: :project-color <project> <color>".into();
+        };
+        let color = color.to_lowercase();
+        let hex = if color == "none" {
+            None
+        } else if let Some((_, hex)) = crate::shell::icons::PROJECT_COLORS
+            .iter()
+            .find(|(name, _)| *name == color)
+        {
+            Some(hex.to_string())
+        } else if let Some(hex) = llmtodo_core::project_style::normalize_color(&color) {
+            Some(hex)
+        } else {
+            return format!("Unknown color: {color}");
+        };
+        self.set_project_color(&slug, hex, cx)
+    }
+
+    /// The scope's project, else the project of the selected task.
+    fn current_project(&self, cx: &App) -> Option<SharedString> {
+        if let Scope::Project(slug) = &self.list.read(cx).scope {
+            return Some(slug.clone());
+        }
+        let store = self.store.read(cx);
+        self.target(cx)
+            .and_then(|id| store.get(id))
+            .and_then(|i| i.project.clone())
+    }
+
+    /// Colors a project in the app at once, and asks the server to save it.
+    /// Returns the message to show.
+    pub(crate) fn set_project_color(
+        &mut self,
+        slug: &str,
+        color: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let Some(name) = self
+            .store
+            .read(cx)
+            .catalog
+            .projects
+            .iter()
+            .find(|p| p.key.as_ref() == slug)
+            .map(|p| p.name.clone())
+        else {
+            return format!("Unknown project: {slug}");
+        };
+        self.store.update(cx, |store, cx| {
+            store
+                .catalog
+                .set_project_color(slug, color.clone().map(Into::into));
+            cx.notify();
+        });
+        self.request(backend::Request::SetProjectColor {
+            slug: slug.to_string(),
+            color: color.clone(),
+        });
+        match color.as_deref() {
+            None => format!("{name} has no color"),
+            Some(hex) => match crate::shell::icons::project_color_name(hex) {
+                Some(preset) => format!("{name} is {preset}"),
+                None => format!("{name} is {hex}"),
+            },
+        }
+    }
+
     pub fn run_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
         let mut words = command.trim().trim_start_matches(':').split_whitespace();
         let verb = words.next().unwrap_or_default();
@@ -132,6 +214,7 @@ impl Workspace {
                 self.set_scope(Scope::All, cx);
                 None
             }
+            ("project-color", _) => Some(self.command_project_color(arg, cx)),
             ("project", _) => match Self::find_place(&catalog.projects, arg) {
                 Some(slug) => {
                     self.set_scope(Scope::Project(slug), cx);

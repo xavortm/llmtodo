@@ -169,6 +169,12 @@ pub enum Request {
     DeleteView {
         name: String,
     },
+    /// Set or clear a project's color, as `#rrggbb`. A failure comes back
+    /// as `ProjectFailed`. The new color comes back as a catalog change.
+    SetProjectColor {
+        slug: String,
+        color: Option<String>,
+    },
     /// Create an issue. The answer is the new issue, then `Created`.
     Create(Box<CreateIssue>),
     /// Read again whether this machine is the primary copy.
@@ -266,6 +272,11 @@ pub enum Event {
     },
     CreateFailed {
         title: String,
+        message: String,
+    },
+    /// A project's color could not be saved.
+    ProjectFailed {
+        slug: String,
         message: String,
     },
     /// A saved view could not be read, saved or deleted.
@@ -545,6 +556,12 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                             message: "the server is offline, so nothing was saved".into(),
                         });
                     }
+                    Some(Request::SetProjectColor { slug, .. }) => {
+                        send(&events, Event::ProjectFailed {
+                            slug,
+                            message: "the server is offline, so nothing was saved".into(),
+                        });
+                    }
                     Some(Request::Reload) => break,
                 },
             }
@@ -791,6 +808,17 @@ async fn session(
                         Err(e) => Event::ViewFailed { name, message: e.to_string() },
                     };
                     send(events, event);
+                }
+                Some(Request::SetProjectColor { slug, color }) => {
+                    let update = llmtodo_client::types::UpdateProject {
+                        color: Some(color.unwrap_or_default()),
+                        ..Default::default()
+                    };
+                    match client.update_project(&slug, &update).await {
+                        Ok(_) => {}
+                        Err(ClientError::Unreachable(e)) => return Err(e),
+                        Err(e) => send(events, Event::ProjectFailed { slug, message: e.to_string() }),
+                    }
                 }
             },
             done = async { (&mut flushing.as_mut().expect("a running flush").0).await },

@@ -3,7 +3,7 @@
 //! `PaletteEvent::Run`, and the workspace runs the command.
 
 use gpui_kit::component::{
-    ActiveTheme as _,
+    ActiveTheme as _, Sizable as _,
     input::{self as ed, InputEvent, InputState},
     v_flex,
 };
@@ -271,7 +271,15 @@ impl Render for Palette {
                     )
                     .children(matches.into_iter().enumerate().map(|(ix, command)| {
                         let selected = ix == self.selected;
-                        div()
+                        let swatch = command.strip_prefix("project-color ").map(|name| {
+                            let hex = crate::shell::icons::PROJECT_COLORS
+                                .iter()
+                                .find(|(n, _)| *n == name)
+                                .map(|(_, hex)| *hex);
+                            crate::shell::icons::swatch_icon(hex, cx).xsmall()
+                        });
+                        gpui_kit::component::h_flex()
+                            .gap_2()
                             .id(SharedString::from(format!("palette-{command}")))
                             .px_2()
                             .py_0p5()
@@ -282,6 +290,7 @@ impl Render for Palette {
                             .when(selected, |this| this.bg(active_bg))
                             .when(!selected, |this| this.hover(move |s| s.bg(hover)))
                             .active(move |s| s.bg(pressed))
+                            .children(swatch)
                             .child(command.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.close(window, cx);

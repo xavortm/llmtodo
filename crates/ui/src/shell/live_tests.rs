@@ -1743,3 +1743,47 @@ fn the_snapshot_arrives_mapped() {
     assert_eq!(issue.title.as_ref(), "App on live data");
     assert!(loaded.catalog.teams.iter().any(|t| t.0.as_ref() == "LLM"));
 }
+
+/// LLM-196: the app saves a project color on the server, the new color
+/// comes back as a catalog change, and a bad color comes back as an error.
+#[test]
+fn backend_saves_a_project_color() {
+    let live = Live::new();
+    let owner = live.client(None);
+    live.rt
+        .block_on(
+            owner.create_project(
+                &serde_json::from_value(json!({"name": "App", "slug": "app", "icon": "rocket"}))
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    backend.request(Request::SetProjectColor {
+        slug: "app".into(),
+        color: Some("#12a594".into()),
+    });
+    let project = live.wait(&mut events, "catalog with the color", |e| match e {
+        Event::Catalog(s) => s
+            .projects
+            .iter()
+            .find(|p| p.slug == "app" && p.color.is_some())
+            .cloned(),
+        _ => None,
+    });
+    assert_eq!(project.color.as_deref(), Some("#12a594"));
+    assert_eq!(project.icon.as_deref(), Some("rocket"));
+
+    backend.request(Request::SetProjectColor {
+        slug: "app".into(),
+        color: Some("teal".into()),
+    });
+    let message = live.wait(&mut events, "refused color", |e| match e {
+        Event::ProjectFailed { message, .. } => Some(message.clone()),
+        _ => None,
+    });
+    assert!(message.contains("#rrggbb"), "{message}");
+}

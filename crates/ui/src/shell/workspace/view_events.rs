@@ -36,6 +36,10 @@ impl Workspace {
             ViewEvent::SwitchTracker(ix) => {
                 self.switch_tracker(ix, cx);
             }
+            ViewEvent::SetProjectColor { slug, color } => {
+                self.message = self.set_project_color(&slug, color, cx).into();
+                cx.notify();
+            }
             ViewEvent::EditDescription => self.edit_description(&EditDescription, window, cx),
             ViewEvent::ShowPreview => self.show_preview(window, cx),
             ViewEvent::SetTab(ix) => self.set_tab(ix, cx),

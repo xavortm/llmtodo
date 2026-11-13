@@ -110,6 +110,8 @@ open_enum!(
         Name => "name",
         Title => "title",
         Slug => "slug",
+        Icon => "icon",
+        Color => "color",
         Key => "key",
         Description => "description",
         Body => "body",

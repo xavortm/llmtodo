@@ -656,6 +656,16 @@ pub struct DocEntry {
     pub version: i64,
 }
 
+/// A project's own icon and color. Agents pick the icon through the CLI,
+/// and the owner picks the color in the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectStyle {
+    /// A Lucide name, such as `rocket`, from `llmtodo_core::project_style`.
+    pub icon: Option<SharedString>,
+    /// A color as `#rrggbb`.
+    pub color: Option<SharedString>,
+}
+
 /// The statuses of every team and the labels, from the server.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
@@ -674,6 +684,9 @@ pub struct Catalog {
     /// Each project's local folder, by project slug. The CLI saves it.
     /// The title bar shows it when the project has no repo.
     pub project_folders: Vec<(SharedString, String)>,
+    /// Each project's icon and color, by project slug. Only projects with
+    /// one of the two are listed.
+    pub project_styles: Vec<(SharedString, ProjectStyle)>,
     /// Every saved view, by name. A view's key is its name.
     pub views: Vec<Place>,
     /// Every live project document, by title.
@@ -771,6 +784,18 @@ impl Catalog {
             .filter(|p| p.deleted_at.is_none())
             .filter_map(|p| Some((p.slug.clone().into(), p.local_path.clone()?)))
             .collect();
+        let project_styles = projects
+            .iter()
+            .filter(|p| p.deleted_at.is_none())
+            .filter(|p| p.icon.is_some() || p.color.is_some())
+            .map(|p| {
+                let style = ProjectStyle {
+                    icon: p.icon.clone().map(Into::into),
+                    color: p.color.clone().map(Into::into),
+                };
+                (p.slug.clone().into(), style)
+            })
+            .collect();
         let project_teams = projects
             .iter()
             .filter(|p| p.deleted_at.is_none())
@@ -835,6 +860,7 @@ impl Catalog {
             projects,
             project_repos,
             project_folders,
+            project_styles,
             views,
             documents,
             labels,
@@ -866,6 +892,29 @@ impl Catalog {
             .iter()
             .find(|(s, _)| s.as_ref() == slug)
             .map(|(_, web)| web.as_str())
+    }
+
+    /// A project's icon and color. Both are empty when it has neither.
+    pub fn project_style(&self, slug: &str) -> ProjectStyle {
+        self.project_styles
+            .iter()
+            .find(|(s, _)| s.as_ref() == slug)
+            .map(|(_, style)| style.clone())
+            .unwrap_or_default()
+    }
+
+    /// Sets a project's color in this copy, before the server answers.
+    pub fn set_project_color(&mut self, slug: &str, color: Option<SharedString>) {
+        match self
+            .project_styles
+            .iter_mut()
+            .find(|(s, _)| s.as_ref() == slug)
+        {
+            Some((_, style)) => style.color = color,
+            None => self
+                .project_styles
+                .push((slug.to_string().into(), ProjectStyle { icon: None, color })),
+        }
     }
 
     /// A project's local folder, when the CLI saved one.

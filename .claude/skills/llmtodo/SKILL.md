@@ -16,6 +16,8 @@ A repo uses llmtodo when its git root has a `.llmtodo.toml` file. The file names
 3. Add `--create` when the team or the project does not exist yet. Add `--team-name "<name>"` and `--project-name "<name>"` to name new ones.
 4. `llmtodo init` refuses to replace an existing `.llmtodo.toml`. Pass `--force` only when the owner asks for a new team or project.
 
+5. A new project needs an icon. Pick one from `llmtodo project icons <word>` and pass `--project-icon <name>`. See "Give a new project an icon" in the guide.
+
 On a terminal, `llmtodo init` with no flags asks for each value. `llmtodo init` also installs this skill in `~/.claude/skills/llmtodo`. `llmtodo skill install` does only that step.
 
 ## The short version

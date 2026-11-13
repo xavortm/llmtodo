@@ -150,6 +150,19 @@ pub(crate) enum TitlePlace {
     None,
 }
 
+/// The project a scope shows: the project itself, or a document's project.
+pub(crate) fn scope_project(scope: &Scope, catalog: &Catalog) -> Option<SharedString> {
+    match scope {
+        Scope::Project(slug) => Some(slug.clone()),
+        Scope::Document(id) => catalog
+            .documents
+            .iter()
+            .find(|d| d.id.to_string() == id.as_ref())
+            .map(|d| d.project.clone()),
+        _ => None,
+    }
+}
+
 /// The title bar's name and place. `LLMTODO_PROJECT_DIR`, passed as
 /// `dev_dir`, wins for development runs. Then the project of the scope
 /// gives its name and its repo, else its local folder. Any other scope
@@ -178,16 +191,8 @@ pub(crate) fn title_place(
             TitlePlace::Folder(short(&dir.to_string_lossy())),
         );
     }
-    let slug = match scope {
-        Scope::Project(slug) => Some(slug.clone()),
-        Scope::Document(id) => catalog
-            .documents
-            .iter()
-            .find(|d| d.id.to_string() == id.as_ref())
-            .map(|d| d.project.clone()),
-        _ => None,
-    };
-    let project = slug.and_then(|slug| catalog.projects.iter().find(|p| p.key == slug));
+    let project = scope_project(scope, catalog)
+        .and_then(|slug| catalog.projects.iter().find(|p| p.key == slug));
     let Some(project) = project else {
         return (tracker.to_string().into(), TitlePlace::None);
     };
@@ -1318,6 +1323,12 @@ impl Workspace {
                 .iter()
                 .map(|p| format!("project {}", p.key)),
         );
+        out.push("project-color none".into());
+        out.extend(
+            crate::shell::icons::PROJECT_COLORS
+                .iter()
+                .map(|(name, _)| format!("project-color {name}")),
+        );
         out.extend(catalog.views.iter().map(|v| format!("view {}", v.key)));
         let store = self.store.read(cx);
         if store.trackers.len() > 1 {
@@ -1706,6 +1717,12 @@ impl Workspace {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    /// The catalog the app holds now.
+    #[cfg(test)]
+    pub fn store_catalog<'a>(&self, cx: &'a App) -> &'a Catalog {
+        &self.store.read(cx).catalog
+    }
+
     pub fn message(&self) -> &str {
         &self.message
     }

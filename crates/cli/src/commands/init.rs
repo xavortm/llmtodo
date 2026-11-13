@@ -29,6 +29,10 @@ pub struct InitArgs {
     /// Name for a new project. Defaults to the --project value.
     #[arg(long)]
     pub project_name: Option<String>,
+    /// A Lucide icon for a new project, such as `rocket`.
+    /// `llmtodo project icons` lists the valid names.
+    #[arg(long)]
+    pub project_icon: Option<String>,
     /// Create the team or the project when it does not exist.
     #[arg(long)]
     pub create: bool,
@@ -265,6 +269,8 @@ pub async fn run(app: &App, a: InitArgs) -> CliResult {
                             description: String::new(),
                             state: None,
                             teams: vec![team.clone()],
+                            icon: a.project_icon.clone(),
+                            color: None,
                         })
                         .await?
                         .slug,

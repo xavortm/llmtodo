@@ -1060,3 +1060,59 @@ async fn projects_remember_their_local_folder() {
     assert_eq!(path(&t), Value::from(want));
     t.stop().await;
 }
+
+/// LLM-196: a project's icon and color. The server refuses an unknown icon
+/// and a bad color with exit code 6, and `none` clears each one.
+#[tokio::test(flavor = "multi_thread")]
+async fn projects_have_an_icon_and_a_color() {
+    let t = T::new().await;
+    let p = t.json(
+        "s1",
+        &[
+            "project", "create", "App", "--icon", "rocket", "--color", "#5D9AA9",
+        ],
+    );
+    assert_eq!(p["icon"], "rocket");
+    assert_eq!(p["color"], "#5d9aa9");
+    assert_eq!(
+        t.code(
+            "s1",
+            &["project", "create", "Bad", "--icon", "no-such-icon"]
+        ),
+        6
+    );
+
+    let view = |t: &T| t.json("s1", &["project", "view", "app"]);
+    t.json("s1", &["project", "update", "app", "--icon", "hard-hat"]);
+    assert_eq!(view(&t)["icon"], "hard-hat");
+    assert_eq!(
+        t.code("s1", &["project", "update", "app", "--icon", "Rocket"]),
+        6
+    );
+    assert_eq!(
+        t.code("s1", &["project", "update", "app", "--color", "teal"]),
+        6
+    );
+    assert_eq!(view(&t)["icon"], "hard-hat");
+    assert_eq!(view(&t)["color"], "#5d9aa9");
+
+    t.json(
+        "s1",
+        &[
+            "project", "update", "app", "--icon", "none", "--color", "none",
+        ],
+    );
+    assert_eq!(view(&t)["icon"], Value::Null);
+    assert_eq!(view(&t)["color"], Value::Null);
+
+    let names = t.json("s1", &["project", "icons", "rocket"]);
+    let names: Vec<&str> = names
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"rocket"));
+    assert!(names.iter().all(|n| n.contains("rocket")));
+    t.stop().await;
+}

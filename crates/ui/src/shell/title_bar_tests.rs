@@ -148,3 +148,22 @@ fn the_title_bar_follows_the_scope(cx: &mut TestAppContext) {
     view.update(cx, |this, cx| this.set_scope(Scope::All, cx));
     assert_eq!(shown(cx), (false, false));
 }
+
+/// LLM-196: the title bar draws the project's icon before its name. Other
+/// scopes draw none.
+#[gpui_kit::test]
+fn the_title_bar_shows_the_project_icon(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let has_icon = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("title-project-icon").is_some()
+        })
+        .unwrap()
+    };
+    assert!(!has_icon(cx));
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    assert!(has_icon(cx));
+}

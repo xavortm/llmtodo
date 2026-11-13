@@ -374,6 +374,13 @@ pub struct Project {
     /// The CLI saves it. The app shows it when the project has no repo.
     #[serde(default)]
     pub local_path: Option<String>,
+    /// A Lucide icon name, such as `rocket`. `llmtodo project icons`
+    /// lists the valid names. Without one, the app draws a folder.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// The icon's color as `#rrggbb`. Without one, the icon is monochrome.
+    #[serde(default)]
+    pub color: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub deleted_at: Option<Timestamp>,
@@ -389,6 +396,12 @@ pub struct CreateProject {
     pub state: Option<ProjectState>,
     #[serde(default)]
     pub teams: Vec<String>,
+    /// A Lucide icon name. `llmtodo project icons` lists the valid names.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// A color as `#rrggbb`.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -401,6 +414,12 @@ pub struct UpdateProject {
     pub remove_teams: Option<Vec<String>>,
     /// An absolute folder. An empty string clears it.
     pub local_path: Option<String>,
+    /// A Lucide icon name. An empty string clears it.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// A color as `#rrggbb`. An empty string clears it.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

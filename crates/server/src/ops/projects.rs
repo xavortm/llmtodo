@@ -30,6 +30,66 @@ fn check_repo(repo: &str) -> ApiResult<String> {
     }
 }
 
+/// Checks an icon name. An empty one clears the icon.
+fn check_icon(icon: &str) -> ApiResult<Option<String>> {
+    let icon = icon.trim();
+    if icon.is_empty() {
+        return Ok(None);
+    }
+    if !llmtodo_core::project_style::is_icon(icon) {
+        return Err(ApiError::validation(format!(
+            "{icon:?} is not an icon the app can draw. `llmtodo project icons <filter>` lists the valid names"
+        )));
+    }
+    Ok(Some(icon.to_string()))
+}
+
+/// Checks a color. An empty one clears the color.
+fn check_color(color: &str) -> ApiResult<Option<String>> {
+    if color.trim().is_empty() {
+        return Ok(None);
+    }
+    llmtodo_core::project_style::normalize_color(color)
+        .map(Some)
+        .ok_or_else(|| ApiError::validation(format!("color must look like #rrggbb, got {color:?}")))
+}
+
+/// Sets the icon and logs the change, when it changes.
+async fn set_icon(w: &mut Write<'_>, id: &str, old: Option<&str>, icon: &str) -> ApiResult<()> {
+    let icon = check_icon(icon)?;
+    if icon.as_deref() == old {
+        return Ok(());
+    }
+    store::projects::set_icon(w.c(), icon.as_deref(), id).await?;
+    w.event(
+        EntityType::Project,
+        id,
+        None,
+        ActivityField::Icon,
+        j(old),
+        j(&icon),
+    )
+    .await
+}
+
+/// Sets the color and logs the change, when it changes.
+async fn set_color(w: &mut Write<'_>, id: &str, old: Option<&str>, color: &str) -> ApiResult<()> {
+    let color = check_color(color)?;
+    if color.as_deref() == old {
+        return Ok(());
+    }
+    store::projects::set_color(w.c(), color.as_deref(), id).await?;
+    w.event(
+        EntityType::Project,
+        id,
+        None,
+        ActivityField::Color,
+        j(old),
+        j(&color),
+    )
+    .await
+}
+
 pub async fn create(w: &mut Write<'_>, req: CreateProject) -> ApiResult<String> {
     let name = req.name.trim();
     if name.is_empty() {
@@ -39,6 +99,8 @@ pub async fn create(w: &mut Write<'_>, req: CreateProject) -> ApiResult<String> 
     if slug.is_empty() {
         return Err(ApiError::validation("project slug is empty"));
     }
+    let icon = req.icon.as_deref().map(check_icon).transpose()?.flatten();
+    let color = req.color.as_deref().map(check_color).transpose()?.flatten();
     let id = new_id();
     let t = now();
     store::projects::insert(
@@ -55,6 +117,8 @@ pub async fn create(w: &mut Write<'_>, req: CreateProject) -> ApiResult<String> 
         let tid = teams::team_row(w.c(), team).await?.id;
         store::projects::add_team(w.c(), &id, tid).await?;
     }
+    store::projects::set_icon(w.c(), icon.as_deref(), &id).await?;
+    store::projects::set_color(w.c(), color.as_deref(), &id).await?;
     w.event(
         EntityType::Project,
         &id,
@@ -124,6 +188,12 @@ pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateProject) -> ApiResult
             j(s),
         )
         .await?;
+    }
+    if let Some(icon) = &req.icon {
+        set_icon(w, &p.id, p.icon.as_deref(), icon).await?;
+    }
+    if let Some(color) = &req.color {
+        set_color(w, &p.id, p.color.as_deref(), color).await?;
     }
     if let Some(path) = req.local_path.as_deref().map(str::trim) {
         if !path.is_empty() && !std::path::Path::new(path).is_absolute() {

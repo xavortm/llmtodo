@@ -1035,3 +1035,73 @@ fn a_dot_marks_a_project_while_an_agent_works_in_it(cx: &mut TestAppContext) {
     set_claims(cx, None);
     assert_eq!(dots(cx), Vec::<&str>::new());
 }
+
+/// LLM-196: the project row's right-click menu lists the colors, with the
+/// first one selected. Ctrl-N moves to the next one and Enter picks it.
+/// The new color shows at once and goes to the server.
+#[gpui_kit::test]
+fn the_project_menu_sets_a_color(cx: &mut TestAppContext) {
+    use crate::model::backend::{Backend, Request};
+
+    let (handle, view) = open(cx);
+    let (backend, mut requests) = Backend::detached();
+    view.update(cx, |this, _| this.attach_backend(backend));
+    run(handle, &view, "sidebar", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("sidebar-project:server", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // Tests have no frame loop, so deliver the frame after the first one.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.simulate_next_frame(cx) > 0);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-n", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.read(|cx| {
+        let this = view.read(cx);
+        assert_eq!(this.message(), "Server is red");
+        let style = this.store_catalog(cx).project_style("server");
+        assert_eq!(style.color.as_deref(), Some("#e5484d"));
+    });
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(Request::SetProjectColor { slug, color })
+            if slug == "server" && color.as_deref() == Some("#e5484d")
+    ));
+}
+
+/// `:project-color` colors the scope's project, or a named one, and
+/// `none` clears it.
+#[gpui_kit::test]
+fn the_palette_sets_a_project_color(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let color = |view: &Entity<Workspace>, cx: &TestAppContext, slug: &str| {
+        cx.read(|cx| view.read(cx).store_catalog(cx).project_style(slug).color)
+    };
+    run(handle, &view, "project server", cx);
+    run(handle, &view, "project-color teal", cx);
+    assert_eq!(color(&view, cx, "server").as_deref(), Some("#12a594"));
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Server is teal"));
+    run(handle, &view, "project-color app none", cx);
+    assert_eq!(color(&view, cx, "app"), None);
+    // The icon stays when the color goes.
+    cx.read(|cx| {
+        let style = view.read(cx).store_catalog(cx).project_style("app");
+        assert_eq!(style.icon.as_deref(), Some("rocket"));
+    });
+    run(handle, &view, "project-color plaid", cx);
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Unknown color: plaid"));
+    run(handle, &view, "all", cx);
+    run(handle, &view, "project-color nope red", cx);
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Unknown project: nope"));
+}

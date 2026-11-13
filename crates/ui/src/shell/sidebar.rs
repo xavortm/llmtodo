@@ -11,7 +11,11 @@ use std::collections::{HashMap, HashSet};
 
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _, h_flex,
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+    v_flex,
+};
 use gpui_kit::{
     App, Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -390,51 +394,118 @@ impl Render for Sidebar {
             } else {
                 format!("sidebar-{setting}-{ix}")
             };
-            column = column.child(
-                h_flex()
-                    .id(ElementId::Name(id.into()))
-                    .test_support()
-                    .w_full()
-                    .h_7()
-                    .flex_none()
-                    .when(team, |this| this.mt_3())
-                    .px_2()
-                    .when(nested, |this| this.pl_6())
-                    .gap_2()
-                    .text_sm()
-                    .when(team, |this| this.font_weight(gpui_kit::FontWeight::MEDIUM))
-                    .rounded(theme.radius)
-                    .cursor_pointer()
-                    .when(active, |this| this.bg(active_bg))
-                    .hover(move |s| s.bg(if active { active_hover } else { hover }))
-                    .active(move |s| s.bg(pressed))
-                    // The dot sits in the left padding, so the icon and the
-                    // name stay where they are.
-                    .when(locked, |this| {
-                        this.relative().child(locked_dot(nested, locked_fill))
-                    })
-                    .child(
-                        Icon::new(scope.icon())
-                            .small()
-                            .text_color(theme.muted_foreground),
+            let row = h_flex()
+                .id(ElementId::Name(id.into()))
+                .test_support()
+                .w_full()
+                .h_7()
+                .flex_none()
+                .when(team, |this| this.mt_3())
+                .px_2()
+                .when(nested, |this| this.pl_6())
+                .gap_2()
+                .text_sm()
+                .when(team, |this| this.font_weight(gpui_kit::FontWeight::MEDIUM))
+                .rounded(theme.radius)
+                .cursor_pointer()
+                .when(active, |this| this.bg(active_bg))
+                .hover(move |s| s.bg(if active { active_hover } else { hover }))
+                .active(move |s| s.bg(pressed))
+                // The dot sits in the left padding, so the icon and the
+                // name stay where they are.
+                .when(locked, |this| {
+                    this.relative().child(locked_dot(nested, locked_fill))
+                })
+                .child(match &scope {
+                    Scope::Project(slug) => crate::shell::icons::project_icon(
+                        &catalog.project_style(slug),
+                        theme.muted_foreground,
+                        cx,
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(name))
-                    .when(count > 0, |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(count.to_string()),
-                        )
-                    })
+                    .small(),
+                    _ => Icon::new(scope.icon())
+                        .small()
+                        .text_color(theme.muted_foreground),
+                })
+                .child(div().flex_1().min_w_0().truncate().child(name))
+                .when(count > 0, |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(count.to_string()),
+                    )
+                })
+                .on_click(move |_, window, cx| {
+                    sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
+                    events.emit(ViewEvent::PickScope(target.clone()), window, cx);
+                });
+            // A project row has a menu with the project colors.
+            column = column.child(match &scope {
+                Scope::Project(slug) => row
+                    .context_menu(color_menu(
+                        self.store.clone(),
+                        self.events.clone(),
+                        slug.clone(),
+                    ))
+                    .into_any_element(),
+                _ => row.into_any_element(),
+            });
+        }
+        column
+    }
+}
+
+/// The right-click menu of a project row: None and the preset colors.
+/// The current one has a check. The first item is selected when the menu
+/// opens, so Enter picks it. `:project-color` does the same from the
+/// palette.
+pub fn color_menu(
+    store: Entity<IssueStore>,
+    events: ViewEvents,
+    slug: SharedString,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    move |menu, window, cx| {
+        let current = store.read(cx).catalog.project_style(&slug).color;
+        let mut choices: Vec<(SharedString, Option<&'static str>)> = vec![("None".into(), None)];
+        choices.extend(
+            crate::shell::icons::PROJECT_COLORS
+                .iter()
+                .map(|(name, hex)| {
+                    let mut label = name.to_string();
+                    label[..1].make_ascii_uppercase();
+                    (label.into(), Some(*hex))
+                }),
+        );
+        let mut menu = menu.label("Project color");
+        for (label, hex) in choices {
+            let checked = current.as_deref() == hex;
+            let events = events.clone();
+            let slug = slug.clone();
+            menu = menu.item(
+                PopupMenuItem::new(label)
+                    .icon(crate::shell::icons::swatch_icon(hex, cx))
+                    .checked(checked)
                     .on_click(move |_, window, cx| {
-                        sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
-                        events.emit(ViewEvent::PickScope(target.clone()), window, cx);
+                        events.emit(
+                            ViewEvent::SetProjectColor {
+                                slug: slug.to_string(),
+                                color: hex.map(str::to_string),
+                            },
+                            window,
+                            cx,
+                        );
                     }),
             );
         }
-        column
+        // The menu takes focus after this builder runs, and handles keys
+        // once it is drawn. Select the first swatch after its first frame,
+        // as every list in the app starts on its first item.
+        window.on_next_frame(|window, cx| {
+            window.dispatch_action(Box::new(gpui_kit::base::actions::SelectDown), cx);
+        });
+        menu
     }
 }
 
