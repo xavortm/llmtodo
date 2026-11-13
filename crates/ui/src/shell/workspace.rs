@@ -1414,6 +1414,7 @@ impl Workspace {
                 "light"
             }
             .into(),
+            color_theme: crate::shell::theme::color_theme(cx).id().into(),
             sort: match list.sort.0 {
                 SortKey::Key => "key",
                 SortKey::Status => "status",
@@ -2281,6 +2282,18 @@ impl Workspace {
             ThemeMode::Light
         };
         crate::shell::theme::set_mode(mode, cx);
+        window.refresh();
+        self.persist(cx);
+    }
+
+    /// The Settings theme picker and `:theme <name>` both come here.
+    pub fn set_color_theme(
+        &mut self,
+        name: crate::shell::theme::ColorTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::shell::theme::set_color_theme(name, cx);
         window.refresh();
         self.persist(cx);
     }

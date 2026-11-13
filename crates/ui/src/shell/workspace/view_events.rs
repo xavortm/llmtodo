@@ -64,6 +64,7 @@ impl Workspace {
             ViewEvent::SetHideClosedDays(days) => self.set_hide_closed_days(days, cx),
             ViewEvent::SetVimEditor(on) => self.set_vim_editor(on, cx),
             ViewEvent::SetDark(dark) => self.set_dark(dark, window, cx),
+            ViewEvent::SetColorTheme(name) => self.set_color_theme(name, window, cx),
             ViewEvent::SetOpenLastView(on) => self.set_open_last_view(on, cx),
             ViewEvent::SetMascot(on) => self.set_mascot(on, cx),
             ViewEvent::SetZoom(level) => self.set_zoom(level, cx),

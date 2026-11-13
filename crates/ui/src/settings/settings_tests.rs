@@ -200,6 +200,13 @@ fn the_keyboard_moves_flips_and_steps(cx: &mut TestAppContext) {
     press(handle, &["space"], cx);
     assert!(!store.load().vim_editor);
 
+    press(handle, &["j"], cx);
+    assert_eq!(selected(cx), Row::Theme);
+    press(handle, &["l"], cx);
+    assert_eq!(store.load().color_theme, "gruvbox");
+    press(handle, &["h"], cx);
+    assert_eq!(store.load().color_theme, "default");
+
     press(handle, &["j", "j"], cx);
     assert_eq!(selected(cx), Row::Zoom);
     press(handle, &["l"], cx);
@@ -217,11 +224,52 @@ fn the_keyboard_moves_flips_and_steps(cx: &mut TestAppContext) {
 
     press(handle, &["ctrl-p"], cx);
     assert_eq!(selected(cx), Row::DarkMode);
-    press(handle, &["ctrl-p", "ctrl-p"], cx);
+    press(handle, &["ctrl-p", "ctrl-p", "ctrl-p"], cx);
     assert_eq!(selected(cx), Row::HideClosedDays);
     // The days row is off until the setting is on.
     press(handle, &["l"], cx);
     assert_eq!(store.load().hide_closed_days, 14);
+}
+
+#[gpui_kit::test]
+fn a_click_on_a_theme_preview_picks_it_and_keeps_the_mode(cx: &mut TestAppContext) {
+    use crate::shell::theme::{self, ColorTheme};
+    use gpui_kit::component::ActiveTheme as _;
+
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
+    run(handle, &view, "settings", cx);
+
+    click(handle, "settings-theme-gruvbox", cx);
+    assert_eq!(cx.read(theme::color_theme), ColorTheme::Gruvbox);
+    assert_eq!(store.load().color_theme, "gruvbox");
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().to_string()),
+        "Gruvbox Dark"
+    );
+
+    click(handle, "settings-row-dark", cx);
+    assert_eq!(store.load().theme, "light");
+    assert_eq!(
+        store.load().color_theme,
+        "gruvbox",
+        "the mode keeps the theme"
+    );
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().to_string()),
+        "Gruvbox Light"
+    );
+
+    click(handle, "settings-theme-default", cx);
+    assert_eq!(store.load().color_theme, "default");
+    assert_eq!(store.load().theme, "light", "the theme keeps the mode");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).settings_view().read(cx).selected_row()),
+        Row::Theme
+    );
+
+    run(handle, &view, "theme gruvbox", cx);
+    assert_eq!(store.load().color_theme, "gruvbox");
 }
 
 #[gpui_kit::test]

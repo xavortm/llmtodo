@@ -24,9 +24,13 @@ fn main() {
         app_icon::set_dock_icon();
         let store = settings::SettingsStore::default_location();
         let saved = store.load();
-        if saved.theme == "light" {
-            theme::set_mode(ThemeMode::Light, cx);
-        }
+        let mode = if saved.theme == "light" {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
+        let color_theme = theme::ColorTheme::from_id(&saved.color_theme).unwrap_or_default();
+        theme::set_theme(color_theme, mode, cx);
         app_menus::set_menus(cx);
         // Reopen where the window was, at its last size.
         let bounds = match saved.window {

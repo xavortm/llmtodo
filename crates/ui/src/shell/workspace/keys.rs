@@ -334,5 +334,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "theirs",
     "theme dark",
     "theme light",
+    "theme default",
+    "theme gruvbox",
     "split auto",
 ];

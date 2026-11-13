@@ -86,6 +86,7 @@ pub enum ViewEvent {
     SetHideClosedDays(u32),
     SetVimEditor(bool),
     SetDark(bool),
+    SetColorTheme(crate::shell::theme::ColorTheme),
     SetOpenLastView(bool),
     SetMascot(bool),
     SetZoom(f32),

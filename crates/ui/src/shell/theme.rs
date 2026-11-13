@@ -1,9 +1,17 @@
-//! Monochrome theme. Owner rule: no accent color except for tags and the
-//! green check on done issues. GPUI Kit's dark and light themes use blue for
-//! selection, focus rings, links and primary buttons. This maps those tokens
-//! onto shades of the foreground.
+//! The app's color themes. A theme is a named set of color tokens with a
+//! light and a dark mode, and the dark mode switch picks between them.
+//!
+//! `Default` is monochrome. Owner rule: no accent color except for tags and
+//! the green check on done issues. GPUI Kit's dark and light themes use blue
+//! for selection, focus rings, links and primary buttons, so `Default` maps
+//! those tokens onto shades of the foreground. The other themes keep their
+//! own accents. Every theme gets the same contrast rules.
 
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
+use std::rc::Rc;
+
+use gpui_kit::component::{
+    ActiveTheme as _, Theme, ThemeConfig, ThemeMode, ThemeRegistry, ThemeSet,
+};
 use gpui_kit::{App, FontWeight, Hsla, Rgba, StyleRefinement, Styled as _};
 
 pub const UI_FONT: &str = "IBM Plex Sans";
@@ -99,14 +107,164 @@ fn apply_font_sizes(theme: &mut Theme, level: f32) {
     theme.mono_font_size = gpui_kit::px(CODE_FONT_SIZE * level);
 }
 
+/// A built-in color theme. Each one has a light and a dark mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorTheme {
+    /// The monochrome theme, built on GPUI Kit's own colors.
+    #[default]
+    Default,
+    /// A warm theme. See `assets/themes/NOTICE.md`.
+    Gruvbox,
+}
+
+impl ColorTheme {
+    /// Every theme, in the order the Settings picker shows them.
+    pub const ALL: [Self; 2] = [Self::Default, Self::Gruvbox];
+
+    /// The name in `ui.json` and in the `:theme` command.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Gruvbox => "gruvbox",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.id() == id)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Gruvbox => "Gruvbox",
+        }
+    }
+
+    /// The theme after this one, wrapping at the end.
+    pub fn next(self, forward: bool) -> Self {
+        let n = Self::ALL.len();
+        let ix = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[if forward {
+            (ix + 1) % n
+        } else {
+            (ix + n - 1) % n
+        }]
+    }
+
+    fn config(self, mode: ThemeMode, cx: &App) -> Rc<ThemeConfig> {
+        match self {
+            Self::Default => {
+                let registry = ThemeRegistry::global(cx);
+                if mode.is_dark() {
+                    registry.default_dark_theme().clone()
+                } else {
+                    registry.default_light_theme().clone()
+                }
+            }
+            Self::Gruvbox => GRUVBOX.with(|set| pick(set, mode)),
+        }
+    }
+}
+
+thread_local! {
+    static GRUVBOX: Vec<Rc<ThemeConfig>> =
+        load_set(include_str!("../../assets/themes/gruvbox.json"));
+}
+
+fn load_set(json: &str) -> Vec<Rc<ThemeConfig>> {
+    serde_json::from_str::<ThemeSet>(json)
+        .expect("a bundled theme file parses")
+        .themes
+        .into_iter()
+        .map(Rc::new)
+        .collect()
+}
+
+fn pick(set: &[Rc<ThemeConfig>], mode: ThemeMode) -> Rc<ThemeConfig> {
+    set.iter()
+        .find(|c| c.mode.is_dark() == mode.is_dark())
+        .expect("a bundled theme has both modes")
+        .clone()
+}
+
+/// The theme the app shows now.
+struct CurrentTheme(ColorTheme);
+
+impl gpui_kit::Global for CurrentTheme {}
+
+pub fn color_theme(cx: &App) -> ColorTheme {
+    cx.try_global::<CurrentTheme>().map_or_default(|t| t.0)
+}
+
+/// Switches between light and dark and keeps the current theme.
 pub fn set_mode(mode: ThemeMode, cx: &mut App) {
+    set_theme(color_theme(cx), mode, cx);
+}
+
+/// Switches the theme and keeps the current mode.
+pub fn set_color_theme(name: ColorTheme, cx: &mut App) {
+    let mode = cx.theme().mode;
+    set_theme(name, mode, cx);
+}
+
+pub fn set_theme(name: ColorTheme, mode: ThemeMode, cx: &mut App) {
     let level = zoom(cx);
+    cx.set_global(CurrentTheme(name));
+    if !cx.has_global::<Theme>() {
+        Theme::change(mode, None, cx);
+    }
+    let (light, dark) = (
+        name.config(ThemeMode::Light, cx),
+        name.config(ThemeMode::Dark, cx),
+    );
+    let theme = Theme::global_mut(cx);
+    theme.light_theme = light;
+    theme.dark_theme = dark;
+    // `change` loads the mode's theme even when the mode stays the same.
     Theme::change(mode, None, cx);
     let theme = Theme::global_mut(cx);
     // `main::init` loads the fonts.
     theme.font_family = UI_FONT.into();
     theme.mono_font_family = CODE_FONT.into();
     apply_font_sizes(theme, level);
+    style_colors(theme, name);
+
+    // Edits made through `global_mut` reach GPUI Kit's base layer only
+    // after this call.
+    Theme::sync_base(cx);
+    install_text_style(cx);
+}
+
+/// `name` in `mode`, with the app's rules applied, without switching to
+/// it. The Settings picker draws its previews from this.
+pub fn preview(name: ColorTheme, mode: ThemeMode, cx: &App) -> Theme {
+    let mut theme = Theme::global(cx).clone();
+    theme.apply_config(&name.config(mode, cx));
+    theme.mode = mode;
+    style_colors(&mut theme, name);
+    theme
+}
+
+/// The app's color rules on top of a theme file's colors.
+fn style_colors(theme: &mut Theme, name: ColorTheme) {
+    if name == ColorTheme::Default {
+        monochrome(theme);
+    }
+
+    // Owner rule: text keeps at least 4.5:1 contrast. Muted text sits on the
+    // page, the sidebar, popovers and group headers, so it must pass on the
+    // lightest of them. Aim for 5:1, because hover and selection fills sit
+    // between the text and the page.
+    let surfaces = [theme.background, theme.sidebar, theme.popover, theme.muted];
+    theme.foreground = ensure_contrast(theme.foreground, &surfaces, 4.5);
+    theme.muted_foreground = ensure_contrast(theme.muted_foreground, &surfaces, 5.0);
+    theme.danger = ensure_contrast(theme.danger, &surfaces, 4.5);
+    theme.primary_foreground = text_on(theme.primary, theme.primary_foreground, theme);
+    theme.button_primary_foreground =
+        text_on(theme.button_primary, theme.button_primary_foreground, theme);
+}
+
+fn monochrome(theme: &mut Theme) {
     let fg = theme.foreground;
     let bg = theme.background;
 
@@ -143,19 +301,25 @@ pub fn set_mode(mode: ThemeMode, cx: &mut App) {
     theme.slider_bar = fg;
     theme.slider_thumb = fg;
     theme.switch = fg;
+}
 
-    // Owner rule: text keeps at least 4.5:1 contrast. Muted text sits on the
-    // page, the sidebar, popovers and group headers, so it must pass on the
-    // lightest of them. Aim for 5:1, because hover and selection fills sit
-    // between the text and the page.
-    let surfaces = [theme.background, theme.sidebar, theme.popover, theme.muted];
-    theme.muted_foreground = ensure_contrast(theme.muted_foreground, &surfaces, 5.0);
-    theme.danger = ensure_contrast(theme.danger, &surfaces, 4.5);
+/// Text for a solid fill: the theme's own choice when it is readable, else
+/// the page or text color, else black or white.
+fn text_on(fill: Hsla, own: Hsla, theme: &Theme) -> Hsla {
+    let fill = blend(fill, theme.background);
+    [own, theme.background, theme.foreground]
+        .into_iter()
+        .map(|c| blend(c, fill))
+        .find(|c| contrast(*c, fill) >= 4.5)
+        .unwrap_or_else(|| black_or_white(fill))
+}
 
-    // Edits made through `global_mut` reach GPUI Kit's base layer only
-    // after this call.
-    Theme::sync_base(cx);
-    install_text_style(cx);
+fn black_or_white(fill: Hsla) -> Hsla {
+    if luminance(fill) > 0.18 {
+        gpui_kit::black()
+    } else {
+        gpui_kit::white()
+    }
 }
 
 /// Markdown body text a little softer than headings, so headings stand out
@@ -234,12 +398,7 @@ pub fn row_pressed(theme: &Theme) -> Hsla {
 /// stands out on any row fill.
 pub fn locked_badge(theme: &Theme) -> (Hsla, Hsla) {
     let fill = theme.warning;
-    let page = if luminance(fill) > 0.18 {
-        gpui_kit::black()
-    } else {
-        gpui_kit::white()
-    };
-    (fill, ensure_contrast(page, &[fill], 4.5))
+    (fill, ensure_contrast(black_or_white(fill), &[fill], 4.5))
 }
 
 fn luminance(color: Hsla) -> f32 {
@@ -301,42 +460,116 @@ fn blend(top: Hsla, bottom: Hsla) -> Hsla {
 mod tests {
     use super::*;
 
+    fn every_theme() -> impl Iterator<Item = (ColorTheme, ThemeMode)> {
+        ColorTheme::ALL.into_iter().flat_map(|name| {
+            [ThemeMode::Dark, ThemeMode::Light]
+                .into_iter()
+                .map(move |mode| (name, mode))
+        })
+    }
+
     #[gpui_kit::test]
     fn the_locked_badge_stays_readable(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
-        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        for (name, mode) in every_theme() {
             cx.update(|cx| {
-                set_mode(mode, cx);
+                set_theme(name, mode, cx);
                 let t = cx.theme();
                 let (fill, text) = locked_badge(t);
-                assert!(contrast(text, fill) >= 4.5, "{mode:?} badge text");
+                assert!(contrast(text, fill) >= 4.5, "{name:?} {mode:?} badge text");
             });
         }
     }
 
     #[gpui_kit::test]
-    fn text_tokens_keep_4_5_to_1_in_both_modes(cx: &mut gpui_kit::TestAppContext) {
+    fn text_tokens_keep_4_5_to_1_in_every_theme_and_mode(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
-        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        for (name, mode) in every_theme() {
             cx.update(|cx| {
-                set_mode(mode, cx);
+                set_theme(name, mode, cx);
                 let t = cx.theme();
                 for surface in [t.background, t.sidebar, t.popover] {
                     assert!(
                         contrast(t.foreground, surface) >= 4.5,
-                        "{mode:?} foreground"
+                        "{name:?} {mode:?} foreground"
                     );
                     assert!(
                         contrast(t.muted_foreground, surface) >= 4.5,
-                        "{mode:?} muted text: {}",
+                        "{name:?} {mode:?} muted text: {}",
                         contrast(t.muted_foreground, surface)
                     );
                 }
                 for color in [t.red, t.green, t.blue, t.yellow, t.magenta, t.cyan] {
                     let label = ensure_contrast(color, &[t.background], 5.0);
-                    assert!(contrast(label, t.background) >= 4.5, "{mode:?} label color");
+                    assert!(
+                        contrast(label, t.background) >= 4.5,
+                        "{name:?} {mode:?} label color"
+                    );
                 }
             });
         }
+    }
+
+    #[gpui_kit::test]
+    fn primary_buttons_keep_readable_text(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for (name, mode) in every_theme() {
+            cx.update(|cx| {
+                set_theme(name, mode, cx);
+                let t = cx.theme();
+                let fill = blend(t.primary, t.background);
+                assert!(
+                    contrast(t.primary_foreground, fill) >= 4.5,
+                    "{name:?} {mode:?} primary text"
+                );
+                let fill = blend(t.button_primary, t.background);
+                assert!(
+                    contrast(t.button_primary_foreground, fill) >= 4.5,
+                    "{name:?} {mode:?} button text"
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_preview_shows_the_colors_the_theme_applies(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for (name, mode) in every_theme() {
+            cx.update(|cx| {
+                set_theme(ColorTheme::Default, ThemeMode::Dark, cx);
+                let preview = preview(name, mode, cx);
+                set_theme(name, mode, cx);
+                let t = cx.theme();
+                assert_eq!(preview.background, t.background, "{name:?} {mode:?}");
+                assert_eq!(preview.foreground, t.foreground, "{name:?} {mode:?}");
+                assert_eq!(preview.primary, t.primary, "{name:?} {mode:?}");
+                assert_eq!(color_theme(cx), name);
+                assert_eq!(t.is_dark(), mode.is_dark());
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_mode_switch_keeps_the_theme(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            set_theme(ColorTheme::Gruvbox, ThemeMode::Dark, cx);
+            set_mode(ThemeMode::Light, cx);
+            assert_eq!(color_theme(cx), ColorTheme::Gruvbox);
+            assert_eq!(cx.theme().theme_name().as_ref(), "Gruvbox Light");
+            set_color_theme(ColorTheme::Default, cx);
+            assert!(!cx.theme().is_dark(), "the theme switch keeps the mode");
+        });
+    }
+
+    #[test]
+    fn theme_ids_round_trip() {
+        for name in ColorTheme::ALL {
+            assert_eq!(ColorTheme::from_id(name.id()), Some(name));
+        }
+        assert_eq!(ColorTheme::from_id("nope"), None);
+        assert_eq!(ColorTheme::Default.next(true), ColorTheme::Gruvbox);
+        assert_eq!(ColorTheme::Default.next(false), ColorTheme::Gruvbox);
+        assert_eq!(ColorTheme::Gruvbox.next(true), ColorTheme::Default);
     }
 }

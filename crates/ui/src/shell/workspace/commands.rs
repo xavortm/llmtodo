@@ -231,6 +231,11 @@ impl Workspace {
                 self.set_dark(arg == "dark", window, cx);
                 Some(format!("Theme: {arg}"))
             }
+            ("theme", _) if crate::shell::theme::ColorTheme::from_id(arg).is_some() => {
+                let name = crate::shell::theme::ColorTheme::from_id(arg).unwrap_or_default();
+                self.set_color_theme(name, window, cx);
+                Some(format!("Theme: {}", name.label()))
+            }
             // Drops the task view width the owner dragged to, so the list
             // and the task view share the room by content again.
             ("split", _) if arg == "auto" => {

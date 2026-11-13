@@ -23,6 +23,9 @@ use serde::{Deserialize, Serialize};
 pub struct UiSettings {
     /// `dark` or `light`.
     pub theme: String,
+    /// The color theme's id, such as `default` or `gruvbox`. See
+    /// `shell::theme::ColorTheme`.
+    pub color_theme: String,
     /// `key`, `status` or `added`.
     pub sort: String,
     pub sort_reversed: bool,
@@ -68,6 +71,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
+            color_theme: "default".into(),
             sort: "key".into(),
             sort_reversed: false,
             group: "none".into(),
@@ -169,6 +173,7 @@ mod tests {
             collapsed_groups: vec!["status:Done".into()],
             split_side: Some(612.),
             hidden_columns: vec!["labels".into(), "cost".into()],
+            color_theme: "gruvbox".into(),
             ..Default::default()
         };
         store.save(&settings).unwrap();
@@ -181,6 +186,7 @@ mod tests {
         std::fs::write(dir.path().join("ui.json"), r#"{"group":"label"}"#).unwrap();
         assert_eq!(store.load().group, "label");
         assert_eq!(store.load().theme, "dark");
+        assert_eq!(store.load().color_theme, "default");
         assert!(!store.load().hide_closed);
         assert_eq!(store.load().hide_closed_days, 14);
         assert!(store.load().vim_editor);

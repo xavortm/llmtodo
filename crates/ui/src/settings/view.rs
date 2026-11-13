@@ -3,7 +3,8 @@
 //! there is no Save button.
 //!
 //! `j` / `k` and `Ctrl-N` / `Ctrl-P` move between rows. `Enter` or `Space`
-//! flips a switch or enters a number field, and `h` / `l` step a number.
+//! flips a switch or enters a number field, and `h` / `l` step a number or
+//! pick the theme before or after the current one.
 //! `Esc` and the mouse back button leave the view, through `back` in the workspace.
 //!
 //! The workspace owns the values. This view shows the copy the workspace
@@ -70,16 +71,18 @@ pub enum Row {
     HideClosed,
     HideClosedDays,
     Vim,
+    Theme,
     DarkMode,
     Zoom,
     OpenLast,
     Mascot,
 }
 
-const ROWS: [Row; 7] = [
+const ROWS: [Row; 8] = [
     Row::HideClosed,
     Row::HideClosedDays,
     Row::Vim,
+    Row::Theme,
     Row::DarkMode,
     Row::Zoom,
     Row::OpenLast,
@@ -92,6 +95,7 @@ impl Row {
             Self::HideClosed => "settings-row-hide-closed",
             Self::HideClosedDays => "settings-row-hide-days",
             Self::Vim => "settings-row-vim",
+            Self::Theme => "settings-row-theme",
             Self::DarkMode => "settings-row-dark",
             Self::Zoom => "settings-row-zoom",
             Self::OpenLast => "settings-row-open-last",
@@ -104,6 +108,7 @@ impl Row {
             Self::HideClosed => "Hide old closed tasks",
             Self::HideClosedDays => "Hide after",
             Self::Vim => "Vim keys in the editor",
+            Self::Theme => "Theme",
             Self::DarkMode => "Dark mode",
             Self::Zoom => "Zoom",
             Self::OpenLast => "Open the last view at start",
@@ -119,10 +124,10 @@ impl Row {
         }
     }
 
-    /// A number row holds its own field. Clicking the row itself does
-    /// nothing, so it gets no hover change.
+    /// A number row holds its own field, and the theme row its previews.
+    /// Clicking the row itself does nothing, so it gets no hover change.
     fn is_switch(self) -> bool {
-        !matches!(self, Self::HideClosedDays | Self::Zoom)
+        !matches!(self, Self::HideClosedDays | Self::Zoom | Self::Theme)
     }
 }
 
@@ -360,6 +365,10 @@ impl SettingsView {
                 self.write(ViewEvent::SetZoom(level), window, cx);
                 self.show_zoom(window, cx);
             }
+            Row::Theme => {
+                let next = theme::color_theme(cx).next(up);
+                self.write(ViewEvent::SetColorTheme(next), window, cx);
+            }
             _ => {}
         }
     }
@@ -371,6 +380,10 @@ impl SettingsView {
                 self.write(ViewEvent::SetHideClosed(!values.hide_closed), window, cx)
             }
             Row::Vim => self.write(ViewEvent::SetVimEditor(!values.vim_editor), window, cx),
+            Row::Theme => {
+                let next = theme::color_theme(cx).next(true);
+                self.write(ViewEvent::SetColorTheme(next), window, cx);
+            }
             Row::DarkMode => {
                 let dark = values.theme != "dark";
                 self.write(ViewEvent::SetDark(dark), window, cx);
@@ -421,6 +434,7 @@ impl SettingsView {
             Row::Mascot => "Your pixel pet in the sidebar. It works while an agent works, \
                  and sleeps when nothing happens"
                 .into(),
+            Row::Theme => "Every theme has a light and a dark mode".into(),
             Row::DarkMode | Row::Zoom => return None,
         };
         Some(text)
@@ -484,6 +498,8 @@ impl SettingsView {
                 self.number_field(row, &self.days, "days", !values.hide_closed, window, cx)
             }
             Row::Vim => switch(values.vim_editor),
+            // The previews sit under the title, see `render_row`.
+            Row::Theme => div().into_any_element(),
             Row::DarkMode => switch(values.theme == "dark"),
             Row::Zoom => self.number_field(row, &self.zoom, "%", false, window, cx),
             Row::OpenLast => switch(values.open_last_view),
@@ -542,9 +558,131 @@ impl SettingsView {
                     .child(div().text_sm().child(row.title()))
                     .when_some(help, |this, help| {
                         this.child(div().text_xs().text_color(muted).child(help))
+                    })
+                    .when(row == Row::Theme, |this| {
+                        this.child(self.theme_previews(cx))
                     }),
             )
             .child(div().flex_none().child(control))
+            .into_any_element()
+    }
+
+    /// One small picture of the app per theme, in the current mode. A
+    /// click picks that theme.
+    fn theme_previews(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = theme::color_theme(cx);
+        let mode = cx.theme().mode;
+        let cards: Vec<AnyElement> = theme::ColorTheme::ALL
+            .into_iter()
+            .map(|name| {
+                let colors = theme::preview(name, mode, cx);
+                self.theme_card(name, name == current, &colors, cx)
+            })
+            .collect();
+        h_flex()
+            .pt_2()
+            .gap_3()
+            .flex_wrap()
+            .children(cards)
+            .into_any_element()
+    }
+
+    fn theme_card(
+        &self,
+        name: theme::ColorTheme,
+        picked: bool,
+        p: &gpui_kit::component::Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ui = cx.theme();
+        let ring = if picked { ui.foreground } else { ui.border };
+        let hover = ui.muted_foreground;
+        let pressed = ui.foreground;
+        let label = if picked {
+            ui.foreground
+        } else {
+            ui.muted_foreground
+        };
+        let bar = |w: f32, color| div().h(rems(0.25)).w(rems(w)).rounded_sm().bg(color);
+        let sidebar = v_flex()
+            .w(rems(2.25))
+            .h_full()
+            .flex_none()
+            .p_1()
+            .gap_1()
+            .bg(p.sidebar)
+            .border_r_1()
+            .border_color(p.sidebar_border)
+            .child(bar(1.25, p.muted_foreground))
+            .child(
+                div()
+                    .rounded_sm()
+                    .px_0p5()
+                    .py_0p5()
+                    .bg(p.sidebar_accent)
+                    .child(bar(1.0, p.foreground)),
+            )
+            .child(bar(1.0, p.muted_foreground));
+        let row = |selected: bool, tag| {
+            h_flex()
+                .gap_1()
+                .px_1()
+                .py_0p5()
+                .rounded_sm()
+                .when(selected, |this| this.bg(p.list_active))
+                .child(div().size(rems(0.3)).rounded_full().bg(tag))
+                .child(bar(2.5, p.foreground))
+                .child(bar(1.0, p.muted_foreground))
+        };
+        let page = v_flex()
+            .flex_1()
+            .h_full()
+            .p_1()
+            .gap_0p5()
+            .bg(p.background)
+            .child(div().pb_0p5().child(bar(2.0, p.foreground)))
+            .child(row(false, p.green))
+            .child(row(true, p.blue))
+            .child(row(false, p.yellow))
+            .child(
+                h_flex().pt_0p5().justify_end().child(
+                    div()
+                        .h(rems(0.5))
+                        .w(rems(1.5))
+                        .rounded_sm()
+                        .bg(p.button_primary),
+                ),
+            );
+        let group = SharedString::from(format!("settings-theme-{}", name.id()));
+        v_flex()
+            .id(group.clone())
+            .group(group.clone())
+            .test_support()
+            .gap_1()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.selected = ROWS.iter().position(|r| *r == Row::Theme).unwrap_or(0);
+                this.write(ViewEvent::SetColorTheme(name), window, cx);
+            }))
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-theme-{}-frame",
+                        name.id()
+                    )))
+                    .w(rems(9.))
+                    .h(rems(5.5))
+                    .rounded(ui.radius)
+                    .border_2()
+                    .border_color(ring)
+                    .overflow_hidden()
+                    .when(!picked, |this| {
+                        this.group_hover(group.clone(), move |s| s.border_color(hover))
+                            .group_active(group.clone(), move |s| s.border_color(pressed))
+                    })
+                    .child(h_flex().size_full().child(sidebar).child(page)),
+            )
+            .child(div().text_xs().text_color(label).child(name.label()))
             .into_any_element()
     }
 }
