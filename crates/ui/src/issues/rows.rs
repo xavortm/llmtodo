@@ -95,6 +95,9 @@ pub struct OrderMark {
     /// Set on the first row of a step: whether its dot is filled. A dot is
     /// filled when every task of the step is done or canceled.
     pub dot: Option<bool>,
+    /// Set with `dot` when the parent's order has more than one step: the
+    /// step number the dot shows.
+    pub number: Option<u32>,
     /// The line runs from the row's top to its middle.
     pub up: bool,
     /// The line runs from the row's middle to its bottom.
@@ -127,6 +130,11 @@ impl<'i> Parents<'i> {
             }
         }
         parents
+    }
+
+    /// How many steps the order of `parent` has.
+    fn steps(&self, parent: &str) -> usize {
+        self.done.keys().filter(|(p, _)| *p == parent).count()
     }
 }
 
@@ -404,6 +412,15 @@ fn parent_groups(
             Some(_) => members.iter().filter(|i| i.order_step.is_some()).count(),
             None => 0,
         };
+        // Also count the steps on this list, in case the full list lacks them.
+        let listed: HashSet<u32> = members[..ordered]
+            .iter()
+            .filter_map(|i| i.order_step)
+            .collect();
+        let steps = parent
+            .map(|p| parents.steps(p))
+            .unwrap_or_default()
+            .max(listed.len());
         let mut last_step = None;
         for (ix, issue) in members.iter().enumerate() {
             rows.push(Row::Issue(issue.id));
@@ -424,6 +441,7 @@ fn parent_groups(
                                     .all(|i| i.status.is_closed())
                             })
                     }),
+                    number: (first && steps > 1).then_some(step),
                     up: ix > 0,
                     down: ix + 1 < ordered,
                 }

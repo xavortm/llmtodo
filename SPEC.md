@@ -357,6 +357,7 @@ An epic's sub-issues can have an order. The order is a list of steps. Each step 
 - **In the app** (LLM-208, LLM-209), the task list groups by parent and draws the order as a vertical line with a dot per step. Palette commands change the order.
   - `:group parent` makes one group per parent, in key order, then "No parent". Inside a group, the tasks with a step come first, by step, and each step keeps the chosen sort.
   - The order column shows only under this grouping, left of the status. A filled dot means every task of the step is done or canceled, also tasks the filter hides.
+  - When the order has more than one step, each dot shows its step number. The dot grows to 14 px, enough for two digits, and rows keep their height. The number takes the colour the dot is not filled with, so it reads on filled and hollow dots.
   - A drop on a parent group's header, or on a task in it, gives the task that parent. A drop on "No parent" clears it.
   - The task view shows the order edges as one chip each way, such as "Order: step 3 of LLM-1". A click opens the parent.
   - The `order` live event refreshes every sub-issue of the parent, and the tasks that wait for them.

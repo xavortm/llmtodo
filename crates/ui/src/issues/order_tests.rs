@@ -63,9 +63,19 @@ fn issues(catalog: &Catalog) -> Vec<Issue> {
 fn build_with(filter: &str, sort: (SortKey, bool), collapsed: &[&str]) -> BuiltRows {
     let catalog = crate::model::demo::catalog();
     let issues = issues(&catalog);
+    build_from(&catalog, &issues, filter, sort, collapsed)
+}
+
+fn build_from(
+    catalog: &Catalog,
+    issues: &[Issue],
+    filter: &str,
+    sort: (SortKey, bool),
+    collapsed: &[&str],
+) -> BuiltRows {
     let statuses = catalog.all_statuses();
     let collapsed: HashSet<String> = collapsed.iter().map(|c| c.to_string()).collect();
-    let query = crate::issues::filter::Filter::parse(filter).resolve(&catalog);
+    let query = crate::issues::filter::Filter::parse(filter).resolve(catalog);
     let input = RowsInput {
         scope: &Scope::All,
         view: None,
@@ -98,8 +108,14 @@ fn names(built: &BuiltRows) -> Vec<String> {
         .collect()
 }
 
-fn mark(dot: Option<bool>, up: bool, down: bool) -> Option<OrderMark> {
-    Some(OrderMark { dot, up, down })
+/// `dot` is whether the dot is filled, and the step number it shows.
+fn mark(dot: Option<(bool, u32)>, up: bool, down: bool) -> Option<OrderMark> {
+    Some(OrderMark {
+        dot: dot.map(|(filled, _)| filled),
+        number: dot.map(|(_, n)| n),
+        up,
+        down,
+    })
 }
 
 #[test]
@@ -135,14 +151,14 @@ fn a_dot_starts_each_step_and_the_line_runs_from_first_to_last() {
         [
             None,
             // Step 1 is done: a filled dot, and the line starts here.
-            mark(Some(true), false, true),
+            mark(Some((true, 1)), false, true),
             // Step 2 has open tasks: a hollow dot, then two rows on the line.
-            mark(Some(false), true, true),
+            mark(Some((false, 2)), true, true),
             mark(None, true, true),
             mark(None, true, true),
-            mark(Some(false), true, true),
+            mark(Some((false, 3)), true, true),
             // The last ordered row ends the line.
-            mark(Some(false), true, false),
+            mark(Some((false, 4)), true, false),
             // No step: nothing.
             None,
             None,
@@ -180,10 +196,25 @@ fn a_dot_counts_the_tasks_the_filter_hides() {
         built.order,
         [
             None,
-            mark(Some(true), false, true),
-            mark(Some(false), true, false)
+            mark(Some((true, 1)), false, true),
+            mark(Some((false, 2)), true, false)
         ]
     );
+}
+
+#[test]
+fn a_single_step_draws_a_plain_dot_with_no_number() {
+    let catalog = crate::model::demo::catalog();
+    let mut issues = issues(&catalog);
+    // Every ordered task of LLM-1 moves into step 1.
+    for issue in &mut issues {
+        if issue.order_step.is_some() {
+            issue.order_step = Some(1);
+        }
+    }
+    let built = build_from(&catalog, &issues, "", (SortKey::Key, false), &[]);
+    let dot = built.order[1].expect("the first task has a mark");
+    assert_eq!((dot.dot, dot.number), (Some(false), None));
 }
 
 #[test]
@@ -276,6 +307,12 @@ fn the_order_column_shows_only_under_group_by_parent(cx: &mut TestAppContext) {
             .find("order-dot-done")
             .bounds();
         assert!(first.contains(&dot.center()), "the dot sits in its cell");
+        // The order has four steps, so the dot shows its step number and
+        // stays inside its row and its cell.
+        let number = window.within(("row", 1usize)).find("order-number").bounds();
+        assert!(dot.contains(&number.center()), "the number sits in its dot");
+        assert!(dot.size.width <= first.size.width);
+        assert!(dot.size.height < first.size.height);
         // LLM-3 starts step 2, and LLM-4 sits on the line with no dot.
         assert!(
             window

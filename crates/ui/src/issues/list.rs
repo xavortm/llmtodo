@@ -1723,8 +1723,9 @@ impl IssueList {
 
 /// The order line in one row: a line through the row, cut at the first
 /// and last ordered rows, and a dot on the first row of each step. A
-/// filled dot means every task of the step is done or canceled. A row
-/// with no step draws nothing.
+/// filled dot means every task of the step is done or canceled. When the
+/// order has more than one step, the dot is larger and shows the step
+/// number. A row with no step draws nothing.
 fn order_cell(mark: Option<rows::OrderMark>, cx: &App) -> AnyElement {
     let Some(mark) = mark else {
         return div().into_any_element();
@@ -1748,6 +1749,8 @@ fn order_cell(mark: Option<rows::OrderMark>, cx: &App) -> AnyElement {
         .child(segment(mark.up))
         .child(segment(mark.down))
         .children(mark.dot.map(|filled| {
+            // Fits two digits and stays inside the row.
+            let size = if mark.number.is_some() { 14. } else { 8. };
             div()
                 .id(if filled {
                     "order-dot-done"
@@ -1757,12 +1760,29 @@ fn order_cell(mark: Option<rows::OrderMark>, cx: &App) -> AnyElement {
                 .test_support()
                 .absolute()
                 .top(gpui_kit::relative(0.5))
-                .mt(gpui_kit::px(-4.))
-                .size_2()
+                .mt(gpui_kit::px(-size / 2.))
+                .size(gpui_kit::px(size))
                 .rounded_full()
                 .border_1()
                 .border_color(fg)
                 .bg(if filled { fg } else { page })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when_some(mark.number, |this, number| {
+                    // The number takes the colour the dot is not filled
+                    // with, so it reads on both kinds in every theme.
+                    this.child(
+                        div()
+                            .id("order-number")
+                            .test_support()
+                            .text_size(gpui_kit::px(8.5))
+                            .line_height(gpui_kit::px(8.5))
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .text_color(if filled { page } else { fg })
+                            .child(number.to_string()),
+                    )
+                })
         }))
         .into_any_element()
 }
