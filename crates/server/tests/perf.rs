@@ -45,6 +45,42 @@ async fn timed_after_write(url: &str, http: &reqwest::Client, key: &str) -> (Dur
     (write, read)
 }
 
+/// Reads every issue that a filter finds, as the app's refresh after a live
+/// event does. Returns the time and the number of issues (LLM-217).
+async fn timed_filter(url: &str, http: &reqwest::Client, filter: Value) -> (Duration, usize) {
+    let start = Instant::now();
+    let mut cursor: Option<String> = None;
+    let mut seen = 0;
+    loop {
+        let mut body = filter.clone();
+        body["limit"] = json!(1000);
+        body["cursor"] = json!(cursor);
+        let res = http
+            .post(format!("{url}/v1/issues/query"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success());
+        let v: Value = res.json().await.unwrap();
+        seen += v["items"].as_array().unwrap().len();
+        match v["next_cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    (start.elapsed(), seen)
+}
+
+/// The most the app's refresh query may take for one key whose chain
+/// reaches only a few issues, on a chain of 49,000 (LLM-217).
+const REFRESH_LIMIT: Duration = Duration::from_millis(100);
+
+/// The most the app's refresh query may take when it reaches all 49,000
+/// issues of a chain. Recursive SQL took 9 to 11 s. The graph in memory
+/// takes 3.5 to 5 s, nearly all of it to page through the rows (LLM-217).
+const WHOLE_CHAIN_LIMIT: Duration = Duration::from_secs(7);
+
 async fn timed_list(url: &str, http: &reqwest::Client, limit: u32) -> Duration {
     let mut best = Duration::MAX;
     for _ in 0..5 {
@@ -232,6 +268,23 @@ async fn list_with_large_dependency_graphs() {
     println!("one open chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order on one open chain, pages of 1000: {t:?} in {pages} pages");
+    // LLM-217: the refresh after a live event near the end of the chain
+    // finds few issues, and must not walk the chain in SQL.
+    let near_end = format!("ALX-{}", ISSUES - 10);
+    let (down, n) = timed_filter(&url, &http, json!({ "depends_on": near_end })).await;
+    println!("one open chain, depends_on near the end: {down:?} for {n} issues");
+    assert_eq!(n, 10);
+    let (all_down, n) = timed_filter(&url, &http, json!({ "depends_on": "ALX-2" })).await;
+    println!("one open chain, depends_on the head: {all_down:?} for {n} issues");
+    assert_eq!(n as i64, ISSUES - 2);
+    assert!(
+        down < REFRESH_LIMIT,
+        "depends_on near the end took {down:?}"
+    );
+    assert!(
+        all_down < WHOLE_CHAIN_LIMIT,
+        "depends_on the head took {all_down:?}"
+    );
     // Before LLM-216, each page walked the whole chain again: 0.5 s a page.
     assert!(worst < CHAIN_LIMIT, "one open chain took {worst:?}");
     assert!(
@@ -264,6 +317,23 @@ async fn list_with_large_dependency_graphs() {
     println!("closed chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order with closed chains, pages of 1000: {t:?} in {pages} pages");
+    // The open issue right after the closed part waits for 49,000 closed
+    // issues. The issue at the head waits for none.
+    let after_closed = format!("ALX-{}", ISSUES - 999);
+    let (up, n) = timed_filter(&url, &http, json!({ "closed_blockers_of": after_closed })).await;
+    println!("closed chain, closed_blockers_of the first open issue: {up:?} for {n} issues");
+    assert_eq!(n as i64, ISSUES - 1001);
+    let (head, n) = timed_filter(&url, &http, json!({ "closed_blockers_of": "ALX-3" })).await;
+    println!("closed chain, closed_blockers_of near the head: {head:?} for {n} issues");
+    assert_eq!(n, 1);
+    assert!(
+        head < REFRESH_LIMIT,
+        "closed_blockers_of near the head took {head:?}"
+    );
+    assert!(
+        up < WHOLE_CHAIN_LIMIT,
+        "closed_blockers_of the whole chain took {up:?}"
+    );
     assert!(closed < CHAIN_LIMIT, "one closed chain took {closed:?}");
     assert!(
         write < CHAIN_LIMIT,

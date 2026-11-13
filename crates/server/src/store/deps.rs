@@ -12,7 +12,8 @@
 //! walked its chains again with recursive queries. On one chain of 49,000
 //! issues, that took half a second per page.
 //!
-//! The recursive queries below serve the single-issue filters and the tree.
+//! The filters `depends_on` and `closed_blockers_of` walk the same graph
+//! (LLM-217). The recursive queries below serve the tree and the cycle check.
 //! They use CROSS JOIN, which makes SQLite keep the written join order. Left
 //! to itself, its planner starts from `statuses` and walks every issue for
 //! each step of the recursion. The walk up needs the index from migration
@@ -45,6 +46,11 @@ struct Graph {
     /// True for a closed issue that an open issue still waits for, directly
     /// or through other closed issues.
     held: Vec<bool>,
+    open: Vec<bool>,
+    /// Every edge between live issues, open or closed: the issues that wait
+    /// for each issue, and the issues each one waits for.
+    down: Vec<Vec<u32>>,
+    up: Vec<Vec<u32>>,
 }
 
 /// The last graph built. One entry is enough: a server has one database.
@@ -165,12 +171,16 @@ impl Graph {
         let open: Vec<bool> = list.iter().map(|n| n.open).collect();
         let mut blockers: Vec<Vec<u32>> = vec![Vec::new(); list.len()];
         let mut held_edges: Vec<(u32, u32)> = Vec::new();
+        let mut down: Vec<Vec<u32>> = vec![Vec::new(); list.len()];
+        let mut up: Vec<Vec<u32>> = vec![Vec::new(); list.len()];
         let mut fields = edges.split(SEP).filter(|f| !f.is_empty());
         while let Some(from) = fields.next() {
             let to = fields.next().ok_or_else(bad)?;
             let (Some(&b), Some(&d)) = (index.get(from), index.get(to)) else {
                 continue;
             };
+            down[b as usize].push(d);
+            up[d as usize].push(b);
             if !open[b as usize] {
                 held_edges.push((b, d));
             } else if open[d as usize] {
@@ -187,7 +197,36 @@ impl Graph {
             ids: list.iter().map(|n| n.id.to_string()).collect(),
             index,
             blockers,
+            open,
+            down,
+            up,
         })
+    }
+
+    /// The IDs reachable from `seeds` along `next`, through issues whose open
+    /// flag is `open`. Seeds with the other flag are skipped. Each issue and
+    /// edge is visited once.
+    fn reach(&self, seeds: &[u32], next: &[Vec<u32>], open: bool) -> Vec<String> {
+        let mut seen = vec![false; self.ids.len()];
+        let mut queue: VecDeque<u32> = VecDeque::new();
+        let mut found = Vec::new();
+        let mut visit = |n: u32, queue: &mut VecDeque<u32>| {
+            let i = n as usize;
+            if !seen[i] && self.open[i] == open {
+                seen[i] = true;
+                found.push(self.ids[i].clone());
+                queue.push_back(n);
+            }
+        };
+        for &s in seeds {
+            visit(s, &mut queue);
+        }
+        while let Some(n) = queue.pop_front() {
+            for &m in &next[n as usize] {
+                visit(m, &mut queue);
+            }
+        }
+        found
     }
 
     fn of(&self, id: &str) -> Option<usize> {
@@ -322,23 +361,42 @@ fn chain_depths(blockers: &[Vec<u32>]) -> Vec<u32> {
 
 /// The open, live issues that wait for `start`, directly or through a chain.
 /// `start` itself may be closed or trashed. A closed issue ends the chain.
+/// It reads the in-memory graph (LLM-217).
 pub async fn dependents(conn: &mut SqliteConnection, start: &str) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar(
-        "WITH RECURSIVE down(id) AS (
-            SELECT ?
-            UNION
-            SELECT d.id FROM down
-            CROSS JOIN relations r ON r.from_id = down.id AND r.type = 'blocks'
-            CROSS JOIN issues d ON d.id = r.to_id
-            CROSS JOIN statuses s ON s.id = d.status_id
-            WHERE d.deleted_at IS NULL AND s.type NOT IN ('completed', 'canceled')
-         )
-         SELECT id FROM down WHERE id <> ?",
-    )
-    .bind(start)
-    .bind(start)
-    .fetch_all(&mut *conn)
-    .await?)
+    let graph = Graph::current(conn).await?;
+    let seeds = neighbors(conn, &graph, start, Direction::Blocks).await?;
+    let mut found = graph.reach(&seeds, &graph.down, true);
+    found.retain(|id| id != start);
+    Ok(found)
+}
+
+/// The direct neighbors of `start` in the graph, in one direction. An issue
+/// outside the graph, such as a trashed one, still has its edges in
+/// `relations`, so those are read directly.
+async fn neighbors(
+    conn: &mut SqliteConnection,
+    graph: &Graph,
+    start: &str,
+    direction: Direction,
+) -> ApiResult<Vec<u32>> {
+    if let Some(i) = graph.of(start) {
+        return Ok(match direction {
+            Direction::Blocks => graph.down[i].clone(),
+            Direction::DependsOn => graph.up[i].clone(),
+        });
+    }
+    let sql = match direction {
+        Direction::Blocks => "SELECT to_id FROM relations WHERE type = 'blocks' AND from_id = ?",
+        Direction::DependsOn => "SELECT from_id FROM relations WHERE type = 'blocks' AND to_id = ?",
+    };
+    let ids: Vec<String> = sqlx::query_scalar(sql)
+        .bind(start)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| graph.index.get(id).copied())
+        .collect())
 }
 
 /// The closed issues held by an open dependent, from (closed blocker,
@@ -370,24 +428,14 @@ fn held_by(edges: &[(u32, u32)], open: &[bool]) -> Vec<bool> {
 }
 
 /// The closed, live issues that `start` waits for, directly or through
-/// other closed issues. `start` itself is left out.
+/// other closed issues. `start` itself is left out. It reads the in-memory
+/// graph (LLM-217).
 pub async fn closed_blockers(conn: &mut SqliteConnection, start: &str) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar(
-        "WITH RECURSIVE up(id) AS (
-            SELECT ?
-            UNION
-            SELECT b.id FROM up
-            CROSS JOIN relations r ON r.type = 'blocks' AND r.to_id = up.id
-            CROSS JOIN issues b ON b.id = r.from_id
-            CROSS JOIN statuses s ON s.id = b.status_id
-            WHERE b.deleted_at IS NULL AND s.type IN ('completed', 'canceled')
-         )
-         SELECT id FROM up WHERE id <> ?",
-    )
-    .bind(start)
-    .bind(start)
-    .fetch_all(&mut *conn)
-    .await?)
+    let graph = Graph::current(conn).await?;
+    let seeds = neighbors(conn, &graph, start, Direction::DependsOn).await?;
+    let mut found = graph.reach(&seeds, &graph.up, false);
+    found.retain(|id| id != start);
+    Ok(found)
 }
 
 /// The keys on a shortest `blocks` path from `start` to `target`, both ends

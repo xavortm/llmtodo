@@ -857,6 +857,24 @@ async fn closed_issues_held_by_open_dependents() {
     t.ok(&owner(), "DELETE", &format!("/v1/issues/{c}"), json!({}))
         .await;
     assert!(!held(&a).await);
+    // A trashed issue sits outside the graph, but its closed blockers are
+    // still found, so the app can refresh them.
+    let found = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "closed_blockers_of": c }),
+        )
+        .await;
+    let mut keys: Vec<&str> = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, [a.as_str(), b.as_str()]);
     t.stop().await;
 }
 
