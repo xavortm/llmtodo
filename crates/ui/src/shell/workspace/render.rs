@@ -239,60 +239,64 @@ impl Workspace {
                 .child(Icon::new(IconName::Database).xsmall())
                 .child(crate::shell::widgets::card_text(label, cx))
         });
-        // Owner rule: the title bar is the plain page color, with no fill
-        // and no bottom border.
-        TitleBar::new().bg(theme.background).border_b_0().child(
-            h_flex()
-                .w_full()
-                .pr_2()
-                .justify_between()
-                .text_sm()
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(crate::shell::tooltip::with_card(
-                            "toggle-sidebar-tip",
-                            Button::new("toggle-sidebar")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::PanelLeft)
-                                .selected(sidebar_open)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.toggle_sidebar(&ToggleSidebar, window, cx);
+        // Owner rule: the title bar is the plain page color, with no fill,
+        // and always has a border under it.
+        TitleBar::new()
+            .bg(theme.background)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .pr_2()
+                    .justify_between()
+                    .text_sm()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(crate::shell::tooltip::with_card(
+                                "toggle-sidebar-tip",
+                                Button::new("toggle-sidebar")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::PanelLeft)
+                                    .selected(sidebar_open)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_sidebar(&ToggleSidebar, window, cx);
+                                    })),
+                                crate::shell::tooltip::Card::text(if sidebar_open {
+                                    "Hide sidebar (Cmd-B)"
+                                } else {
+                                    "Show sidebar (Cmd-B)"
+                                }),
+                            ))
+                            .child(div().text_color(theme.foreground).child(name))
+                            .children(tracker),
+                    )
+                    .child(
+                        h_flex().gap_2().children(update).child(
+                            div()
+                                .id("project-path")
+                                .px_1()
+                                .rounded(theme.radius)
+                                .cursor_pointer()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .hover(move |s| s.bg(hover))
+                                .active(move |s| s.bg(pressed))
+                                .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
+                                .child(crate::shell::widgets::card_text(path.clone(), cx))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        path.to_string(),
+                                    ));
+                                    this.message = format!("Copied {path}").into();
+                                    this.flash("Copied", window, cx);
                                 })),
-                            crate::shell::tooltip::Card::text(if sidebar_open {
-                                "Hide sidebar (Cmd-B)"
-                            } else {
-                                "Show sidebar (Cmd-B)"
-                            }),
-                        ))
-                        .child(div().text_color(theme.foreground).child(name))
-                        .children(tracker),
-                )
-                .child(
-                    h_flex().gap_2().children(update).child(
-                        div()
-                            .id("project-path")
-                            .px_1()
-                            .rounded(theme.radius)
-                            .cursor_pointer()
-                            .font_family(theme.mono_font_family.clone())
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .hover(move |s| s.bg(hover))
-                            .active(move |s| s.bg(pressed))
-                            .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
-                            .child(crate::shell::widgets::card_text(path.clone(), cx))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                    path.to_string(),
-                                ));
-                                this.message = format!("Copied {path}").into();
-                                this.flash("Copied", window, cx);
-                            })),
+                        ),
                     ),
-                ),
-        )
+            )
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
