@@ -236,6 +236,9 @@ pub struct QueryArgs {
     /// Stop after this many issues. All pages are fetched otherwise.
     #[arg(long)]
     pub limit: Option<u32>,
+    /// Print only the IDs of every match, as one list, in one request.
+    #[arg(long, conflicts_with_all = ["limit", "description"])]
+    pub ids: bool,
 }
 
 impl QueryArgs {
@@ -511,6 +514,10 @@ pub async fn run(app: &App, cmd: IssueCmd) -> CliResult {
             let mut d = c.issue(&key).await?;
             add_commits(app, &mut d);
             app.out.issue_detail(&d);
+        }
+        IssueCmd::Query(a) if a.ids => {
+            let q = a.into_query(app);
+            app.out.ser(&c.query_ids(&q).await?);
         }
         IssueCmd::Query(a) => {
             let q = a.into_query(app);

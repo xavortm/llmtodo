@@ -83,6 +83,7 @@ fn handlers() -> Vec<(Method, &'static str, MethodRouter<AppState>)> {
         on::<ep::DocumentHistory, _>(documents::document_history),
         on::<ep::RestoreDocument, _>(documents::restore_document),
         on::<ep::QueryIssues, _>(issues::query),
+        on::<ep::QueryIssueIds, _>(issues::query_ids),
         on::<ep::Frontier, _>(issues::frontier),
         on::<ep::CreateIssue, _>(issues::create),
         on::<ep::Issue, _>(issues::view),

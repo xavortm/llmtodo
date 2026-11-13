@@ -112,6 +112,7 @@ List issues that match filters. Sorted by priority, then last update
 - `--description` (one of: true, false): Include descriptions in the output
 - `--updated-after <updated_after>`
 - `--limit <limit>`: Stop after this many issues. All pages are fetched otherwise
+- `--ids` (one of: true, false): Print only the IDs of every match, as one list, in one request
 
 ### `llmtodo issue create`
 
@@ -586,6 +587,7 @@ Save the filters of `issue query` under a name
 - `--description` (one of: true, false): Include descriptions in the output
 - `--updated-after <updated_after>`
 - `--limit <limit>`: Stop after this many issues. All pages are fetched otherwise
+- `--ids` (one of: true, false): Print only the IDs of every match, as one list, in one request
 
 ### `llmtodo view update`
 
@@ -616,6 +618,7 @@ Save the filters of `issue query` under a name
 - `--description` (one of: true, false): Include descriptions in the output
 - `--updated-after <updated_after>`
 - `--limit <limit>`: Stop after this many issues. All pages are fetched otherwise
+- `--ids` (one of: true, false): Print only the IDs of every match, as one list, in one request
 
 ### `llmtodo view delete`
 
@@ -803,6 +806,7 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | GET | `/v1/documents/{doc}/history` | `doc history` | List a document's revisions, with their text only on ?bodies=true |
 | POST | `/v1/documents/{doc}/restore` | `doc restore` | Restore a document or one of its revisions |
 | POST | `/v1/issues/query` | `issue query` | Query issues |
+| POST | `/v1/issues/query/ids` | `issue query --ids` | Query issues for their IDs only, every match in one answer, with no cursor or limit |
 | POST | `/v1/issues/frontier` | `issue frontier` | Open, unblocked, unassigned sub-issues of a map issue or project |
 | POST | `/v1/issues` | `issue create` | Create an issue |
 | GET | `/v1/issues/{issue}` | `issue view` | Read an issue with comments, relations and work log |

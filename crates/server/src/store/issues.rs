@@ -717,7 +717,7 @@ pub async fn query(
     me: &Actor,
     q: &IssueQuery,
 ) -> ApiResult<(Vec<(String, Option<f64>)>, Option<String>)> {
-    let (mut b, keys, limit) = build_query(conn, me, q, "").await?;
+    let (mut b, keys, limit) = build_query(conn, me, q, "", true).await?;
     let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
     let more = rows.len() as i64 > limit;
     let rows = &rows[..rows.len().min(limit as usize)];
@@ -732,13 +732,33 @@ pub async fn query(
     Ok((found, next))
 }
 
+/// The IDs of every issue a query matches, in the query's order, in one SQL
+/// statement. It reads no cursor and no limit.
+pub async fn query_ids(
+    conn: &mut SqliteConnection,
+    me: &Actor,
+    q: &IssueQuery,
+) -> ApiResult<Vec<String>> {
+    let q = IssueQuery {
+        cursor: None,
+        limit: None,
+        ..q.clone()
+    };
+    let (mut b, _, _) = build_query(conn, me, &q, "", false).await?;
+    let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
+    rows.iter()
+        .map(|r| r.try_get("id").map_err(Into::into))
+        .collect()
+}
+
 /// Builds the SQL of an issue query after `prefix`. Returns it with the sort
-/// keys and the page size.
+/// keys and the page size. Without `paged`, the SQL has no limit.
 async fn build_query(
     conn: &mut SqliteConnection,
     me: &Actor,
     q: &IssueQuery,
     prefix: &str,
+    paged: bool,
 ) -> ApiResult<(QueryBuilder<Sqlite>, Vec<SortKey>, i64)> {
     let (ranked_text, ranked_similar) = search_terms(q)?;
     let mut b: QueryBuilder<Sqlite> = QueryBuilder::new(prefix);
@@ -762,7 +782,9 @@ async fn build_query(
         .limit
         .unwrap_or(100)
         .clamp(1, llmtodo_api_types::MAX_ISSUE_PAGE) as i64;
-    b.push(" LIMIT ").push_bind(limit + 1);
+    if paged {
+        b.push(" LIMIT ").push_bind(limit + 1);
+    }
     Ok((b, keys, limit))
 }
 
@@ -1298,7 +1320,7 @@ mod tests {
         me: &llmtodo_api_types::Actor,
         q: IssueQuery,
     ) -> String {
-        let (mut b, _, _) = super::build_query(c, me, &q, "EXPLAIN QUERY PLAN ")
+        let (mut b, _, _) = super::build_query(c, me, &q, "EXPLAIN QUERY PLAN ", true)
             .await
             .unwrap();
         let rows = b.build().fetch_all(&mut *c).await.unwrap();

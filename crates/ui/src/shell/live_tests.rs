@@ -840,6 +840,62 @@ fn backend_loads_the_trash_and_saved_views_and_reads_a_view() {
     assert_eq!(name, "Live work");
 }
 
+/// The refresh that follows each issue change reads the view's IDs in one
+/// request. It walks no pages of full issues, however large the view is.
+#[test]
+fn a_view_refresh_reads_only_ids_in_one_request() {
+    use llmtodo_client::types::{CreateView, IssueQuery};
+
+    let live = Live::new();
+    let owner = live.client(None);
+    let ids = live.rt.block_on(async {
+        for title in ["Second", "Third"] {
+            owner
+                .create_issue(
+                    &serde_json::from_value(json!({"team": "LLM", "title": title})).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        let query = IssueQuery::default();
+        owner
+            .create_view(&CreateView {
+                name: "Everything".into(),
+                query: query.clone(),
+            })
+            .await
+            .unwrap();
+        let all = owner.query_all(&query).await.unwrap();
+        all.iter().map(|i| i.id).collect::<Vec<_>>()
+    });
+    assert_eq!(ids.len(), 3);
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "a snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    let server = live.server.as_ref().unwrap();
+    server.record_routes();
+
+    // The request the workspace sends after an issue change. The test
+    // `a_saved_view_shows_the_issues_the_server_sends` checks that one
+    // change sends one.
+    backend.request(Request::ViewIssues {
+        name: "Everything".into(),
+    });
+    let got = live.wait(&mut events, "the view's issues", |e| match e {
+        Event::ViewIssues { ids, .. } => Some(ids.clone()),
+        _ => None,
+    });
+    assert_eq!(got.len(), ids.len());
+    assert!(got.iter().all(|id| ids.contains(id)));
+    let views: Vec<_> = server
+        .take_routes()
+        .into_iter()
+        .filter(|r| r.starts_with("POST /v1/issues/query"))
+        .collect();
+    assert_eq!(views, ["POST /v1/issues/query/ids"], "one IDs-only request");
+}
+
 #[test]
 fn backend_creates_an_issue_and_names_it() {
     use llmtodo_client::types::CreateIssue;

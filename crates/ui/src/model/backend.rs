@@ -1080,17 +1080,16 @@ async fn primary(client: &Client, events: &Events) -> Result<(), String> {
     Ok(())
 }
 
-/// Sends the IDs of the issues a saved view holds, or why it failed.
+/// Sends the IDs of the issues a saved view holds, or why it failed. One
+/// request reads every ID and no full issue, so the refresh after each issue
+/// change stays cheap on a large view.
 async fn view_issues(client: &Client, name: String, events: &Events) -> Result<(), String> {
     let query = IssueQuery {
         view: Some(name.clone()),
         ..Default::default()
     };
-    let event = match client.query_all(&query).await {
-        Ok(issues) => Event::ViewIssues {
-            name,
-            ids: issues.iter().map(|i| i.id).collect(),
-        },
+    let event = match client.query_ids(&query).await {
+        Ok(ids) => Event::ViewIssues { name, ids },
         Err(ClientError::Unreachable(e)) => return Err(e),
         Err(e) => Event::ViewFailed {
             name,

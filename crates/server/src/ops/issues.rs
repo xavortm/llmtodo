@@ -24,15 +24,9 @@ use crate::store::{self, activity, actors, deps, issue_detail, labels, projects,
 pub async fn query(
     c: &mut SqliteConnection,
     actor: &Actor,
-    mut q: IssueQuery,
+    q: IssueQuery,
 ) -> ApiResult<Page<Issue>> {
-    if let Some(name) = q.view.take() {
-        let stored = store::views::stored_query(c, &name)
-            .await?
-            .ok_or_else(|| ApiError::not_found("view", &name))?;
-        let base: IssueQuery = serde_json::from_str(&stored)?;
-        q = merge_query(base, q);
-    }
+    let q = with_view(c, q).await?;
     let (found, next) = issues::query(c, actor, &q).await?;
     let ids: Vec<String> = found.iter().map(|(id, _)| id.clone()).collect();
     let mut items = issues::load(c, &ids, q.include_description).await?;
@@ -43,6 +37,30 @@ pub async fn query(
         items,
         next_cursor: next,
     })
+}
+
+/// The IDs of every issue a query matches, with no paging. The app keeps a
+/// saved view exact with it, and reads no full issues to do so.
+pub async fn query_ids(
+    c: &mut SqliteConnection,
+    actor: &Actor,
+    q: IssueQuery,
+) -> ApiResult<Vec<IssueId>> {
+    let q = with_view(c, q).await?;
+    let ids = issues::query_ids(c, actor, &q).await?;
+    Ok(ids.iter().map(|id| crate::db::parse_uuid(id)).collect())
+}
+
+/// Puts the saved view named in `q` under its other filters.
+async fn with_view(c: &mut SqliteConnection, mut q: IssueQuery) -> ApiResult<IssueQuery> {
+    let Some(name) = q.view.take() else {
+        return Ok(q);
+    };
+    let stored = store::views::stored_query(c, &name)
+        .await?
+        .ok_or_else(|| ApiError::not_found("view", &name))?;
+    let base: IssueQuery = serde_json::from_str(&stored)?;
+    Ok(merge_query(base, q))
 }
 
 /// The open, unblocked issues under a root issue or inside a project.

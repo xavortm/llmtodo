@@ -564,6 +564,12 @@ impl Client {
         self.call::<ep::QueryIssues, _>((), q).await
     }
 
+    /// The IDs of every issue the query matches, in one request. The server
+    /// reads no cursor and no limit for it.
+    pub async fn query_ids(&self, q: &IssueQuery) -> Result<Vec<IssueId>> {
+        self.call::<ep::QueryIssueIds, _>((), q).await
+    }
+
     /// Fetches every page, or stops at `q.limit` issues when it is set.
     /// Each page is as large as the server allows, so a full list needs few
     /// round trips.

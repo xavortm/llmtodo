@@ -244,6 +244,7 @@ endpoints! {
     RestoreDocument: Post "/v1/documents/{doc}/restore", "Restore a document or one of its revisions", (t::RestoreRequest), (t::Document), "doc restore";
     // issues
     QueryIssues: Post "/v1/issues/query" [read], "Query issues", (t::IssueQuery), (t::Page<t::Issue>), "issue query";
+    QueryIssueIds: Post "/v1/issues/query/ids" [read], "Query issues for their IDs only, every match in one answer, with no cursor or limit", (t::IssueQuery), (Vec<t::IssueId>), "issue query --ids";
     Frontier: Post "/v1/issues/frontier" [read], "Open, unblocked, unassigned sub-issues of a map issue or project", (t::FrontierQuery), (Vec<t::Issue>), "issue frontier";
     CreateIssue: Post "/v1/issues", "Create an issue", (t::CreateIssue), (t::IssueDetail), "issue create";
     Issue: Get "/v1/issues/{issue}", "Read an issue with comments, relations and work log", -, (t::IssueDetail), "issue view";

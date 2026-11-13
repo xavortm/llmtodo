@@ -37,6 +37,15 @@ pub async fn query(
     Ok(Json(ops::issues::query(&mut c, &ctx.actor, q).await?))
 }
 
+pub async fn query_ids(
+    State(st): State<AppState>,
+    ctx: Ctx,
+    Json(q): Json<IssueQuery>,
+) -> ApiResult<Json<Vec<IssueId>>> {
+    let mut c = st.pool().acquire().await?;
+    Ok(Json(ops::issues::query_ids(&mut c, &ctx.actor, q).await?))
+}
+
 pub async fn frontier(
     State(st): State<AppState>,
     Json(q): Json<FrontierQuery>,

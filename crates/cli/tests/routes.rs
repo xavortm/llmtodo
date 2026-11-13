@@ -231,6 +231,7 @@ async fn every_route_is_called_by_its_command() {
         &["issue", "create", "-t", "Child", "--parent", "LLM-1"],
     );
     h.run("issue query", &["issue", "query"]);
+    h.run("issue query --ids", &["issue", "query", "--ids"]);
     h.run("issue frontier", &["issue", "frontier", "LLM-1"]);
     h.run("issue view", &["issue", "view", "LLM-1"]);
     h.run(
