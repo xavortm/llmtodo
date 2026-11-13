@@ -7,16 +7,16 @@
 //! - Motion never makes the owner wait. A state that turns on shows at once
 //!   or nearly so: a press, a selection, a hover. Only the way back fades.
 //! - An entrance is short and settles with a soft ease-out, as on macOS.
-//! - An animation redraws only the view that owns it, and only while it
-//!   runs (LLM-169). A panel fades in under a cover, so a cached view inside
-//!   it draws once and stays cached.
+//! - An animation redraws only the views it moves, and only while it runs
+//!   (LLM-169). A panel that slides in draws again for those frames, then
+//!   stays cached.
 
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Div, ElementId, Global, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, Rgba, Stateful,
-    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled, Window, prelude::FluentBuilder as _, px, rems,
 };
 
 /// Whether motion is on, as a global so every view reads one value.
@@ -34,25 +34,24 @@ pub fn set(on: bool, cx: &mut App) {
 }
 
 /// A menu, the palette or a dialog appearing.
-const ENTER: Duration = Duration::from_millis(150);
+const ENTER: Duration = Duration::from_millis(200);
 /// A tooltip appearing. GPUI already waits before it shows one.
-const FADE: Duration = Duration::from_millis(110);
-/// A panel appearing: the task view or the sidebar.
-const REVEAL: Duration = Duration::from_millis(140);
-/// A hover fill coming in. Short enough to read as instant, long enough to
-/// soften the edge.
-const FILL_IN: Duration = Duration::from_millis(60);
+const FADE: Duration = Duration::from_millis(150);
+/// A panel sliding in: the task view or the sidebar.
+const SLIDE: Duration = Duration::from_millis(220);
+/// A hover fill coming in. Short enough to feel instant, long enough to
+/// show as a fade.
+const FILL_IN: Duration = Duration::from_millis(90);
 /// A hover, press or selection fill going away.
-const FILL_OUT: Duration = Duration::from_millis(170);
+const FILL_OUT: Duration = Duration::from_millis(240);
 /// How far an overlay drops into place.
-const ENTER_TRAVEL: f32 = 6.;
+const ENTER_TRAVEL: f32 = 10.;
 
-/// macOS-like ease-out: fast at first, then a long soft settle. The same
-/// curve as GPUI Kit's `easing_enter` token, as a quintic so it costs no
-/// solver.
+/// Ease-out cubic: quick at first, then a soft settle. A steeper curve ends
+/// its visible change in the first two or three frames.
 fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0., 1.);
-    1. - (1. - t).powi(5)
+    1. - (1. - t).powi(3)
 }
 
 /// An overlay card entering: it fades in and drops a few pixels into
@@ -86,25 +85,27 @@ where
     .into_any_element()
 }
 
-/// A cover for a panel that just appeared. It starts in `color`, the page
-/// color under the panel, and fades out, so the panel fades in. The panel
-/// itself does not draw again for this. Place it last in a `relative`
-/// parent. It takes no mouse events. None while motion is off.
-pub fn reveal(id: impl Into<ElementId>, color: Hsla, cx: &App) -> Option<AnyElement> {
+/// A panel sliding in when it opens. It starts `from` rem to the side,
+/// negative for the left, and settles in place. With `fade`, it also fades
+/// in. Keyed by `id`, so it plays each time the panel mounts. It moves by a
+/// `left` offset, so the panel must not set its own.
+pub fn slide_in<E>(el: E, id: impl Into<ElementId>, from: f32, fade: bool, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
     if !on(cx) {
-        return None;
+        return el.into_any_element();
     }
-    Some(
-        div()
-            .absolute()
-            .inset_0()
-            .with_animation(
-                id,
-                Animation::new(REVEAL).with_easing(ease_out),
-                move |el, t| el.bg(color.opacity(color.a * (1. - t))),
-            )
-            .into_any_element(),
+    el.with_animation(
+        id,
+        Animation::new(SLIDE).with_easing(ease_out),
+        move |el, t| {
+            el.relative()
+                .left(rems(from * (1. - t)))
+                .when(fade, |el| el.opacity(t))
+        },
     )
+    .into_any_element()
 }
 
 /// The fills of a clickable element: at rest, under the pointer and while

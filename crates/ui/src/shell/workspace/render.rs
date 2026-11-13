@@ -129,17 +129,15 @@ impl Workspace {
                     .size_range(range)
                     .fixed()
                     .when(open, |this| {
-                        this.child(
-                            div()
-                                .relative()
-                                .size_full()
-                                .child(cached(&self.task))
-                                .children(crate::shell::motion::reveal(
-                                    "task-reveal",
-                                    cx.theme().background,
-                                    cx,
-                                )),
-                        )
+                        // With animations on, the task view fades in and
+                        // slides a short way from the right.
+                        this.child(crate::shell::motion::slide_in(
+                            div().size_full().child(cached(&self.task)),
+                            "task-slide",
+                            1.5,
+                            true,
+                            cx,
+                        ))
                     }),
             )
     }
@@ -187,21 +185,27 @@ impl Workspace {
     /// count every issue. The sidebar notifies itself when its data changes.
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
-        v_flex()
-            .w_56()
-            .flex_none()
-            .h_full()
+        let panel = v_flex()
+            .size_full()
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .relative()
             .child(div().flex_1().min_h_0().child(cached(&self.sidebar)))
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
-            })
-            .children(crate::shell::motion::reveal(
-                "sidebar-reveal",
-                theme.sidebar,
+            });
+        // With animations on, the panel slides in from the window's edge.
+        // The column keeps its width, so the list moves only once.
+        div()
+            .w_56()
+            .flex_none()
+            .h_full()
+            .overflow_hidden()
+            .child(crate::shell::motion::slide_in(
+                panel,
+                "sidebar-slide",
+                -14.,
+                false,
                 cx,
             ))
     }
