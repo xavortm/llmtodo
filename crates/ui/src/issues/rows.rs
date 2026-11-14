@@ -8,7 +8,7 @@ use gpui_shared_string::SharedString;
 
 use crate::issues::filter::ResolvedFilter;
 use crate::issues::list::{GroupBy, Row, SortKey};
-use crate::model::data::{Issue, IssueId, Label, LabelColor, Status};
+use crate::model::data::{Issue, IssueId, Label, LabelColor, Place, Status};
 use crate::model::scope::{Scope, ViewMembers};
 
 /// From this many issues in the store, the list builds its rows on a
@@ -35,6 +35,8 @@ pub struct RowsInput<'a> {
     pub statuses: &'a [Status],
     /// Every label of the catalog, for the label groups.
     pub labels: &'a [Label],
+    /// Every project of the catalog, by name, for the project groups.
+    pub projects: &'a [Place],
 }
 
 /// The same input with its own copies, for a background task.
@@ -49,6 +51,7 @@ pub struct OwnedRowsInput {
     pub collapsed: HashSet<String>,
     pub statuses: Vec<Status>,
     pub labels: Vec<Label>,
+    pub projects: Vec<Place>,
 }
 
 impl OwnedRowsInput {
@@ -64,6 +67,7 @@ impl OwnedRowsInput {
             collapsed: &self.collapsed,
             statuses: &self.statuses,
             labels: &self.labels,
+            projects: &self.projects,
         }
     }
 }
@@ -87,6 +91,21 @@ pub struct BuiltRows {
 
 /// The title of the group of issues with no parent.
 pub const NO_PARENT: &str = "No parent";
+
+/// The title of the group of issues with no project.
+pub const NO_PROJECT: &str = "No project";
+
+/// The title of the project group for a task in project `slug`: the
+/// project's name, or the slug when the catalog does not know it.
+pub fn project_title(slug: Option<&str>, projects: &[Place]) -> SharedString {
+    let Some(slug) = slug else {
+        return NO_PROJECT.into();
+    };
+    projects
+        .iter()
+        .find(|p| p.key.as_ref() == slug)
+        .map_or_else(|| slug.to_string().into(), |p| p.name.clone())
+}
 
 /// How one task row draws the order line of its parent. The line runs
 /// down a narrow column from the first ordered row of a group to the last.
@@ -337,6 +356,32 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
                 groups[ix].3.push(issue.id);
             }
             groups.push(("Unassigned".into(), None, None, none));
+            groups
+        }
+        GroupBy::Project => {
+            // The catalog's projects, by name, then any slug it lacks.
+            let mut groups: Vec<Group> = input
+                .projects
+                .iter()
+                .map(|p| (p.name.clone(), None, None, Vec::new()))
+                .collect();
+            let mut at: HashMap<&str, usize> = HashMap::new();
+            for (ix, p) in input.projects.iter().enumerate() {
+                at.entry(p.key.as_ref()).or_insert(ix);
+            }
+            let mut none = Vec::new();
+            for issue in issues {
+                let Some(slug) = &issue.project else {
+                    none.push(issue.id);
+                    continue;
+                };
+                let ix = *at.entry(slug.as_ref()).or_insert_with(|| {
+                    groups.push((slug.clone(), None, None, Vec::new()));
+                    groups.len() - 1
+                });
+                groups[ix].3.push(issue.id);
+            }
+            groups.push((NO_PROJECT.into(), None, None, none));
             groups
         }
     };

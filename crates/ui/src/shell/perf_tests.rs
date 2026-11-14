@@ -292,6 +292,7 @@ fn row_build_times() {
                 collapsed: &collapsed,
                 statuses: &statuses,
                 labels: &catalog.labels,
+                projects: &catalog.projects,
             };
             let mut times: Vec<Duration> = (0..ROUNDS)
                 .map(|_| {

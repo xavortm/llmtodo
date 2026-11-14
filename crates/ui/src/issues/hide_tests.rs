@@ -56,6 +56,7 @@ fn kept(
         collapsed: &collapsed,
         statuses: &statuses,
         labels: &catalog.labels,
+        projects: &catalog.projects,
     };
     let built = rows::build(&input, issues.iter());
     (built.visible, built.next_hide)

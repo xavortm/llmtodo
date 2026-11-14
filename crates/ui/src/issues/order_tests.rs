@@ -87,6 +87,7 @@ fn build_from(
         collapsed: &collapsed,
         statuses: &statuses,
         labels: &catalog.labels,
+        projects: &catalog.projects,
     };
     rows::build(&input, issues.iter())
 }

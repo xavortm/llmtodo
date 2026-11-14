@@ -2978,7 +2978,9 @@ fn a_narrow_list_shows_the_llm_badge_as_an_icon(cx: &mut TestAppContext) {
         assert!(window.try_find(part("llm-age", id)).is_some());
     })
     .unwrap();
-    cx.simulate_window_resize(handle, size(px(900.), px(760.)));
+    // All issues shows the project column, 120 px with its gap, so the
+    // LLM status column narrows below 1020 px instead of 900.
+    cx.simulate_window_resize(handle, size(px(1020.), px(760.)));
     settle(cx);
     let narrow = gpui_kit::px(crate::issues::columns::LLM_COMPACT_REM * 16.);
     cx.update_window(handle, |_, window, _| {
@@ -4388,4 +4390,91 @@ fn a_connection_leaves_the_status_message_empty(cx: &mut TestAppContext) {
     cx.read(|cx| assert!(view.read(cx).message().starts_with("Offline")));
     view.update(cx, |this, cx| this.apply_event(connected(), cx));
     cx.read(|cx| assert_eq!(view.read(cx).message(), ""));
+}
+
+/// LLM-238: All issues shows a Project column first. Other scopes do not.
+#[gpui_kit::test]
+fn all_issues_shows_the_project_column_first(cx: &mut TestAppContext) {
+    use crate::issues::columns::Column;
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).scope(cx), crate::model::scope::Scope::All);
+        let header = window.within("column-header");
+        let project = header.find(Column::Project.id()).bounds();
+        let check = header.find(Column::Check.id()).bounds();
+        assert!(
+            project.origin.x < check.origin.x,
+            "the project column is the left-most"
+        );
+        // LLM-101 is in App: its row shows the project's name.
+        assert!(window.within(("row", 0usize)).try_find("project").is_some());
+    })
+    .unwrap();
+
+    run_palette(handle, "project app", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(
+            window
+                .within("column-header")
+                .try_find(Column::Project.id())
+                .is_none(),
+            "a project view hides the project column"
+        );
+    })
+    .unwrap();
+
+    run_palette(handle, "all", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(
+            window
+                .within("column-header")
+                .try_find(Column::Project.id())
+                .is_some(),
+            "All issues brings it back"
+        );
+    })
+    .unwrap();
+}
+
+/// LLM-238: group by project makes one group per project, then No project.
+#[gpui_kit::test]
+fn group_by_project_splits_the_list_by_project(cx: &mut TestAppContext) {
+    use crate::issues::list::GroupBy;
+    assert_eq!(GroupBy::parse("project"), Some(GroupBy::Project));
+    assert_eq!(GroupBy::Parent.next(), GroupBy::Project);
+    assert_eq!(GroupBy::Project.next(), GroupBy::None);
+    let (handle, view) = open(cx);
+    run_palette(handle, "group project", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let rows = view.read(cx).rows(cx).to_vec();
+        let headers: Vec<String> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Header { title, .. } => Some(title.to_string()),
+                Row::Issue(_) => None,
+            })
+            .collect();
+        assert_eq!(headers, ["App", "Server", "No project"]);
+        // Every task under the App header is in App.
+        let store = view.read(cx).store().read(cx);
+        let app: Vec<_> = rows
+            .iter()
+            .skip(1)
+            .take_while(|r| matches!(r, Row::Issue(_)))
+            .collect();
+        assert!(!app.is_empty());
+        for row in app {
+            let Row::Issue(id) = row else { unreachable!() };
+            assert_eq!(store.get(*id).unwrap().project.as_deref(), Some("app"));
+        }
+        assert_eq!(view.read(cx).current_settings(cx).group, "project");
+    })
+    .unwrap();
 }

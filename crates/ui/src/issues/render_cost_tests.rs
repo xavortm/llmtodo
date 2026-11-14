@@ -53,7 +53,7 @@ fn old_groups(issues: &[&Issue], group: GroupBy, catalog: &Catalog) -> Vec<(Stri
     };
     let mut groups: Vec<(String, Vec<IssueId>)> = match group {
         // Parent groups came after LLM-178, so they have no old code.
-        GroupBy::None | GroupBy::Parent => return Vec::new(),
+        GroupBy::None | GroupBy::Parent | GroupBy::Project => return Vec::new(),
         GroupBy::Status => {
             let mut statuses = catalog.all_statuses();
             for issue in issues {
@@ -138,6 +138,7 @@ fn one_pass_grouping_matches_the_old_walk() {
                 collapsed: &collapsed,
                 statuses: &statuses,
                 labels: &catalog.labels,
+                projects: &catalog.projects,
             };
             let built = rows::build(&input, issues.iter());
             let by_id: std::collections::HashMap<IssueId, &Issue> =
@@ -230,6 +231,7 @@ fn the_build_says_when_the_next_closed_task_hides() {
         collapsed: &collapsed,
         statuses: &statuses,
         labels: &catalog.labels,
+        projects: &catalog.projects,
     };
     let built = rows::build(&input, issues.iter());
     assert_eq!(built.hidden_closed, 1);
@@ -313,6 +315,7 @@ fn ab_times() {
             collapsed: &collapsed,
             statuses: &statuses,
             labels: &catalog.labels,
+            projects: &catalog.projects,
         };
         let (mut old, mut new) = (Vec::new(), Vec::new());
         for _ in 0..21 {

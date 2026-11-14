@@ -58,6 +58,8 @@ pub enum GroupBy {
     Assignee,
     /// One group per parent task. Its sub-issues show in their order.
     Parent,
+    /// One group per project, by project name, then the tasks with none.
+    Project,
 }
 
 impl GroupBy {
@@ -68,6 +70,7 @@ impl GroupBy {
             "label" | "labels" => Some(Self::Label),
             "assignee" | "owner" => Some(Self::Assignee),
             "parent" | "epic" => Some(Self::Parent),
+            "project" | "projects" => Some(Self::Project),
             _ => None,
         }
     }
@@ -79,6 +82,7 @@ impl GroupBy {
             Self::Label => "Label",
             Self::Assignee => "Assignee",
             Self::Parent => "Parent",
+            Self::Project => "Project",
         }
     }
 
@@ -88,7 +92,8 @@ impl GroupBy {
             Self::Status => Self::Label,
             Self::Label => Self::Assignee,
             Self::Assignee => Self::Parent,
-            Self::Parent => Self::None,
+            Self::Parent => Self::Project,
+            Self::Project => Self::None,
         }
     }
 }
@@ -522,6 +527,7 @@ impl IssueList {
                 collapsed: &self.collapsed,
                 statuses: &statuses,
                 labels: &store.catalog.labels,
+                projects: &store.catalog.projects,
             };
             let built = rows::build(&input, store.iter());
             self.apply(built, keep, cx);
@@ -538,6 +544,7 @@ impl IssueList {
             collapsed: self.collapsed.clone(),
             statuses,
             labels: store.catalog.labels.clone(),
+            projects: store.catalog.projects.clone(),
         };
         let issues = store.snapshot();
         self.pending_keep = Some(keep);
@@ -721,6 +728,9 @@ impl IssueList {
                 .as_ref()
                 .map_or("Unassigned".into(), Assignee::name),
             GroupBy::Parent => i.parent.clone().unwrap_or_else(|| rows::NO_PARENT.into()),
+            GroupBy::Project => {
+                rows::project_title(i.project.as_deref(), &self.store.read(cx).catalog.projects)
+            }
         };
         self.header_row(&title)
     }
@@ -1143,7 +1153,13 @@ impl IssueList {
     /// The width at which this list shows every column and fits most of
     /// its titles. The task view beside it grows only past this width.
     pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
-        columns::comfortable_width_for(&self.demand(cx), rem_size, &self.layout_hidden())
+        // The project column takes no room from the task view: when room is
+        // short, the less useful columns hide before it does.
+        let mut hidden = self.layout_hidden();
+        if !hidden.contains(&Column::Project) {
+            hidden.push(Column::Project);
+        }
+        columns::comfortable_width_for(&self.demand(cx), rem_size, &hidden)
     }
 
     /// What the titles and labels on the list ask of the columns.
@@ -1256,7 +1272,48 @@ impl IssueList {
         if self.group != GroupBy::Parent && !hidden.contains(&Column::Order) {
             hidden.push(Column::Order);
         }
+        // Only All issues mixes projects. The other scopes hold one
+        // project, or name it in the sidebar.
+        if self.scope != Scope::All && !hidden.contains(&Column::Project) {
+            hidden.push(Column::Project);
+        }
         hidden
+    }
+
+    /// The slug of the project whose group has header `title`, under
+    /// "group by project". None for the tasks with no project.
+    fn project_of_title(&self, title: &str, cx: &App) -> Option<SharedString> {
+        if title == rows::NO_PROJECT {
+            return None;
+        }
+        let projects = &self.store.read(cx).catalog.projects;
+        Some(
+            projects
+                .iter()
+                .find(|p| p.name.as_ref() == title)
+                .map_or_else(|| title.to_string().into(), |p| p.key.clone()),
+        )
+    }
+
+    /// The project cell of a task row: the project's icon and name. Empty
+    /// for a task with no project.
+    fn project_cell(&self, slug: Option<&str>, muted: gpui_kit::Hsla, cx: &App) -> AnyElement {
+        let Some(slug) = slug else {
+            return div().into_any_element();
+        };
+        let catalog = &self.store.read(cx).catalog;
+        let name = rows::project_title(Some(slug), &catalog.projects);
+        let icon = crate::shell::icons::project_icon(&catalog.project_style(slug), muted, cx);
+        h_flex()
+            .id("project")
+            .test_support()
+            .w_full()
+            .min_w_0()
+            .gap_1p5()
+            .text_color(muted)
+            .child(icon.small().flex_none())
+            .child(div().min_w_0().truncate().child(name))
+            .into_any_element()
     }
 
     /// Whether the rows draw `column`: it shows, or it fades in or out.
@@ -1531,6 +1588,14 @@ impl IssueList {
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
         let mono = theme.mono_font_family.clone();
+        // Under "group by project", the project's icon before its name.
+        let project_icon = (self.group == GroupBy::Project)
+            .then(|| self.project_of_title(&title, cx))
+            .flatten()
+            .map(|slug| {
+                let style = self.store.read(cx).catalog.project_style(&slug);
+                crate::shell::icons::project_icon(&style, muted_fg, cx)
+            });
         let success = theme.success;
         let frame = crate::shell::motion::fill(
             h_flex().id(("row", row)),
@@ -1555,6 +1620,7 @@ impl IssueList {
             .when_some(color, |this, color| {
                 this.child(div().size_2().rounded_full().bg(color))
             })
+            .when_some(project_icon, |this, icon| this.child(icon.small()))
             .when_some(status.clone(), |this, status| {
                 this.child(
                     Icon::new(status.icon())
@@ -1810,6 +1876,10 @@ impl IssueList {
             .relative()
             .text_sm()
             .cursor_pointer()
+            .when(self.shows(Column::Project), |this| {
+                let project = self.project_cell(issue.project.as_deref(), muted, cx);
+                this.child(cell_with(Column::Project, &layout, project))
+            })
             .when(self.shows(Column::Check), |this| {
                 this.child(cell_with(Column::Check, &layout, check))
             })
@@ -2052,6 +2122,7 @@ impl IssueList {
                             GroupBy::Label,
                             GroupBy::Assignee,
                             GroupBy::Parent,
+                            GroupBy::Project,
                         ]
                         .into_iter()
                         .fold(menu, |menu, group| {
@@ -2109,6 +2180,9 @@ impl IssueList {
         let cells = columns::row_frame()
             .h_full()
             .text_xs()
+            .when(self.shows(Column::Project), |this| {
+                this.child(cell_with(Column::Project, &layout, label("Project")))
+            })
             .when(self.shows(Column::Check), |this| {
                 this.child(cell_with(Column::Check, &layout, div()))
             })
@@ -2196,21 +2270,27 @@ impl IssueList {
             // A checklist of the columns. It reads the list each time it
             // opens, so the checks are always current.
             .context_menu(move |menu, _, cx| {
-                let (hidden, group) = list
+                let (hidden, group, all) = list
                     .upgrade()
                     .map(|list| {
                         let list = list.read(cx);
-                        (list.hidden_columns.clone(), list.group)
+                        (
+                            list.hidden_columns.clone(),
+                            list.group,
+                            list.scope == Scope::All,
+                        )
                     })
-                    .unwrap_or((Vec::new(), GroupBy::None));
+                    .unwrap_or((Vec::new(), GroupBy::None, false));
                 Column::ALL.into_iter().fold(menu, |menu, column| {
                     menu.menu_with_check_and_disabled(
                         column.label(),
                         !hidden.contains(&column),
                         Box::new(columns::ToggleColumn(column)),
                         // The order line shows only under "group by parent".
+                        // The project column shows only in All issues.
                         column == Column::Title
-                            || (column == Column::Order && group != GroupBy::Parent),
+                            || (column == Column::Order && group != GroupBy::Parent)
+                            || (column == Column::Project && !all),
                     )
                 })
             })

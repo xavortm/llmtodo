@@ -55,6 +55,9 @@ pub const ORDER_REM: f32 = 1.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
+    /// The task's project: its icon and name. It shows only in All issues,
+    /// where tasks of many projects mix.
+    Project,
     /// The box that marks the task for a bulk action.
     Check,
     /// What an agent does on the task: Locked, Analyzing or nothing.
@@ -78,7 +81,8 @@ pub enum Column {
 
 impl Column {
     /// Every column, left to right.
-    pub const ALL: [Column; 13] = [
+    pub const ALL: [Column; 14] = [
+        Column::Project,
         Column::Check,
         Column::Llm,
         Column::Order,
@@ -98,6 +102,7 @@ impl Column {
     /// their own row.
     pub fn id(self) -> &'static str {
         match self {
+            Column::Project => "col-project",
             Column::Check => "col-check",
             Column::Llm => "col-llm",
             Column::Order => "col-order",
@@ -117,6 +122,7 @@ impl Column {
     /// The entry for this column in the column heading menu.
     pub fn label(self) -> &'static str {
         match self {
+            Column::Project => "Project",
             Column::Check => "Checkbox",
             Column::Llm => "LLM status",
             Column::Order => "Order",
@@ -149,6 +155,8 @@ impl Column {
     /// The fixed width. The title has none: it takes the space left over.
     pub fn width(self) -> Option<Rems> {
         match self {
+            // An icon and about ten characters of the name.
+            Column::Project => Some(rems(7.)),
             Column::Check => Some(rems(1.)),
             // The full width. `plan` narrows it to `LLM_COMPACT_REM` first
             // when the list runs short of room.
@@ -185,7 +193,8 @@ impl Column {
             Column::Waiting => Some(5),
             Column::Order => Some(6),
             Column::Deps => Some(7),
-            Column::Llm => Some(8),
+            Column::Project => Some(8),
+            Column::Llm => Some(9),
             Column::Check | Column::Status | Column::Key | Column::Title => None,
         }
     }
@@ -593,27 +602,37 @@ mod tests {
     use gpui_kit::px;
 
     const REM: f32 = 16.;
-    /// The list hides the order column unless it groups by parent.
-    const NO_ORDER: &[Column] = &[Column::Order];
+    /// The list hides the order column unless it groups by parent, and
+    /// the project column outside All issues.
+    const NO_ORDER: &[Column] = &[Column::Order, Column::Project];
 
-    /// Every column but the order column.
+    /// Every column but the order and project columns.
     fn shown() -> Vec<Column> {
         Column::ALL
             .into_iter()
-            .filter(|c| *c != Column::Order)
+            .filter(|c| !NO_ORDER.contains(c))
+            .collect()
+    }
+
+    /// Every column but the project column.
+    fn with_order() -> Vec<Column> {
+        Column::ALL
+            .into_iter()
+            .filter(|c| *c != Column::Project)
             .collect()
     }
 
     #[test]
     fn the_order_column_hides_after_waiting_and_before_deps() {
         use Column::*;
-        let at = |width: f32| plan(Some(px(width)), px(REM), &[], &Demand::default()).columns;
-        assert_eq!(at(2000.), Column::ALL);
+        let at =
+            |width: f32| plan(Some(px(width)), px(REM), &[Project], &Demand::default()).columns;
+        assert_eq!(at(2000.), with_order());
         // 20 px more than the list without it, and one more gap of 8.
-        assert_eq!(at(904.), Column::ALL);
+        assert_eq!(at(904.), with_order());
         // The LLM status column narrows to 24 px first, so every column
         // still fits 76 px less.
-        assert_eq!(at(828.), Column::ALL);
+        assert_eq!(at(828.), with_order());
         // The waiting column needs 20 + 8 and hides first.
         assert_eq!(
             at(492.),
@@ -776,7 +795,7 @@ mod tests {
     #[test]
     fn the_owners_choice_applies_before_the_width_rule() {
         use Column::*;
-        let hidden = [Labels, Key, Check, Time, Order];
+        let hidden = [Labels, Key, Check, Time, Order, Project];
         let without = [Llm, Status, Title, Deps, Waiting, Assignee, Cost, Added];
         let none = Demand::default();
         assert_eq!(visible(None, px(REM), &hidden, &none), without);
@@ -795,7 +814,7 @@ mod tests {
     #[test]
     fn the_llm_column_keeps_its_full_width_when_hidden() {
         // A hidden LLM status column takes no room, so it never narrows.
-        let hidden = [Column::Llm, Column::Order];
+        let hidden = [Column::Llm, Column::Order, Column::Project];
         let layout = plan(Some(px(500.)), px(REM), &hidden, &Demand::default());
         assert!(!layout.columns.contains(&Column::Llm));
         assert!(!layout.llm_compact());
@@ -810,6 +829,24 @@ mod tests {
         // Before the first layout the column has its full width.
         let first = plan(None, px(REM), NO_ORDER, &Demand::default());
         assert_eq!(first.width(Column::Llm), Some(rems(LLM_BADGE_REM)));
+    }
+
+    #[test]
+    fn the_project_column_comes_first_and_hides_before_the_llm_column() {
+        use Column::*;
+        assert_eq!(Column::ALL[0], Project);
+        let at = |width: f32| plan(Some(px(width)), px(REM), &[Order], &Demand::default()).columns;
+        let wide = at(2000.);
+        assert_eq!(wide.first(), Some(&Project));
+        assert_eq!(wide.len(), Column::ALL.len() - 1);
+        // 16 for the padding, 112 + 16 + 24 + 80 + 64 + 160 + 36, and 6
+        // gaps of 8. The dependencies hide first.
+        assert_eq!(at(556.), [Project, Check, Llm, Status, Key, Title, Deps]);
+        assert_eq!(at(555.), [Project, Check, Llm, Status, Key, Title]);
+        // Then the project column hides, and the LLM status column stays.
+        assert_eq!(at(512.), [Project, Check, Llm, Status, Key, Title]);
+        assert_eq!(at(511.), [Check, Llm, Status, Key, Title]);
+        assert_eq!(Column::hideable_from_setting("project"), Some(Project));
     }
 
     #[test]
@@ -851,7 +888,11 @@ mod tests {
     fn the_comfortable_width_leaves_out_hidden_columns() {
         let none = Demand::default();
         let all = comfortable_width_for(&none, px(REM), NO_ORDER);
-        let less = comfortable_width_for(&none, px(REM), &[Column::Labels, Column::Order]);
+        let less = comfortable_width_for(
+            &none,
+            px(REM),
+            &[Column::Labels, Column::Order, Column::Project],
+        );
         assert_eq!(f32::from(all) - f32::from(less), 64. + 8.);
     }
 
