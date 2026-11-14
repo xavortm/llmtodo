@@ -433,7 +433,7 @@ mod tests {
         // The same number of rows takes longer to cross further down.
         let start = |i: usize| {
             (0..=1000)
-                .map(|ms| Duration::from_millis(ms))
+                .map(Duration::from_millis)
                 .find(|&at| Wave::Open.step(at, i) > 0.)
                 .unwrap()
         };
