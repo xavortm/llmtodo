@@ -2,6 +2,7 @@
 
 pub mod fold_highlighter;
 pub mod history;
+pub mod panel_motion;
 pub mod panel_resize;
 pub mod preview;
 pub mod review;
@@ -21,3 +22,6 @@ mod prepared_tests;
 
 #[cfg(test)]
 mod tab_bar_tests;
+
+#[cfg(test)]
+mod panel_motion_tests;

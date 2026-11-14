@@ -189,6 +189,16 @@ pub fn closing_left(elapsed: Duration) -> f32 {
     1. - ease_out(elapsed.as_secs_f32() / CLOSE.as_secs_f32())
 }
 
+/// A task view panel growing or shrinking to its height on the next task
+/// (LLM-224). As long as a panel sliding in.
+pub const RESIZE: Duration = SLIDE;
+
+/// How far a panel's height change has come, eased, `elapsed` after it
+/// starts. None once it has ended.
+pub fn resize_step(elapsed: Duration) -> Option<f32> {
+    (elapsed < RESIZE).then(|| ease_out(elapsed.as_secs_f32() / RESIZE.as_secs_f32()))
+}
+
 /// A list column hiding or coming back as the list gets narrower or wider.
 pub const COLUMN: Duration = Duration::from_millis(200);
 

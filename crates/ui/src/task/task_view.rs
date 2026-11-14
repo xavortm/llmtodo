@@ -148,6 +148,8 @@ pub struct TaskView {
     /// Why the server refused each task's last review answer, for the
     /// panel.
     pub review_error: HashMap<IssueId, SharedString>,
+    /// The panels' heights as they change between tasks (LLM-224).
+    panel_motion: Rc<RefCell<crate::task::panel_motion::PanelMotion>>,
 }
 
 impl TaskView {
@@ -200,6 +202,7 @@ impl TaskView {
             #[cfg(test)]
             prepared_builds: Default::default(),
             session_costs: None,
+            panel_motion: Default::default(),
         }
     }
 
@@ -274,6 +277,8 @@ impl TaskView {
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.open = None;
+        // The next task opens without a height change.
+        self.panel_motion.borrow_mut().clear();
         cx.notify();
     }
 
@@ -610,16 +615,16 @@ impl TaskView {
             .git(issue.id)
             .filter(|g| has_git(g))
             .cloned();
-        let claim_bar = issue
-            .claim
-            .clone()
-            .map(|claim| self.render_claim_bar(&claim, git.as_ref(), cx));
+        let claim_bar = issue.claim.clone().map(|claim| {
+            self.render_claim_bar(&claim, git.as_ref(), cx)
+                .into_any_element()
+        });
         // Analyzing shows only without a claim: Locked says more.
         let analyzing_bar = issue
             .analyzing
             .clone()
             .filter(|a| issue.claim.is_none() && a.is_live(jiff::Timestamp::now()))
-            .map(|a| Self::render_analyzing_bar(&a, issue.id, cx));
+            .map(|a| Self::render_analyzing_bar(&a, issue.id, cx).into_any_element());
         // A project's linked repo wins over the worktree's `origin`.
         let repo = issue
             .project
@@ -663,6 +668,30 @@ impl TaskView {
                 )
             })
         };
+        // With animations on, each panel eases to its height on a move to
+        // another task.
+        let motion = &self.panel_motion;
+        let key = issue.id;
+        let animated = |name, panel, shrink| {
+            crate::task::panel_motion::panel(name, key, panel, shrink, motion, cx)
+        };
+        let claim_bar = animated("claim", claim_bar, false);
+        let analyzing_bar = animated("analyzing", analyzing_bar, false);
+        let review_panel = animated(panel_resize::REVIEW, review_panel, review_height.is_some());
+        let git_bar = animated(panel_resize::GIT, git_bar, git_height.is_some());
+        let theme = cx.theme();
+        let head = v_flex()
+            .id("detail-head")
+            .test_support()
+            .flex_none()
+            .w_full()
+            .min_w_0()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(header)
+            .child(meta_line)
+            .into_any_element();
+        let head = animated("head", Some(head), false);
         let theme = cx.theme();
         // The divider stays on the outer element. The inner element draws
         // the focus outline, so focus never shifts the layout.
@@ -711,18 +740,7 @@ impl TaskView {
                         this.key_context(DETAIL_CONTEXT).track_focus(&self.focus)
                     })
                     // The title and its meta line read as one block.
-                    .child(
-                        v_flex()
-                            .id("detail-head")
-                            .test_support()
-                            .flex_none()
-                            .w_full()
-                            .min_w_0()
-                            .border_b_1()
-                            .border_color(theme.border)
-                            .child(header)
-                            .child(meta_line),
-                    )
+                    .children(head)
                     // Each panel is its own section with a hairline below.
                     .children(claim_bar)
                     .children(analyzing_bar)
@@ -2031,6 +2049,10 @@ impl Render for TaskView {
         self.tab_hover.update(cx, |hover, _| hover.start_frame());
         #[cfg(test)]
         crate::render_count::bump::<Self>();
+        if !crate::shell::motion::on(cx) {
+            // Off, no panel keeps a height to change from.
+            self.panel_motion.borrow_mut().clear();
+        }
         let Some(detail) = self.open else {
             return div().into_any_element();
         };
