@@ -2171,7 +2171,12 @@ impl Workspace {
         }
     }
 
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_sidebar(
+        &mut self,
+        _: &ToggleSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.set_sidebar_open(!self.sidebar_shown(), window, cx);
     }
 

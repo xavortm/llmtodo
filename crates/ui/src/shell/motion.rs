@@ -106,6 +106,24 @@ pub fn turn(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut 
     )
 }
 
+/// How far a panel such as the sidebar is open, from 0 for closed to 1
+/// for open. On, it eases between them both ways, and a change mid-way
+/// turns back from where it is. Off, it is the end value at once.
+pub fn panel_open(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut App) -> f32 {
+    let target = if open { 1. } else { 0. };
+    if !on(cx) {
+        return target;
+    }
+    let id: ElementId = id.into();
+    gpui_kit::base::transition(
+        id,
+        target,
+        gpui_kit::base::Transition::new(SLIDE).ease(ease_out),
+        window,
+        cx,
+    )
+}
+
 /// Rows fading in from top to bottom, each a little after the row above.
 /// The front of the wave starts fast and slows down as it reaches the
 /// bottom, so it settles like every other animation here.

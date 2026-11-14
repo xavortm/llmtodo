@@ -727,3 +727,45 @@ fn a_new_sort_sends_a_wave_and_then_stops(cx: &mut TestAppContext) {
     frames_asked(handle, cx);
     assert_eq!(frames_asked(handle, cx), 0, "the wave stops");
 }
+
+/// LLM-195: with animations on, the sidebar's column shrinks away when it
+/// closes, so the view beside it moves smoothly, and then it goes.
+#[gpui_kit::test]
+fn the_sidebar_closes_smoothly_and_then_goes(cx: &mut TestAppContext) {
+    let settings = UiSettings {
+        sidebar_open: true,
+        ..UiSettings::default()
+    };
+    let (handle, view) = open_with(settings, SettingsStore::memory(), cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    frames_asked(handle, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    // Where the sidebar's left edge is, or None when it is gone.
+    let left = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("sidebar-all").map(|el| el.bounds().left())
+        })
+        .unwrap()
+    };
+    let at_rest = left(cx).expect("the sidebar shows");
+
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.toggle_sidebar(&crate::shell::workspace::ToggleSidebar, window, cx)
+        })
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(60));
+    let mid = left(cx).expect("the sidebar still shows while it closes");
+    assert!(mid < at_rest, "it slides out to the left");
+
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    frames_asked(handle, cx);
+    assert_eq!(left(cx), None, "it goes when closed");
+}

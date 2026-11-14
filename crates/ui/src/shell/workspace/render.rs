@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// The sidebar's width, in rem: `w_56`.
+const SIDEBAR_REM: f32 = 14.;
+
 impl Workspace {
     // Layout.
 
@@ -183,10 +186,14 @@ impl Workspace {
     /// is a sibling of the sidebar view, not a child, and the sidebar is
     /// cached. So a new cat frame does not draw the rows again, and they
     /// count every issue. The sidebar notifies itself when its data changes.
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_sidebar(&self, open: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let panel = v_flex()
-            .size_full()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .w(gpui_kit::rems(SIDEBAR_REM))
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
@@ -194,20 +201,16 @@ impl Workspace {
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
             });
-        // With animations on, the panel slides in from the window's edge.
-        // The column keeps its width, so the list moves only once.
+        // `open` runs from 0 to 1. With animations on, the column grows and
+        // shrinks, so the view beside it moves with it, and the panel rides
+        // its right edge, so it slides in and out. Off, it is 0 or 1.
         div()
-            .w_56()
+            .w(gpui_kit::rems(SIDEBAR_REM * open))
             .flex_none()
             .h_full()
+            .relative()
             .overflow_hidden()
-            .child(crate::shell::motion::slide_in(
-                panel,
-                "sidebar-slide",
-                -14.,
-                false,
-                cx,
-            ))
+            .child(panel)
     }
 
     /// The project of the scope on the left, its repo or folder on the
@@ -678,6 +681,8 @@ impl Render for Workspace {
         }
         let palette_open = self.palette.read(cx).is_open();
         let claims_open = self.claims.read(cx).is_open();
+        let sidebar_open =
+            crate::shell::motion::panel_open("sidebar-open", self.sidebar_shown(), window, cx);
         let theme = cx.theme();
         v_flex()
             .id("workspace")
@@ -770,8 +775,8 @@ impl Render for Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .when(self.sidebar_shown(), |this| {
-                        this.child(self.render_sidebar(cx))
+                    .when(sidebar_open > 0., |this| {
+                        this.child(self.render_sidebar(sidebar_open, cx))
                     })
                     .map(|this| {
                         if self.settings_shown(cx) {
