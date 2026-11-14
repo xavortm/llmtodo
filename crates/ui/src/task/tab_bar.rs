@@ -10,6 +10,9 @@
 //! the tabs had after layout. When that room changes which tabs fit, the
 //! canvas asks for one more frame. The room does not depend on the tabs, so
 //! the second frame keeps the same tabs and no loop starts.
+//!
+//! With animations on, the tabs share one hover background that slides to
+//! the tab under the pointer (LLM-220). See [`TabHover`].
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -21,14 +24,20 @@ use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
 };
 use gpui_kit::{
-    AnyElement, App, Div, EntityId, InteractiveElement, Interactivity, IntoElement,
-    ParentElement as _, Pixels, RenderOnce, SharedString, Stateful,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    AnyElement, App, Bounds, ContentMask, Context, Div, Entity, EntityId, InteractiveElement,
+    Interactivity, IntoElement, ParentElement as _, Pixels, Render, RenderOnce, SharedString,
+    Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _,
 };
 
+use crate::shell::motion::{self, Glide};
 use crate::shell::view_events::{ViewEvent, ViewEvents};
 use crate::shell::widgets;
+
+/// A tab's hover fill: the foreground at this opacity.
+const HOVER_ALPHA: f32 = 0.08;
+/// A tab's fill while pressed: the foreground at this opacity.
+const PRESSED_ALPHA: f32 = 0.16;
 
 /// A tab's horizontal padding on each side, in rem: `px_3`.
 const TAB_PAD_REM: f32 = 0.75;
@@ -125,10 +134,15 @@ pub struct TabBar<'a> {
     pub room: Rc<Cell<Pixels>>,
     /// The task view, which draws again when the room changes the fit.
     pub view: EntityId,
+    /// The shared hover background.
+    pub hover: Entity<TabHover>,
 }
 
 impl TabBar<'_> {
-    pub fn render(self, window: &Window, cx: &App) -> impl IntoElement + use<> {
+    pub fn render(self, window: &Window, cx: &mut App) -> impl IntoElement + use<> {
+        self.hover.update(cx, |hover, _| hover.drawn = true);
+        // Off, each tab shows its own hover fill, as before LLM-220.
+        let hover = motion::on(cx).then(|| self.hover.clone());
         let widths = Widths::measure(self.titles, window);
         let shown = widths.fit(self.room.get());
         let hidden: Vec<(usize, String)> = self
@@ -145,14 +159,14 @@ impl TabBar<'_> {
         let muted = theme.muted_foreground;
         let fg = theme.foreground;
         let accent = theme.primary;
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
         let colors = TabColors {
             fg,
             muted,
             accent,
-            hover,
-            pressed,
+            hover: theme.foreground.opacity(HOVER_ALPHA),
+            pressed: theme.foreground.opacity(PRESSED_ALPHA),
+            shared: hover.is_some(),
+            pressed_under: theme.foreground.opacity(under(PRESSED_ALPHA, HOVER_ALPHA)),
         };
         let room = self.room.clone();
         let view = self.view;
@@ -169,11 +183,12 @@ impl TabBar<'_> {
         )
         .absolute()
         .size_full();
-        let more = (!hidden.is_empty()).then(|| {
+        let has_more = !hidden.is_empty();
+        let more = has_more.then(|| {
             let holds_active = hidden.iter().any(|(ix, _)| *ix == active);
             let label = more_label(hidden.len());
             let events = self.events.clone();
-            MoreTab::new(label, colors)
+            MoreTab::new(label, colors, hover.clone().map(|hover| (hover, shown)))
                 .selected(holds_active)
                 .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
                     hidden.iter().fold(menu, |menu, (ix, title)| {
@@ -204,6 +219,15 @@ impl TabBar<'_> {
             // Edit and Preview buttons, so it never depends on the tabs.
             .child(
                 h_flex()
+                    // Records where each tab is, for the shared hover
+                    // background. The children are the measure canvas,
+                    // which fills the room, the tabs, a spacer and the
+                    // More button.
+                    .when_some(hover.clone(), |room, hover| {
+                        room.on_children_prepainted(move |bounds, _, cx| {
+                            hover.update(cx, |hover, _| hover.record(&bounds, shown, has_more));
+                        })
+                    })
                     .id("detail-tabs-room")
                     .test_support()
                     .relative()
@@ -214,7 +238,9 @@ impl TabBar<'_> {
                     .child(measure)
                     .children(self.titles.iter().take(shown).enumerate().map(
                         |(ix, (title, read_only))| {
-                            tab(ix, title, *read_only, ix == active, colors, &events, cx)
+                            let selected = ix == active;
+                            let hover = hover.clone();
+                            tab(ix, title, *read_only, selected, colors, &events, hover, cx)
                         },
                     ))
                     .child(div().flex_1())
@@ -240,6 +266,18 @@ struct TabColors {
     accent: gpui_kit::Hsla,
     hover: gpui_kit::Hsla,
     pressed: gpui_kit::Hsla,
+    /// Whether the tabs share the sliding hover background. The tabs then
+    /// draw no hover fill of their own.
+    shared: bool,
+    /// The pressed fill under the shared background, so the two together
+    /// match `pressed`.
+    pressed_under: gpui_kit::Hsla,
+}
+
+/// The opacity a fill under a see-through `over` fill of the same color
+/// needs, so the two together show at `total`.
+fn under(total: f32, over: f32) -> f32 {
+    1. - (1. - total) / (1. - over)
 }
 
 /// The shape every tab and the More button share.
@@ -259,10 +297,28 @@ fn tab_base(id: impl Into<gpui_kit::ElementId>, selected: bool, c: TabColors) ->
             gpui_kit::transparent_black()
         })
         .text_color(if selected { c.fg } else { c.muted })
-        .hover(move |s| s.bg(c.hover).text_color(c.fg))
-        .active(move |s| s.bg(c.pressed))
+        .map(|tab| {
+            if c.shared {
+                tab.hover(move |s| s.text_color(c.fg))
+                    .active(move |s| s.bg(c.pressed_under))
+            } else {
+                tab.hover(move |s| s.bg(c.hover).text_color(c.fg))
+                    .active(move |s| s.bg(c.pressed))
+            }
+        })
 }
 
+/// Tells the shared hover background when the pointer enters or leaves
+/// the item `ix`.
+fn track_hover(el: Stateful<Div>, hover: Option<Entity<TabHover>>, ix: usize) -> Stateful<Div> {
+    el.when_some(hover, |el, hover| {
+        el.on_hover(move |hovered, _, cx| {
+            hover.update(cx, |hover, cx| hover.hover(ix, *hovered, cx));
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn tab(
     ix: usize,
     title: &str,
@@ -270,10 +326,11 @@ fn tab(
     selected: bool,
     c: TabColors,
     events: &ViewEvents,
+    hover: Option<Entity<TabHover>>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let events = events.clone();
-    tab_base(("detail-tab", ix), selected, c)
+    track_hover(tab_base(("detail-tab", ix), selected, c), hover, ix)
         .test_support()
         .when(read_only.is_some(), |tab| {
             tab.child(
@@ -302,16 +359,19 @@ struct MoreTab {
     base: Stateful<Div>,
     label: SharedString,
     colors: TabColors,
+    /// The shared hover background, and the button's index in it.
+    hover: Option<(Entity<TabHover>, usize)>,
     holds_active: bool,
     open: bool,
 }
 
 impl MoreTab {
-    fn new(label: String, colors: TabColors) -> Self {
+    fn new(label: String, colors: TabColors, hover: Option<(Entity<TabHover>, usize)>) -> Self {
         Self {
             base: div().id("detail-tabs-more"),
             label: label.into(),
             colors,
+            hover,
             holds_active: false,
             open: false,
         }
@@ -356,11 +416,120 @@ impl DropdownMenu for MoreTab {}
 impl RenderOnce for MoreTab {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let c = self.colors;
-        let shape = tab_base("detail-tabs-more-tab", self.holds_active, c)
+        let (hover, ix) = self.hover.unzip();
+        let shape = tab_base("detail-tabs-more-tab", self.holds_active, c);
+        let shape = track_hover(shape, hover, ix.unwrap_or_default())
             .test_support()
             .when(self.open, |d| d.bg(c.pressed).text_color(c.fg))
             .child(self.label)
             .child(Icon::new(IconName::ChevronDown).xsmall());
         self.base.h_full().flex_none().test_support().child(shape)
+    }
+}
+
+/// The tab bar's shared hover background, with animations on (LLM-220).
+/// It slides to the tab under the pointer and takes its width.
+///
+/// It is its own view, which the workspace draws over the task view. So
+/// its frames draw only this view and never the task view, which stays
+/// cached. The tab bar records where each tab is as it lays out. The fill
+/// is the tabs' see-through hover color, and a hovered label already has
+/// the foreground color, so a fill over the tab looks the same as one
+/// behind it.
+#[derive(Default)]
+pub struct TabHover {
+    /// Whether the task view's last render drew the tab bar.
+    drawn: bool,
+    /// The tabs' room, in window coordinates, from the last layout.
+    room: Bounds<Pixels>,
+    /// Each tab's bounds, then the More button's, relative to the room.
+    items: Vec<Bounds<Pixels>>,
+    glide: Glide,
+}
+
+impl TabHover {
+    /// The task view calls this as it starts to render. Its tab bar sets
+    /// it back, if it draws one.
+    pub fn start_frame(&mut self) {
+        self.drawn = false;
+    }
+
+    /// Where the hover background is now, in window coordinates, and its
+    /// opacity. None when it does not show.
+    pub fn shown(&self, cx: &App) -> Option<(Bounds<Pixels>, f32)> {
+        if !self.drawn || !motion::on(cx) {
+            return None;
+        }
+        let now = cx.background_executor().now();
+        let (rect, alpha) = self.glide.sample(&self.items, now).0?;
+        Some((
+            Bounds::new(rect.origin + self.room.origin, rect.size),
+            alpha,
+        ))
+    }
+
+    fn record(&mut self, children: &[Bounds<Pixels>], shown: usize, has_more: bool) {
+        let Some(room) = children.first().copied() else {
+            return;
+        };
+        let relative = |b: &Bounds<Pixels>| Bounds::new(b.origin - room.origin, b.size);
+        self.room = room;
+        self.items.clear();
+        self.items
+            .extend(children.iter().skip(1).take(shown).map(relative));
+        if has_more && let Some(more) = children.last() {
+            self.items.push(relative(more));
+        }
+    }
+
+    fn hover(&mut self, ix: usize, hovered: bool, cx: &mut Context<Self>) {
+        let item = if hovered {
+            Some(ix)
+        } else if self.glide.hovered() == Some(ix) {
+            None
+        } else {
+            // The pointer already moved on to another tab.
+            return;
+        };
+        let now = cx.background_executor().now();
+        self.glide.hover(item, &self.items, now);
+        cx.notify();
+    }
+}
+
+impl Render for TabHover {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
+        if !self.drawn || !motion::on(cx) {
+            // The bar went away, or animations are off: a later bar starts
+            // clear.
+            self.glide.clear();
+        } else if self
+            .glide
+            .sample(&self.items, cx.background_executor().now())
+            .1
+        {
+            window.request_animation_frame();
+        }
+        let this = cx.entity();
+        // It paints after the task view has laid out, so it uses this
+        // frame's tab bounds.
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, _, window, cx| {
+                let hover = this.read(cx);
+                let Some((rect, alpha)) = hover.shown(cx) else {
+                    return;
+                };
+                let color = cx.theme().foreground.opacity(HOVER_ALPHA * alpha);
+                let mask = ContentMask { bounds: hover.room };
+                window.with_content_mask(Some(mask), |window| {
+                    window.paint_quad(gpui_kit::fill(rect, color));
+                });
+            },
+        )
+        .absolute()
+        .size_0()
     }
 }

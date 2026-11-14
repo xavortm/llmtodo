@@ -182,3 +182,158 @@ fn a_settled_bar_does_not_draw_again(cx: &mut TestAppContext) {
         assert_eq!(render_count::of::<TaskView>(), 0);
     }
 }
+
+/// Where the shared hover background is, in window coordinates, and its
+/// opacity.
+fn hover_shown(
+    view: &Entity<Workspace>,
+    cx: &TestAppContext,
+) -> Option<(gpui_kit::Bounds<gpui_kit::Pixels>, f32)> {
+    cx.read(|cx| {
+        let task = view.read(cx).task().read(cx);
+        task.tab_hover.read(cx).shown(cx)
+    })
+}
+
+fn tab_bounds(
+    handle: AnyWindowHandle,
+    ix: usize,
+    cx: &mut TestAppContext,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    cx.update_window(handle, |_, window, _| {
+        window.find(("detail-tab", ix)).bounds()
+    })
+    .unwrap()
+}
+
+fn wait(ms: u64, cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(ms));
+    cx.run_until_parked();
+}
+
+/// LLM-220: with animations on, one hover background slides from tab to
+/// tab and fits each one. Its frames draw it, not the task view.
+#[gpui_kit::test]
+fn the_hover_background_slides_between_tabs(cx: &mut TestAppContext) {
+    let (handle, view) = open_task(560., cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    // The task view slides in once animations are on. Let it settle.
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        wait(400, cx);
+    }
+    assert_eq!(hover_shown(&view, cx), None, "nothing shows at rest");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("detail-tab", 0usize), cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    wait(400, cx);
+    // The first frames after animations turn on may draw the task view.
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+    }
+    let first = tab_bounds(handle, 0, cx);
+    let second = tab_bounds(handle, 1, cx);
+    assert_eq!(
+        hover_shown(&view, cx),
+        Some((first, 1.)),
+        "it fades in on the tab"
+    );
+
+    // The pointer's move draws the task view once, for the label's hover
+    // color, as before LLM-220.
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("detail-tab", 1usize), cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    // The slide's frames draw only the hover background.
+    for _ in 0..3 {
+        render_count::reset();
+        cx.update_window(handle, |_, window, cx| {
+            assert!(
+                window.simulate_next_frame(cx) > 0,
+                "the slide asks for frames"
+            );
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        assert_eq!(render_count::of::<crate::task::tab_bar::TabHover>(), 1);
+        assert_eq!(render_count::of::<TaskView>(), 0);
+    }
+    wait(60, cx);
+    let (mid, alpha) = hover_shown(&view, cx).unwrap();
+    assert_eq!(alpha, 1.);
+    assert!(
+        mid.origin.x > first.origin.x && mid.origin.x < second.origin.x,
+        "it is between the tabs: {mid:?}"
+    );
+    wait(400, cx);
+    assert_eq!(
+        hover_shown(&view, cx),
+        Some((second, 1.)),
+        "it fits the tab"
+    );
+
+    // Settled: no more frames.
+    cx.update_window(handle, |_, window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert_eq!(window.simulate_next_frame(cx), 0);
+    })
+    .unwrap();
+}
+
+/// With animations off, each tab keeps its own hover fill, as before, and
+/// no frame waits on an animation.
+#[gpui_kit::test]
+fn with_animations_off_no_hover_background_shows(cx: &mut TestAppContext) {
+    let (handle, view) = open_task(560., cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("detail-tab", 0usize), cx)
+    })
+    .unwrap();
+    wait(400, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("detail-tab", 1usize), cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        assert_eq!(window.simulate_next_frame(cx), 0, "no animation runs");
+    })
+    .unwrap();
+    assert_eq!(hover_shown(&view, cx), None);
+}
+
+/// The More button shares the hover background with the tabs.
+#[gpui_kit::test]
+fn the_hover_background_reaches_the_more_button(cx: &mut TestAppContext) {
+    let (handle, view) = open_task(300., cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        wait(400, cx);
+    }
+    cx.update_window(handle, |_, window, cx| {
+        window.hover("detail-tabs-more", cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    wait(400, cx);
+    let more = cx
+        .update_window(handle, |_, window, _| {
+            window.find("detail-tabs-more").bounds()
+        })
+        .unwrap();
+    assert_eq!(hover_shown(&view, cx), Some((more, 1.)));
+}

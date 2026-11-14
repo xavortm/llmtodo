@@ -14,8 +14,8 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Div, ElementId, Global, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, Rgba, Stateful,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, Div, ElementId, Global, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, Pixels, Rgba, Stateful,
     StatefulInteractiveElement as _, Styled, Window, prelude::FluentBuilder as _, px, rems,
 };
 
@@ -322,6 +322,108 @@ where
         },
     )
     .into_any_element()
+}
+
+/// A shared hover background moving from one item of a bar to the next,
+/// such as a tab. Short, so it keeps up with the pointer.
+const GLIDE: Duration = Duration::from_millis(150);
+
+/// One hover background that the items of a bar share, such as tabs
+/// (LLM-220). It slides to the item under the pointer and takes its width.
+/// Coming from outside the bar, it fades in on that item without a slide.
+/// When the pointer leaves the bar, it fades out.
+///
+/// It knows the items only by their index. Each call passes the items'
+/// bounds as they are now, relative to the bar, so a bar that moves or
+/// grows keeps its background on the right item.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Glide {
+    /// The item under the pointer.
+    hovered: Option<usize>,
+    /// The item the background moves to. It stays on the last item while
+    /// the background fades out.
+    to: Option<usize>,
+    /// Where the slide started.
+    from: Option<Bounds<Pixels>>,
+    slide_start: Option<Instant>,
+    /// The fade: from, to, start and length.
+    alpha: (f32, f32, Option<Instant>, Duration),
+}
+
+impl Glide {
+    /// The item under the pointer.
+    pub fn hovered(&self) -> Option<usize> {
+        self.hovered
+    }
+
+    /// The pointer moved onto `item`, or off the bar for None.
+    pub fn hover(&mut self, item: Option<usize>, items: &[Bounds<Pixels>], now: Instant) {
+        if item == self.hovered {
+            return;
+        }
+        let (shown, alpha) = match self.sample(items, now).0 {
+            Some((rect, alpha)) => (Some(rect), alpha),
+            None => (None, 0.),
+        };
+        self.hovered = item;
+        match item {
+            Some(ix) => {
+                // A background still showing slides from where it is. One
+                // that has faded out appears on the new item.
+                let from = shown.filter(|_| alpha > 0.);
+                self.slide_start = from.map(|_| now);
+                self.from = from;
+                self.to = Some(ix);
+                self.alpha = (alpha, 1., Some(now), FILL_IN);
+            }
+            None => self.alpha = (alpha, 0., Some(now), FILL_OUT),
+        }
+    }
+
+    /// Forgets the bar: the background is gone at once.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The background's bounds and opacity now, from 0 to 1, or None when
+    /// it does not show. The flag says whether it still moves or fades.
+    pub fn sample(
+        &self,
+        items: &[Bounds<Pixels>],
+        now: Instant,
+    ) -> (Option<(Bounds<Pixels>, f32)>, bool) {
+        let progress = |start: Option<Instant>, length: Duration| {
+            let Some(start) = start else {
+                return (1., false);
+            };
+            let elapsed = now.saturating_duration_since(start);
+            if length.is_zero() || elapsed >= length {
+                return (1., false);
+            }
+            (ease_out(elapsed.as_secs_f32() / length.as_secs_f32()), true)
+        };
+        let (from_alpha, to_alpha, start, length) = self.alpha;
+        let (t, fading) = progress(start, length);
+        let alpha = from_alpha + (to_alpha - from_alpha) * t;
+        let Some(to) = self.to.and_then(|ix| items.get(ix)).copied() else {
+            return (None, false);
+        };
+        let (t, sliding) = progress(self.slide_start, GLIDE);
+        let from = self.from.unwrap_or(to);
+        let lerp = |a: Pixels, b: Pixels| a + (b - a) * t;
+        let rect = Bounds {
+            origin: gpui_kit::point(
+                lerp(from.origin.x, to.origin.x),
+                lerp(from.origin.y, to.origin.y),
+            ),
+            size: gpui_kit::size(
+                lerp(from.size.width, to.size.width),
+                lerp(from.size.height, to.size.height),
+            ),
+        };
+        let running = fading || (sliding && alpha > 0.);
+        ((alpha > 0.).then_some((rect, alpha)), running)
+    }
 }
 
 /// The fills of a clickable element: at rest, under the pointer and while
@@ -633,6 +735,104 @@ mod tests {
         assert!(color.is_some());
         let (color, _) = state.sample(fill(), start + FILL_OUT);
         assert_eq!(color, None, "it ends with no fill");
+    }
+
+    /// Two tabs side by side: 100 px, then 60 px.
+    fn tabs() -> [Bounds<Pixels>; 2] {
+        [
+            Bounds::new(
+                gpui_kit::point(px(0.), px(0.)),
+                gpui_kit::size(px(100.), px(32.)),
+            ),
+            Bounds::new(
+                gpui_kit::point(px(100.), px(0.)),
+                gpui_kit::size(px(60.), px(32.)),
+            ),
+        ]
+    }
+
+    #[test]
+    fn entering_the_bar_fades_in_on_the_tab_without_a_slide() {
+        let start = Instant::now();
+        let mut glide = Glide::default();
+        assert_eq!(glide.sample(&tabs(), start).0, None, "nothing at rest");
+        glide.hover(Some(1), &tabs(), start);
+        let mid = start + FILL_IN / 2;
+        let (shown, running) = glide.sample(&tabs(), mid);
+        let (rect, alpha) = shown.unwrap();
+        assert!(running);
+        assert_eq!(rect, tabs()[1], "it starts on the tab");
+        assert!(alpha > 0. && alpha < 1., "it fades in, got {alpha}");
+        let (shown, running) = glide.sample(&tabs(), start + FILL_IN);
+        assert_eq!(shown, Some((tabs()[1], 1.)));
+        assert!(!running, "the fade ends on time");
+    }
+
+    #[test]
+    fn moving_to_the_next_tab_slides_and_fits_its_width() {
+        let start = Instant::now();
+        let mut glide = Glide::default();
+        glide.hover(Some(0), &tabs(), start);
+        let at = start + FILL_IN;
+        // The pointer leaves one tab and enters the next in one move.
+        glide.hover(None, &tabs(), at);
+        glide.hover(Some(1), &tabs(), at);
+        let (shown, running) = glide.sample(&tabs(), at + GLIDE / 2);
+        let (rect, alpha) = shown.unwrap();
+        assert!(running);
+        assert_eq!(alpha, 1., "it stays fully shown while it slides");
+        assert!(
+            rect.origin.x > px(0.) && rect.origin.x < px(100.),
+            "{rect:?}"
+        );
+        assert!(
+            rect.size.width < px(100.) && rect.size.width > px(60.),
+            "{rect:?}"
+        );
+        let (shown, running) = glide.sample(&tabs(), at + GLIDE);
+        assert_eq!(shown, Some((tabs()[1], 1.)));
+        assert!(!running, "the slide ends on time");
+    }
+
+    #[test]
+    fn leaving_the_bar_fades_out_and_a_later_entry_does_not_slide() {
+        let start = Instant::now();
+        let mut glide = Glide::default();
+        glide.hover(Some(0), &tabs(), start);
+        let at = start + FILL_IN;
+        glide.hover(None, &tabs(), at);
+        let (shown, running) = glide.sample(&tabs(), at + FILL_OUT / 2);
+        let (rect, alpha) = shown.unwrap();
+        assert!(running);
+        assert_eq!(rect, tabs()[0], "it fades where it was");
+        assert!(alpha < 1.);
+        let (shown, running) = glide.sample(&tabs(), at + FILL_OUT);
+        assert_eq!(shown, None, "it is gone");
+        assert!(!running);
+
+        // Back in on the other tab: it appears there.
+        let later = at + FILL_OUT;
+        glide.hover(Some(1), &tabs(), later);
+        let (shown, _) = glide.sample(&tabs(), later + FILL_IN / 2);
+        assert_eq!(shown.unwrap().0, tabs()[1]);
+    }
+
+    #[test]
+    fn coming_back_while_it_fades_slides_from_where_it_is() {
+        let start = Instant::now();
+        let mut glide = Glide::default();
+        glide.hover(Some(0), &tabs(), start);
+        let at = start + FILL_IN;
+        glide.hover(None, &tabs(), at);
+        let back = at + FILL_OUT / 4;
+        glide.hover(Some(1), &tabs(), back);
+        let (shown, _) = glide.sample(&tabs(), back + GLIDE / 2);
+        let (rect, alpha) = shown.unwrap();
+        assert!(
+            rect.origin.x > px(0.) && rect.origin.x < px(100.),
+            "{rect:?}"
+        );
+        assert!(alpha > 0.);
     }
 
     #[test]

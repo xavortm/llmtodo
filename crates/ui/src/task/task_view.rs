@@ -101,6 +101,9 @@ pub struct TaskView {
     /// The room the tab bar's tabs had in the last frame. It decides which
     /// tabs show and which go under the More button.
     tab_room: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
+    /// The tab bar's shared hover background. The workspace draws it over
+    /// this view, so its frames do not draw this view (LLM-220).
+    pub tab_hover: Entity<crate::task::tab_bar::TabHover>,
     pub editor: Entity<EditorState>,
     pub editor_vim: VimMode,
     /// Whether the editor has vim keys. Off, it stays in insert mode.
@@ -176,6 +179,7 @@ impl TaskView {
             preview_scroll: ScrollHandle::new(),
             preview_width: Default::default(),
             tab_room: Default::default(),
+            tab_hover: cx.new(|_| Default::default()),
             editor,
             editor_vim: VimMode::Normal,
             vim_enabled: true,
@@ -1448,6 +1452,7 @@ impl TaskView {
                             events: self.events.clone(),
                             room: self.tab_room.clone(),
                             view: cx.entity_id(),
+                            hover: self.tab_hover.clone(),
                         }
                         .render(window, cx),
                     )
@@ -2023,6 +2028,7 @@ impl TaskView {
 
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.tab_hover.update(cx, |hover, _| hover.start_frame());
         #[cfg(test)]
         crate::render_count::bump::<Self>();
         let Some(detail) = self.open else {

@@ -134,8 +134,11 @@ impl Workspace {
                     .when(open, |this| {
                         // With animations on, the task view fades in and
                         // slides a short way from the right.
+                        // The tab bar's hover background draws over the
+                        // task view, as a view of its own (LLM-220).
+                        let tab_hover = self.task.read(cx).tab_hover.clone();
                         this.child(crate::shell::motion::slide_in(
-                            div().size_full().child(cached(&self.task)),
+                            div().size_full().child(cached(&self.task)).child(tab_hover),
                             "task-slide",
                             1.5,
                             true,
