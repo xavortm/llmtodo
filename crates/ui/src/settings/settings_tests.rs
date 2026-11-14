@@ -701,6 +701,94 @@ fn a_closing_group_crops_its_rows_and_then_drops_them(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// LLM-218: with animations on, Close all groups folds every open group
+/// at once, as one close does, and then stops. Off, it closes at once.
+#[gpui_kit::test]
+fn close_all_groups_folds_every_group_and_then_stops(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let list = cx.read(|cx| view.read(cx).list().clone());
+    cx.update(|cx| {
+        list.update(cx, |list, cx| {
+            list.group_by(crate::issues::list::GroupBy::Status, cx)
+        })
+    });
+    frames_asked(handle, cx);
+    // The first kept row of each group, in the fold.
+    let ghosts = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..20).any(|group| {
+                window
+                    .try_find(("row", usize::MAX / 2 + group * 40))
+                    .is_some()
+            })
+        })
+        .unwrap()
+    };
+
+    // Off: no fold, and nothing runs.
+    cx.update(|cx| list.update(cx, |list, cx| list.close_all_groups(cx)));
+    assert!(!ghosts(cx), "off, the groups close at once");
+    assert_eq!(frames_asked(handle, cx), 0);
+    cx.update(|cx| list.update(cx, |list, cx| list.open_all_groups(cx)));
+    frames_asked(handle, cx);
+
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    frames_asked(handle, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0);
+
+    // The first task row, and its kept copy in the fold.
+    let (first, ghost) = cx.read(|cx| {
+        let rows = list.read(cx).rows();
+        let first = rows
+            .iter()
+            .position(|row| matches!(row, crate::issues::list::Row::Issue(_)))
+            .expect("a task row");
+        let group = rows[..first]
+            .iter()
+            .filter(|row| matches!(row, crate::issues::list::Row::Header { .. }))
+            .count()
+            - 1;
+        (first, usize::MAX / 2 + group * 40)
+    });
+    let before = cx
+        .update_window(handle, |_, window, _| window.find(("row", first)).bounds())
+        .unwrap();
+    cx.update(|cx| list.update(cx, |list, cx| list.close_all_groups(cx)));
+    assert!(ghosts(cx), "the groups' rows still show");
+    let after = cx
+        .update_window(handle, |_, window, _| window.find(("row", ghost)).bounds())
+        .unwrap();
+    assert_eq!(after, before, "the fold starts where the list was");
+    assert!(frames_asked(handle, cx) > 0, "the close animates");
+    assert_eq!(
+        cx.read(|cx| list.read(cx).scroll_offset()),
+        gpui_kit::px(0.),
+        "the list sits at its top under the fold"
+    );
+
+    cx.executor()
+        .advance_clock(crate::shell::motion::CLOSE + std::time::Duration::from_millis(50));
+    frames_asked(handle, cx);
+    frames_asked(handle, cx);
+    assert!(!ghosts(cx), "they go when it ends");
+    assert_eq!(frames_asked(handle, cx), 0, "the fold stops");
+    assert!(cx.read(|cx| {
+        list.read(cx).rows().iter().all(|row| {
+            matches!(
+                row,
+                crate::issues::list::Row::Header {
+                    collapsed: true,
+                    ..
+                }
+            )
+        })
+    }));
+}
+
 /// LLM-195: a new sort sends a wave down the list, which then stops.
 #[gpui_kit::test]
 fn a_new_sort_sends_a_wave_and_then_stops(cx: &mut TestAppContext) {

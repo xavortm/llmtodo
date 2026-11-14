@@ -145,6 +145,80 @@ enum MotionKind {
         ids: Vec<IssueId>,
         header: Option<usize>,
     },
+    /// Close all groups (LLM-218): every group crops at once, as one close
+    /// does. An overlay draws the fold over the list, so groups above the
+    /// view never make it jump.
+    CloseAll {
+        folds: Vec<Fold>,
+        /// Where the old view's top sits in the folded layout, in pixels.
+        /// The fold moves it to the top of the list as it runs.
+        top: f32,
+        /// A row's height, in pixels.
+        row: f32,
+    },
+}
+
+/// One group in a Close all groups fold.
+#[derive(Debug, Clone, PartialEq)]
+struct Fold {
+    /// The group's header, now closed.
+    header: Row,
+    /// Whether the group was open, so its chevron turns.
+    was_open: bool,
+    /// The rows the group keeps drawn under its header while it crops.
+    ids: Vec<IssueId>,
+}
+
+/// The folds for Close all groups, from the rows before the close, and
+/// where the view's top sits among them. `scroll_top` is how far the list
+/// is scrolled down. Each group keeps its first rows; the group at the top
+/// of the view keeps the rows from the first one shown, so the first frame
+/// of the fold looks the same as the list before it.
+fn fold_rows(rows: &[Row], scroll_top: f32, row: f32) -> (Vec<Fold>, f32) {
+    let first = (scroll_top.max(0.) / row).floor() as usize;
+    let into = scroll_top.max(0.) - first as f32 * row;
+    let mut folds = Vec::new();
+    let mut y = 0.;
+    let mut top = 0.;
+    let mut ix = 0;
+    while ix < rows.len() {
+        let Row::Header { collapsed, .. } = &rows[ix] else {
+            ix += 1;
+            continue;
+        };
+        let end = rows[ix + 1..]
+            .iter()
+            .position(|r| matches!(r, Row::Header { .. }))
+            .map_or(rows.len(), |p| ix + 1 + p);
+        let inside = first > ix && first < end;
+        let skip = if inside { first - ix - 1 } else { 0 };
+        let ids: Vec<IssueId> = rows[ix + 1 + skip..end]
+            .iter()
+            .filter_map(|r| match r {
+                Row::Issue(id) => Some(*id),
+                Row::Header { .. } => None,
+            })
+            .take(CLOSING_ROWS)
+            .collect();
+        if first == ix {
+            top = y + into;
+        } else if inside {
+            top = y + row + into;
+        }
+        let was_open = !collapsed;
+        let mut header = rows[ix].clone();
+        if let Row::Header { collapsed, .. } = &mut header {
+            *collapsed = true;
+        }
+        y += row * (1 + ids.len()) as f32;
+        folds.push(Fold {
+            header,
+            was_open,
+            ids,
+        });
+        ix = end;
+    }
+    (folds, top)
 }
 
 impl ListMotion {
@@ -165,7 +239,7 @@ impl ListMotion {
     fn length(&self) -> std::time::Duration {
         match &self.kind {
             MotionKind::Wave { wave, .. } => wave.total(),
-            MotionKind::Close { .. } => crate::shell::motion::CLOSE,
+            MotionKind::Close { .. } | MotionKind::CloseAll { .. } => crate::shell::motion::CLOSE,
         }
     }
 }
@@ -716,6 +790,7 @@ impl IssueList {
     }
 
     pub fn close_all_groups(&mut self, cx: &mut Context<Self>) {
+        self.start_close_all(cx);
         let titles: Vec<_> = self
             .rows
             .iter()
@@ -783,6 +858,142 @@ impl IssueList {
             },
             cx,
         );
+    }
+
+    /// Close all groups, with animations on: the fold starts from the rows
+    /// as they are now. The list moves to its top at once, under the fold,
+    /// which is where it ends up after the close anyway.
+    fn start_close_all(&mut self, cx: &App) {
+        if !crate::shell::motion::on(cx) {
+            return;
+        }
+        // The list's last layout: its content is one row high per row.
+        let Some(size) = self.scroll.0.borrow().last_item_size else {
+            return;
+        };
+        let row = f32::from(size.contents.height) / self.rows.len().max(1) as f32;
+        if row <= 0. {
+            return;
+        }
+        let (folds, top) = fold_rows(&self.rows, -f32::from(self.scroll_offset()), row);
+        if !folds.iter().any(|f| f.was_open && !f.ids.is_empty()) {
+            return;
+        }
+        self.scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+        self.start_motion(
+            ListMotion {
+                kind: MotionKind::CloseAll { folds, top, row },
+                start: None,
+                now: std::time::Instant::now(),
+            },
+            cx,
+        );
+    }
+
+    /// The Close all groups fold, over the list: each group's header with
+    /// its rows cropped from the bottom, and the groups below sliding up.
+    /// It draws only what shows in the list's window, and takes no clicks.
+    fn render_fold(
+        &self,
+        list_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let motion = self.motion.as_ref()?;
+        let MotionKind::CloseAll { folds, top, row } = &motion.kind else {
+            return None;
+        };
+        let (top, row) = (*top, *row);
+        let left = crate::shell::motion::closing_left(motion.elapsed());
+        let height = f32::from(self.scroll.0.borrow().base_handle.bounds().size.height);
+        let px = gpui_kit::px;
+        let at = |y: f32, el: AnyElement| {
+            div()
+                .absolute()
+                .top(px(y))
+                .left_0()
+                .right_0()
+                .child(el)
+                .into_any_element()
+        };
+        let mut children = Vec::new();
+        let mut y = -top * left;
+        for (i, fold) in folds.iter().enumerate() {
+            if y >= height {
+                break;
+            }
+            let crop = fold.ids.len() as f32 * row * left;
+            if y + row + crop > 0. {
+                let Row::Header {
+                    title,
+                    subtitle,
+                    count,
+                    label,
+                    status,
+                    ..
+                } = &fold.header
+                else {
+                    continue;
+                };
+                let turn = if fold.was_open { left } else { 0. };
+                let mut parts = vec![at(
+                    0.,
+                    self.render_header_row(
+                        i,
+                        title.clone(),
+                        subtitle.clone(),
+                        *count,
+                        label.clone(),
+                        status.clone(),
+                        true,
+                        Some(turn),
+                        list_focused,
+                        window,
+                        cx,
+                    ),
+                )];
+                for (k, id) in fold.ids.iter().enumerate() {
+                    let below = row * (k + 1) as f32;
+                    if row * k as f32 >= crop || y + below >= height {
+                        break;
+                    }
+                    if y + below + row <= 0. {
+                        continue;
+                    }
+                    let ghost = GHOST_ROW + i * CLOSING_ROWS + k;
+                    parts.push(at(
+                        below,
+                        self.render_issue_row(ghost, *id, list_focused, window, cx),
+                    ));
+                }
+                children.push(
+                    div()
+                        .absolute()
+                        .top(px(y))
+                        .left_0()
+                        .right_0()
+                        .h(px(row + crop))
+                        .overflow_hidden()
+                        .children(parts)
+                        .into_any_element(),
+                );
+            }
+            y += row + crop;
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .overflow_hidden()
+                .bg(cx.theme().background)
+                .children(children)
+                .child(div().absolute().inset_0().occlude())
+                .into_any_element(),
+        )
     }
 
     /// Where `row` is in a running wave, from 0 to 1. 1 when no wave runs
@@ -1242,19 +1453,25 @@ impl IssueList {
         label: Option<Label>,
         status: Option<Status>,
         collapsed: bool,
+        turn: Option<f32>,
         list_focused: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let color = label.map(|l| label_color(l.color, cx));
         // With animations on, one chevron turns between closed and open.
+        // The Close all groups fold sets its turn itself.
         let chevron = if crate::shell::motion::on(cx) {
-            let turn = crate::shell::motion::turn(
-                gpui_kit::ElementId::Name(format!("group-turn-{}", self.group_key(&title)).into()),
-                !collapsed,
-                window,
-                cx,
-            );
+            let turn = turn.unwrap_or_else(|| {
+                crate::shell::motion::turn(
+                    gpui_kit::ElementId::Name(
+                        format!("group-turn-{}", self.group_key(&title)).into(),
+                    ),
+                    !collapsed,
+                    window,
+                    cx,
+                )
+            });
             Icon::new(IconName::ChevronRight)
                 .rotate(gpui_kit::radians(turn * std::f32::consts::FRAC_PI_2))
         } else {
@@ -1400,6 +1617,7 @@ impl IssueList {
                     label.clone(),
                     status.clone(),
                     *collapsed,
+                    None,
                     list_focused,
                     window,
                     cx,
@@ -2129,6 +2347,7 @@ impl Render for IssueList {
         let measure = self.measure_width(rem_size, cx);
         let filter_bar = self.render_filter_bar(window, cx);
         let header = self.render_column_header(cx);
+        let fold = self.render_fold(self.focus.is_focused(window), window, cx);
         v_flex()
             .relative()
             .flex_1()
@@ -2150,19 +2369,27 @@ impl Render for IssueList {
                 )
             })
             .child(
-                uniform_list(
-                    "issues",
-                    self.rows.len(),
-                    cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                        let list_focused = this.focus.is_focused(window);
-                        this.visible_start = range.start;
-                        range
-                            .map(|row| this.render_row(row, list_focused, window, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                // The Close all groups fold draws over the list's window.
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        uniform_list(
+                            "issues",
+                            self.rows.len(),
+                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                                let list_focused = this.focus.is_focused(window);
+                                this.visible_start = range.start;
+                                range
+                                    .map(|row| this.render_row(row, list_focused, window, cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .track_scroll(&self.scroll)
+                        .flex_1(),
+                    )
+                    .children(fold),
             )
     }
 }
@@ -2221,5 +2448,101 @@ fn row_click(modifiers: gpui_kit::Modifiers, cx: &App) -> RowClick {
         RowClick::Toggle
     } else {
         RowClick::Plain
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    fn header(title: &str, collapsed: bool) -> Row {
+        Row::Header {
+            title: title.to_string().into(),
+            subtitle: None,
+            count: 0,
+            label: None,
+            status: None,
+            collapsed,
+        }
+    }
+
+    /// Four groups: open with 3 tasks, closed, open with 50, open with 2.
+    fn rows() -> Vec<Row> {
+        let mut n = 0u128;
+        let mut issues = |count: usize| {
+            (0..count)
+                .map(|_| {
+                    n += 1;
+                    Row::Issue(IssueId::from_u128(n))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut rows = vec![header("A", false)];
+        rows.extend(issues(3));
+        rows.push(header("B", true));
+        rows.push(header("C", false));
+        rows.extend(issues(50));
+        rows.push(header("D", false));
+        rows.extend(issues(2));
+        rows
+    }
+
+    const ROW: f32 = 28.;
+
+    /// Where each group's header sits in the fold, `left` of the way
+    /// through it, from the top of the list's window.
+    fn header_tops(folds: &[Fold], top: f32, left: f32) -> Vec<f32> {
+        let mut y = -top * left;
+        folds
+            .iter()
+            .map(|fold| {
+                let at = y;
+                y += ROW + fold.ids.len() as f32 * ROW * left;
+                at
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_group_folds_and_keeps_at_most_its_first_rows() {
+        let (folds, top) = fold_rows(&rows(), 0., ROW);
+        assert_eq!(top, 0.);
+        let lens: Vec<_> = folds.iter().map(|f| f.ids.len()).collect();
+        assert_eq!(lens, [3, 0, CLOSING_ROWS, 2]);
+        let open: Vec<_> = folds.iter().map(|f| f.was_open).collect();
+        assert_eq!(open, [true, false, true, true]);
+        assert!(folds.iter().all(|f| matches!(
+            f.header,
+            Row::Header {
+                collapsed: true,
+                ..
+            }
+        )));
+        assert_eq!(folds[0].ids[0], IssueId::from_u128(1));
+    }
+
+    /// Scrolled into the middle of a big group: the fold starts where the
+    /// view was, so the groups above it do not make the list jump.
+    #[test]
+    fn the_first_frame_matches_the_view_before_the_close() {
+        let rows = rows();
+        // Group C's header is row 5. Show its 11th task at the top, 5 px up.
+        let first = 5 + 1 + 10;
+        let (folds, top) = fold_rows(&rows, first as f32 * ROW + 5., ROW);
+        let Row::Issue(shown) = rows[first] else {
+            panic!("a task row");
+        };
+        assert_eq!(folds[2].ids[0], shown);
+        let tops = header_tops(&folds, top, 1.);
+        assert_eq!(tops[2] + ROW, -5., "the task sits where it did");
+        // At the end, the headers stack from the top of the list.
+        let tops = header_tops(&folds, top, 0.);
+        assert_eq!(tops, [0., ROW, 2. * ROW, 3. * ROW]);
+    }
+
+    #[test]
+    fn a_header_at_the_top_stays_at_the_top() {
+        let (folds, top) = fold_rows(&rows(), 4. * ROW, ROW);
+        assert_eq!(header_tops(&folds, top, 1.)[1], 0.);
     }
 }
