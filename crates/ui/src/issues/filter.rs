@@ -123,23 +123,99 @@ impl FilterSubject for IssueAt<'_> {
     }
 }
 
+/// A filter word's key and value, such as `status` and `todo`, for a
+/// lowercase word. Free text has none.
+fn filter_word(word: &str) -> Option<(&'static str, &str)> {
+    let (key, value) = word.split_once(':')?;
+    let key = match key {
+        "status" => "status",
+        "label" => "label",
+        "assignee" => "assignee",
+        "llm" if LlmWord::parse(value).is_some() => "llm",
+        _ => return None,
+    };
+    (!value.is_empty()).then_some((key, value))
+}
+
+/// The filter word for one status: its name, lowercase, with `-` for
+/// spaces.
+pub(crate) fn status_word(status: &Status) -> String {
+    format!("status:{}", status.name.to_lowercase().replace(' ', "-"))
+}
+
+/// Whether the filter word `value` keeps `status`.
+pub(crate) fn status_kept(status: &Status, value: &str) -> bool {
+    status_matches(status, value)
+}
+
+/// Whether `query` holds a `key:` filter word whose lowercase value passes
+/// `value`. The filter panel reads its checks from this.
+pub fn has_word(query: &str, key: &str, value: impl Fn(&str) -> bool) -> bool {
+    query
+        .split_whitespace()
+        .any(|word| filter_word(&word.to_lowercase()).is_some_and(|(k, v)| k == key && value(v)))
+}
+
+/// Turns one filter word on or off in `query`, as a panel click does.
+/// When a `key:` word passes `value`, every such word goes. Otherwise
+/// `word` goes on the end. A `single` key keeps one word, so the new word
+/// replaces the old one. Every other word stays as the owner typed it.
+pub fn toggle_word(
+    query: &str,
+    key: &str,
+    value: impl Fn(&str) -> bool,
+    word: &str,
+    single: bool,
+) -> String {
+    let on = has_word(query, key, &value);
+    let mut words: Vec<&str> = query
+        .split_whitespace()
+        .filter(|w| match filter_word(&w.to_lowercase()) {
+            Some((k, v)) if k == key => !(value(v) || (single && !on)),
+            _ => true,
+        })
+        .collect();
+    if !on {
+        words.push(word);
+    }
+    words.join(" ")
+}
+
+/// `query` without its filter words. The free text stays as typed.
+pub fn clear_words(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|w| filter_word(&w.to_lowercase()).is_none())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Filter {
     pub fn parse(query: &str) -> Self {
         let mut out = Self::default();
         let mut text = Vec::new();
         let lower = query.to_lowercase();
         for word in lower.split_whitespace() {
-            match word.split_once(':') {
+            match filter_word(word) {
                 Some(("status", "open")) => out.open = true,
-                Some(("status", v)) if !v.is_empty() => out.statuses.push(v.to_string()),
-                Some(("label", v)) if !v.is_empty() => out.labels.push(v.to_string()),
-                Some(("assignee", v)) if !v.is_empty() => out.assignee = Some(v.to_string()),
-                Some(("llm", v)) if LlmWord::parse(v).is_some() => out.llm = LlmWord::parse(v),
+                Some(("status", v)) => out.statuses.push(v.to_string()),
+                Some(("label", v)) => out.labels.push(v.to_string()),
+                Some(("assignee", v)) => out.assignee = Some(v.to_string()),
+                Some(("llm", v)) => out.llm = LlmWord::parse(v),
                 _ => text.push(word),
             }
         }
         out.text = text.join(" ");
         out
+    }
+
+    /// How many filter words the filter holds. Free text does not count.
+    pub fn word_count(&self) -> usize {
+        self.statuses.len()
+            + usize::from(self.open)
+            + self.labels.len()
+            + usize::from(self.assignee.is_some())
+            + usize::from(self.llm.is_some())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -407,5 +483,79 @@ mod tests {
         let f = Filter::parse("status:started label:bug assignee:me llm:any");
         let q = f.to_query(&Scope::All, &catalog).unwrap();
         assert_eq!(q.filter, f.resolve(&catalog).shared);
+    }
+
+    #[test]
+    fn the_panel_toggles_words_and_keeps_the_rest() {
+        let any = |_: &str| true;
+        let is = |want: &'static str| move |v: &str| v == want;
+        // A new word goes on the end. The free text keeps its case.
+        assert_eq!(
+            toggle_word("Crash", "label", is("bug"), "label:bug", false),
+            "Crash label:bug"
+        );
+        // A word that is on comes off, as the owner typed it.
+        assert_eq!(
+            toggle_word("Label:Bug crash", "label", is("bug"), "label:bug", false),
+            "crash"
+        );
+        // Several labels can be on at once.
+        assert_eq!(
+            toggle_word("label:bug", "label", is("infra"), "label:infra", false),
+            "label:bug label:infra"
+        );
+        // One assignee at a time: a new one replaces the old.
+        assert_eq!(
+            toggle_word(
+                "assignee:me x",
+                "assignee",
+                is("none"),
+                "assignee:none",
+                true
+            ),
+            "x assignee:none"
+        );
+        assert_eq!(
+            toggle_word(
+                "assignee:none",
+                "assignee",
+                is("none"),
+                "assignee:none",
+                true
+            ),
+            ""
+        );
+        assert!(has_word("x LLM:Locked", "llm", is("locked")));
+        assert!(!has_word("llm:nope", "llm", any));
+        // A bare `llm` is free text, so a toggle leaves it.
+        assert_eq!(
+            toggle_word("llm", "llm", is("any"), "llm:any", true),
+            "llm llm:any"
+        );
+    }
+
+    #[test]
+    fn clear_keeps_only_free_text() {
+        assert_eq!(
+            clear_words("Fix status:todo label:bug  the List llm:any assignee:me"),
+            "Fix the List"
+        );
+        assert_eq!(Filter::parse("fix it").word_count(), 0);
+        assert_eq!(Filter::parse("fix status:open label:bug").word_count(), 2);
+    }
+
+    #[test]
+    fn a_status_word_names_its_status() {
+        let (catalog, _) = demo();
+        let review = catalog
+            .all_statuses()
+            .into_iter()
+            .find(|s| s.name.as_ref() == "In Review")
+            .unwrap();
+        assert_eq!(status_word(&review), "status:in-review");
+        assert!(status_kept(&review, "in-review"));
+        // A status type keeps every status of that type.
+        assert!(status_kept(&review, "started"));
+        assert!(!status_kept(&review, "todo"));
     }
 }

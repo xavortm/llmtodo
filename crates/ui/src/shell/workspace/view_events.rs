@@ -26,6 +26,7 @@ impl Workspace {
             } => self.click_header(row, &title, collapsed, window, cx),
             ViewEvent::SortBy(key) => self.sort_by(key, cx),
             ViewEvent::GroupBy(group) => self.group_by(group, cx),
+            ViewEvent::SetFilter(text) => self.set_filter_text(&text, window, cx),
             ViewEvent::NewIssue => self.new_issue(&NewIssue, window, cx),
             ViewEvent::CloseAllGroups => self.close_all_groups(&CloseAllGroups, window, cx),
             ViewEvent::OpenAllGroups => self.open_all_groups(&OpenAllGroups, window, cx),

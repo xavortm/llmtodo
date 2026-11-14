@@ -5,6 +5,7 @@ pub mod claims;
 pub mod columns;
 pub mod create;
 pub mod filter;
+pub mod filter_menu;
 pub mod list;
 pub mod rows;
 
@@ -22,6 +23,8 @@ mod cost_tests;
 mod create_tests;
 #[cfg(test)]
 mod deps_tests;
+#[cfg(test)]
+mod filter_menu_tests;
 #[cfg(test)]
 mod hide_tests;
 #[cfg(test)]

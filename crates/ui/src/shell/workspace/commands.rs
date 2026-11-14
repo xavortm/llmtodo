@@ -428,13 +428,25 @@ impl Workspace {
         }
     }
 
+    /// Puts `query` in the `/` filter box and filters the list by it.
+    pub(super) fn set_filter_text(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filter = self.list.read(cx).filter.clone();
+        filter.update(cx, |state, cx| {
+            state.set_value(query.to_string(), window, cx)
+        });
+        self.apply_filter(&query.to_lowercase(), cx);
+    }
+
     /// `:filter`: fills the `/` filter box, so the owner sees what narrows
     /// the list. `llm` is short for `llm:any`. No word clears the box.
     fn command_filter(&mut self, arg: &str, window: &mut Window, cx: &mut Context<Self>) -> String {
         let query = if arg == "llm" { "llm:any" } else { arg };
-        let filter = self.list.read(cx).filter.clone();
-        filter.update(cx, |state, cx| state.set_value(query, window, cx));
-        self.apply_filter(&query.to_lowercase(), cx);
+        self.set_filter_text(query, window, cx);
         match query {
             "" => "Cleared the filter".into(),
             "llm:any" => "Showing tasks with an agent on them".into(),

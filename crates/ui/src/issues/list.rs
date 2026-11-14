@@ -31,6 +31,7 @@ use gpui_kit::{
 
 use crate::issues::columns::{self, Column, cell_with};
 use crate::issues::filter::Filter;
+use crate::issues::filter_menu;
 use crate::issues::rows::{self, BuiltRows, OwnedRowsInput, RowsInput};
 use crate::model::data::{Assignee, Issue, IssueId, Label, LlmStatus, Status, hide_cutoff};
 use crate::model::scope::Scope;
@@ -2106,6 +2107,10 @@ impl IssueList {
                 crate::shell::widgets::text_input(&self.filter)
                     .prefix(Icon::new(IconName::Search).small()),
             )
+            .child(self.filter_button())
+            .when_some(self.saved_filter_button(cx), |this, button| {
+                this.child(button)
+            })
             .child(with_card(
                 "group-tip",
                 Button::new("group")
@@ -2141,6 +2146,53 @@ impl IssueList {
             // Next to the grouping it acts on. In the column header
             // it would push the cells out of line with the rows.
             .when_some(collapse_all, |this, button| this.child(button))
+    }
+
+    /// The filter panel button. It shows how many filter words are on.
+    fn filter_button(&self) -> AnyElement {
+        let words = self.query.word_count();
+        let button = Button::new("filter-panel")
+            .ghost()
+            .small()
+            .icon(IconName::ListFilter)
+            .when(words > 0, |b| b.label(words.to_string()))
+            .selected(words > 0)
+            .dropdown_menu(filter_menu::filter_menu(
+                self.store.clone(),
+                self.filter.clone(),
+                self.scope.clone(),
+                self.events.clone(),
+            ));
+        with_card(
+            "filter-panel-tip",
+            button,
+            Card::text("Filter the list (:filter status:todo)"),
+        )
+    }
+
+    /// The saved filter button, when the server has a saved view. It shows
+    /// the open view's name, or only its icon.
+    fn saved_filter_button(&self, cx: &App) -> Option<AnyElement> {
+        if self.store.read(cx).catalog.views.is_empty() {
+            return None;
+        }
+        let open = filter_menu::open_view(&self.scope);
+        let button = Button::new("saved-filters")
+            .ghost()
+            .small()
+            .icon(IconName::Funnel)
+            .selected(open.is_some())
+            .when_some(open, |b, name| b.label(name))
+            .dropdown_menu(filter_menu::saved_filter_menu(
+                self.store.clone(),
+                self.scope.clone(),
+                self.events.clone(),
+            ));
+        Some(with_card(
+            "saved-filters-tip",
+            button,
+            Card::text("Saved filters (:view <name>)"),
+        ))
     }
 
     /// The column titles. The sortable ones are buttons.

@@ -47,6 +47,8 @@ pub enum ViewEvent {
     },
     SortBy(SortKey),
     GroupBy(GroupBy),
+    /// The filter panel: replace the `/` filter text.
+    SetFilter(String),
     /// The Add ticket button: opens the create form, as `c` does.
     NewIssue,
     CloseAllGroups,
