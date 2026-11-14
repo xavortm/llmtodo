@@ -5,7 +5,8 @@
 //! `plan` decides which columns show and how wide the labels get, from the
 //! list width and what the rows hold. When the list gets narrow, it hides
 //! columns one at a time, the least useful first, instead of squeezing the
-//! title. When it is wide, the labels grow so they stop being cut. The list measures its own
+//! title. The LLM status column first shrinks to its badge icon, before
+//! any column hides. When it is wide, the labels grow so they stop being cut. The list measures its own
 //! width, so this also works with the task view open beside it.
 
 use gpui_kit::Action;
@@ -32,6 +33,22 @@ pub struct ToggleColumn(pub Column);
 /// The width of the LLM status column and of its badge, in rem. It fits
 /// the lock icon and a model name such as `Sonnet 5.5`.
 pub const LLM_BADGE_REM: f32 = 6.25;
+
+/// The narrow width of the LLM status column, in rem (LLM-236): the badge's
+/// icon, 0.75 rem, and its side padding. The age text hides.
+pub const LLM_COMPACT_REM: f32 = 1.5;
+
+/// The narrowest LLM status column that still shows text, in rem: the
+/// icon, the gap, two characters and the padding. A narrower column shows
+/// only icons: the badges drop their age text and the header its "LLM"
+/// label, so no text shows as a cut stub.
+const LLM_TEXT_MIN_REM: f32 = 2.75;
+
+/// Whether an LLM status column `width` wide shows text: the badges' age
+/// and the header's label.
+pub fn llm_shows_text(width: Rems) -> bool {
+    width.0 >= LLM_TEXT_MIN_REM
+}
 
 /// The width of the order column, in rem: room for one dot.
 pub const ORDER_REM: f32 = 1.25;
@@ -133,6 +150,8 @@ impl Column {
     pub fn width(self) -> Option<Rems> {
         match self {
             Column::Check => Some(rems(1.)),
+            // The full width. `plan` narrows it to `LLM_COMPACT_REM` first
+            // when the list runs short of room.
             Column::Llm => Some(rems(LLM_BADGE_REM)),
             Column::Order => Some(rems(ORDER_REM)),
             Column::Status => Some(rems(5.)),
@@ -261,6 +280,10 @@ pub struct Layout {
     pub columns: Vec<Column>,
     /// The width of the labels column, when it shows.
     pub labels: Rems,
+    /// The width of the LLM status column: `LLM_BADGE_REM`, or
+    /// `LLM_COMPACT_REM` when the list is short of room. While it changes,
+    /// the list eases it between the two.
+    pub llm: Rems,
     /// With animations on, the columns that fade in or out, with how far
     /// each shows, from 0 to 1. A column that fades out is still drawn,
     /// though `columns` has left it out. `plan` leaves this empty.
@@ -273,8 +296,14 @@ impl Layout {
     pub fn width(&self, column: Column) -> Option<Rems> {
         match column {
             Column::Labels => Some(self.labels),
+            Column::Llm => Some(self.llm),
             other => other.width(),
         }
+    }
+
+    /// Whether the plan narrows the LLM status column to its icon.
+    pub fn llm_compact(&self) -> bool {
+        self.llm.0 < LLM_BADGE_REM
     }
 
     /// Whether a row draws `column`: it shows, or it fades in or out.
@@ -296,15 +325,16 @@ impl Layout {
     }
 }
 
-/// The width a row of `shown` columns needs, with a title `title` px wide
-/// and labels `labels` px wide.
-fn needed(shown: &[Column], title: f32, labels: f32, rem_size: Pixels) -> f32 {
+/// The width a row of `shown` columns needs, with a title `title` px wide,
+/// labels `labels` px wide and the LLM status column `llm` rem wide.
+fn needed(shown: &[Column], title: f32, labels: f32, llm: f32, rem_size: Pixels) -> f32 {
     let px = |r: Rems| r.0 * f32::from(rem_size);
     let cells: f32 = shown
         .iter()
         .map(|c| match c {
             Column::Title => title,
             Column::Labels => labels,
+            Column::Llm => px(rems(llm)),
             other => other.width().map_or(0., px),
         })
         .sum();
@@ -318,7 +348,13 @@ pub fn comfortable_width_for(demand: &Demand, rem_size: Pixels, hidden: &[Column
     let rem = f32::from(rem_size);
     let labels = labels_rem_clamped(demand.labels, LABELS_MAX.0) * rem;
     let title = title_px(demand.title_chars, rem_size);
-    gpui_kit::px(needed(&chosen(hidden), title, labels, rem_size))
+    gpui_kit::px(needed(
+        &chosen(hidden),
+        title,
+        labels,
+        LLM_BADGE_REM,
+        rem_size,
+    ))
 }
 
 /// The width, in px, that a title of `chars` characters wants, between
@@ -353,10 +389,11 @@ fn chosen(hidden: &[Column]) -> Vec<Column> {
 ///
 /// The room goes out in order of priority:
 ///
-/// 1. The title gets enough for most titles. The labels column shows only
-///    when it then still fits at its minimum. The other columns hide, least
-///    useful first, only when the title would get narrower than its own
-///    minimum.
+/// 1. The title gets enough for most titles. When the row then does not
+///    fit, the LLM status column narrows to its icon first. The labels
+///    column shows only when it then still fits at its minimum. The other
+///    columns hide, least useful first, only when the title would get
+///    narrower than its own minimum. The LLM status column hides last.
 /// 2. The labels column grows until most rows' labels fit.
 /// 3. The title and the labels share the rest until the longest of each
 ///    fits. Each gets a share of what it still lacks, the title twice as
@@ -370,17 +407,22 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
         return Layout {
             columns: shown,
             labels: rems(step(labels)),
+            llm: rems(LLM_BADGE_REM),
             fade: Vec::new(),
         };
     };
     let width = f32::from(width);
     let min = labels_min() * rem;
     let title_want = title_px(demand.title_chars, rem_size);
-    if needed(&shown, title_want, min, rem_size) > width {
+    let mut llm = LLM_BADGE_REM;
+    if shown.contains(&Column::Llm) && needed(&shown, title_want, min, llm, rem_size) > width {
+        llm = LLM_COMPACT_REM;
+    }
+    if needed(&shown, title_want, min, llm, rem_size) > width {
         shown.retain(|c| *c != Column::Labels);
     }
     let title_min = TITLE_MIN.0 * rem;
-    while needed(&shown, title_min, min, rem_size) > width {
+    while needed(&shown, title_min, min, llm, rem_size) > width {
         let next = shown
             .iter()
             .enumerate()
@@ -393,6 +435,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
         return Layout {
             columns: shown,
             labels: rems(labels_min()),
+            llm: rems(llm),
             fade: Vec::new(),
         };
     }
@@ -401,7 +444,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
     let labels_full = (demand.labels_max * rem).clamp(labels_want, cap);
     let title_full = title_px(demand.title_max_chars, rem_size).max(title_want);
     // Step 2: the labels grow until most rows fit.
-    let mut spare = (width - needed(&shown, title_want, min, rem_size)).max(0.);
+    let mut spare = (width - needed(&shown, title_want, min, llm, rem_size)).max(0.);
     let mut labels = min + spare.min(labels_want - min);
     spare -= labels - min;
     // Step 3: the title and the labels share the rest.
@@ -416,6 +459,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
     Layout {
         columns: shown,
         labels: rems(step(labels / rem)),
+        llm: rems(llm),
         fade: Vec::new(),
     }
 }
@@ -567,15 +611,18 @@ mod tests {
         assert_eq!(at(2000.), Column::ALL);
         // 20 px more than the list without it, and one more gap of 8.
         assert_eq!(at(904.), Column::ALL);
+        // The LLM status column narrows to 24 px first, so every column
+        // still fits 76 px less.
+        assert_eq!(at(828.), Column::ALL);
         // The waiting column needs 20 + 8 and hides first.
         assert_eq!(
-            at(568.),
+            at(492.),
             [Check, Llm, Order, Status, Key, Title, Deps, Waiting]
         );
-        assert_eq!(at(567.), [Check, Llm, Order, Status, Key, Title, Deps]);
-        // 16 for the padding, 16 + 100 + 20 + 80 + 64 + 160 + 36, 6 gaps.
-        assert_eq!(at(540.), [Check, Llm, Order, Status, Key, Title, Deps]);
-        assert_eq!(at(539.), [Check, Llm, Status, Key, Title, Deps]);
+        assert_eq!(at(491.), [Check, Llm, Order, Status, Key, Title, Deps]);
+        // 16 for the padding, 16 + 24 + 20 + 80 + 64 + 160 + 36, 6 gaps.
+        assert_eq!(at(464.), [Check, Llm, Order, Status, Key, Title, Deps]);
+        assert_eq!(at(463.), [Check, Llm, Status, Key, Title, Deps]);
     }
 
     fn plan_at(width: f32, demand: &Demand) -> Layout {
@@ -608,33 +655,42 @@ mod tests {
         // 16 + 100 + 80 + 64 + 160 + 64 + 36 + 20 + 32 + 56 + 56 + 88, and
         // 11 gaps of 8.
         assert_eq!(at(876.), shown());
-        // The labels hide first, then the time and the cost.
+        assert!(!plan_at(876., &Demand::default()).llm_compact());
+        // One pixel less, and the LLM status column narrows to its icon,
+        // 24 px instead of 100. Every column still shows.
+        assert_eq!(at(875.), shown());
+        assert_eq!(plan_at(875., &Demand::default()).llm, rems(LLM_COMPACT_REM));
+        assert_eq!(at(800.), shown());
+        // The labels hide next, then the time and the cost.
         assert_eq!(
-            at(875.),
+            at(799.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Time, Added
             ]
         );
         assert_eq!(
-            at(803.),
+            at(727.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Added
             ]
         );
         assert_eq!(
-            at(739.),
+            at(663.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Added
             ]
         );
         assert_eq!(
-            at(675.),
+            at(599.),
             [Check, Llm, Status, Key, Title, Deps, Waiting, Assignee]
         );
-        assert_eq!(at(579.), [Check, Llm, Status, Key, Title, Deps, Waiting]);
-        assert_eq!(at(539.), [Check, Llm, Status, Key, Title, Deps]);
-        assert_eq!(at(511.), [Check, Llm, Status, Key, Title]);
-        assert_eq!(at(467.), [Check, Status, Key, Title]);
+        assert_eq!(at(503.), [Check, Llm, Status, Key, Title, Deps, Waiting]);
+        assert_eq!(at(463.), [Check, Llm, Status, Key, Title, Deps]);
+        // The narrow LLM status column hides last: 16 + 16 + 24 + 80 + 64
+        // + 160 and 4 gaps fit 392 px.
+        assert_eq!(at(392.), [Check, Llm, Status, Key, Title]);
+        assert!(plan_at(392., &Demand::default()).llm_compact());
+        assert_eq!(at(391.), [Check, Status, Key, Title]);
         // The box, key, status and title stay, even when they do not fit.
         assert_eq!(at(100.), [Check, Status, Key, Title]);
     }
@@ -645,14 +701,17 @@ mod tests {
         // Most titles have 50 characters: 360 px instead of the 160 minimum.
         let at = |width: f32| plan_at(width, &Demand::titles(50)).columns;
         assert_eq!(at(1076.), shown());
+        // The LLM status column narrows first, so the labels stay 76 px
+        // longer.
+        assert_eq!(at(1000.), shown());
         let no_labels = [
             Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Time, Added,
         ];
-        assert_eq!(at(1075.), no_labels);
+        assert_eq!(at(999.), no_labels);
         // The other columns still wait for the title's minimum.
-        assert_eq!(at(804.), no_labels);
+        assert_eq!(at(728.), no_labels);
         assert_eq!(
-            at(803.),
+            at(727.),
             [
                 Check, Llm, Status, Key, Title, Deps, Waiting, Assignee, Cost, Added
             ]
@@ -724,13 +783,33 @@ mod tests {
         assert_eq!(visible(Some(px(2000.)), px(REM), &hidden, &none), without);
         // The narrower row has more room, so the cost column stays longer.
         // 876 - 64 for labels, - 64 for the key, - 16 for the box,
-        // - 56 for the time, - 4 gaps.
-        assert_eq!(visible(Some(px(644.)), px(REM), &hidden, &none), without);
+        // - 56 for the time, - 4 gaps, and - 76 for the narrow LLM status.
+        assert_eq!(visible(Some(px(568.)), px(REM), &hidden, &none), without);
         assert_eq!(
-            visible(Some(px(643.)), px(REM), &hidden, &none),
+            visible(Some(px(567.)), px(REM), &hidden, &none),
             [Llm, Status, Title, Deps, Waiting, Assignee, Added],
             "the width rule hides what remains, least useful first"
         );
+    }
+
+    #[test]
+    fn the_llm_column_keeps_its_full_width_when_hidden() {
+        // A hidden LLM status column takes no room, so it never narrows.
+        let hidden = [Column::Llm, Column::Order];
+        let layout = plan(Some(px(500.)), px(REM), &hidden, &Demand::default());
+        assert!(!layout.columns.contains(&Column::Llm));
+        assert!(!layout.llm_compact());
+    }
+
+    #[test]
+    fn the_narrow_llm_badge_shows_only_its_icon() {
+        let narrow = plan_at(875., &Demand::default());
+        assert_eq!(narrow.width(Column::Llm), Some(rems(LLM_COMPACT_REM)));
+        assert!(!llm_shows_text(rems(LLM_COMPACT_REM)));
+        assert!(llm_shows_text(rems(LLM_BADGE_REM)));
+        // Before the first layout the column has its full width.
+        let first = plan(None, px(REM), NO_ORDER, &Demand::default());
+        assert_eq!(first.width(Column::Llm), Some(rems(LLM_BADGE_REM)));
     }
 
     #[test]

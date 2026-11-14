@@ -2944,6 +2944,123 @@ fn llm_status_column_shows_locked_and_analyzing(cx: &mut TestAppContext) {
     cx.read(|cx| assert!(view.read(cx).claim_of("LLM-101", cx).is_none()));
 }
 
+/// LLM-236: a list short of room narrows the LLM status column to the
+/// badge icon. The age text hides, the header shows an icon, and the
+/// header cell and the badge keep the same width.
+#[gpui_kit::test]
+fn a_narrow_list_shows_the_llm_badge_as_an_icon(cx: &mut TestAppContext) {
+    let (handle, view) = open_sized(cx, 1200., 760.);
+    let id = view.update(cx, |this, cx| {
+        let mut issue = this.issue_by_key("LLM-102", cx).clone();
+        issue.claim = Some(crate::model::demo::claude_claim("LLM-102"));
+        let id = issue.id;
+        this.upsert_issue(issue, cx);
+        id
+    });
+    let part = crate::shell::widgets::issue_part;
+    // The badge grows in on a spring.
+    let settle = |cx: &mut TestAppContext| {
+        for _ in 0..3 {
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    settle(cx);
+    let full = gpui_kit::px(crate::issues::columns::LLM_BADGE_REM * 16.);
+    cx.update_window(handle, |_, window, _| {
+        let header = window.within("column-header").find("col-llm").bounds();
+        assert_eq!(header.size.width, full);
+        assert!(window.try_find(part("llm-age", id)).is_some());
+    })
+    .unwrap();
+    cx.simulate_window_resize(handle, size(px(900.), px(760.)));
+    settle(cx);
+    let narrow = gpui_kit::px(crate::issues::columns::LLM_COMPACT_REM * 16.);
+    cx.update_window(handle, |_, window, _| {
+        let header = window.within("column-header").find("col-llm").bounds();
+        let badge = window.find(part("llm-locked", id)).bounds();
+        assert_eq!(header.size.width, narrow);
+        assert_eq!(badge.size.width, narrow);
+        assert!((badge.left() - header.left()).abs() < px(0.5));
+        assert!(window.try_find(part("llm-age", id)).is_none());
+        // The header button fits the narrow cell.
+        let button = window.find("sort-llm").bounds();
+        assert!(
+            button.right() <= header.right() + px(0.5),
+            "{button:?} {header:?}"
+        );
+        // The other columns still show.
+        assert!(
+            window
+                .within("column-header")
+                .try_find("col-labels")
+                .is_some()
+        );
+    })
+    .unwrap();
+    // The tooltip still shows the full card.
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(part("llm-locked", id), cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // A heading and several rows: the full card, not a bare label.
+        let card = window.find("tooltip-card").bounds();
+        assert!(card.size.height > window.rem_size() * 4., "{card:?}");
+    })
+    .unwrap();
+}
+
+/// LLM-236: with animations on, the LLM status column eases to its narrow
+/// width, like a column that fades (LLM-219).
+#[gpui_kit::test]
+fn the_llm_column_eases_to_its_narrow_width(cx: &mut TestAppContext) {
+    let (handle, _view) = open_sized(cx, 1200., 760.);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    let width = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(
+                window
+                    .within("column-header")
+                    .find("col-llm")
+                    .bounds()
+                    .size
+                    .width,
+            )
+        })
+        .unwrap()
+    };
+    for _ in 0..3 {
+        width(cx);
+    }
+    assert_eq!(width(cx), crate::issues::columns::LLM_BADGE_REM * 16.);
+    cx.simulate_window_resize(handle, size(px(900.), px(760.)));
+    // The first frame finds the new width; the next starts the change.
+    width(cx);
+    width(cx);
+    cx.executor()
+        .advance_clock(crate::shell::motion::COLUMN / 2);
+    let halfway = width(cx);
+    let narrow = crate::issues::columns::LLM_COMPACT_REM * 16.;
+    assert!(
+        halfway > narrow + 1. && halfway < 99.,
+        "the column eases: {halfway}"
+    );
+    cx.executor().advance_clock(crate::shell::motion::COLUMN);
+    width(cx);
+    assert_eq!(width(cx), narrow);
+}
+
 /// The keys on the list, top to bottom.
 fn listed_keys(view: &Entity<Workspace>, cx: &TestAppContext) -> Vec<String> {
     cx.read(|cx| {
@@ -3430,7 +3547,9 @@ fn hidden_columns_come_back_after_a_restart(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
     use crate::issues::columns::{self, Column};
-    let (handle, view) = open_wide(1200., 760., 600., cx);
+    // The narrow LLM status column leaves the date room in a 600 px list
+    // (LLM-236), so the task view takes 680 px.
+    let (handle, view) = open_wide(1200., 760., 680., cx);
     cx.update_window(handle, |_, window, cx| {
         let shown = |window: &mut gpui_kit::Window| -> Vec<Column> {
             Column::ALL

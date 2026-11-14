@@ -320,6 +320,11 @@ pub struct IssueList {
     planned_columns: Option<Vec<Column>>,
     /// With animations on, the columns that fade in or out (LLM-219).
     column_fades: crate::shell::motion::Presence<Column>,
+    /// Whether the last frame planned the LLM status column narrow.
+    planned_llm_compact: Option<bool>,
+    /// With animations on, the LLM status column easing between its full
+    /// and its narrow width (LLM-236). 1 is the full width.
+    llm_width: crate::shell::motion::Presence<()>,
     /// What the titles and labels of `visible` ask of the columns. The
     /// workspace asks on each frame, and the answer changes only when
     /// `visible` is computed again.
@@ -417,6 +422,8 @@ impl IssueList {
             hidden_columns: Vec::new(),
             planned_columns: None,
             column_fades: Default::default(),
+            planned_llm_compact: None,
+            llm_width: Default::default(),
             demand: Cell::new(None),
             background_from: rows::BACKGROUND_FROM,
             build_task: None,
@@ -1262,6 +1269,9 @@ impl IssueList {
     /// starts only when the set of columns changes, not on every width
     /// change, so a live resize starts one fade per column that crosses
     /// its limit. The list draws again each frame until the fades end.
+    ///
+    /// The LLM status column eases between its full and its narrow width
+    /// the same way, in the same time (LLM-236).
     fn fade_columns(&mut self, layout: &mut columns::Layout, window: &mut Window, cx: &App) {
         // Before the first layout every column shows. Fading out the ones
         // the real width hides would play at each start.
@@ -1269,8 +1279,11 @@ impl IssueList {
             return;
         }
         let before = self.planned_columns.replace(layout.columns.clone());
+        let compact = layout.llm_compact();
+        let was_compact = self.planned_llm_compact.replace(compact);
         if !crate::shell::motion::on(cx) {
             self.column_fades.clear();
+            self.llm_width.clear();
             return;
         }
         let now = cx.background_executor().now();
@@ -1282,13 +1295,22 @@ impl IssueList {
                 }
             }
         }
-        if !self.column_fades.settle(now) {
+        if was_compact.is_some_and(|was| was != compact) {
+            self.llm_width.change((), !compact, now);
+        }
+        let fading = self.column_fades.settle(now);
+        let easing = self.llm_width.settle(now);
+        if !fading && !easing {
             return;
         }
         layout.fade = self.column_fades.all(now).collect();
         // The labels column fades out at the width it had.
         if !layout.columns.contains(&Column::Labels) && layout.fading(Column::Labels).is_some() {
             layout.labels = self.layout.labels;
+        }
+        if let Some(full) = self.llm_width.get((), now) {
+            let (narrow, wide) = (columns::LLM_COMPACT_REM, columns::LLM_BADGE_REM);
+            layout.llm = gpui_kit::rems(narrow + (wide - narrow) * full);
         }
         window.request_animation_frame();
     }
@@ -1347,8 +1369,13 @@ impl IssueList {
     /// claim, `Analyzing` while one reads or fills in the task. It grows in
     /// when the state starts and shrinks away when it ends. A spring drives
     /// both ways, so a quick change mid-animation reverses smoothly.
+    ///
+    /// The badge is as wide as the column, `width`. When the list is short
+    /// of room the column narrows to the icon, and the age text hides. The
+    /// tooltip still shows the full card (LLM-236).
     fn render_llm_badge(
         issue: &Issue,
+        width: gpui_kit::Rems,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1404,6 +1431,7 @@ impl IssueList {
             ),
         };
         let age: SharedString = age.into();
+        let text = columns::llm_shows_text(width);
         Some(
             div()
                 .id(widgets::issue_part(kind, issue.id))
@@ -1413,12 +1441,13 @@ impl IssueList {
                 .items_center()
                 .overflow_hidden()
                 // The full badge is as wide as the column.
-                .w(gpui_kit::rems(columns::LLM_BADGE_REM * progress))
+                .w(gpui_kit::rems(width.0 * progress))
                 .opacity(progress)
                 .child(
                     h_flex()
                         .flex_none()
-                        .w(gpui_kit::rems(columns::LLM_BADGE_REM))
+                        .w(width)
+                        .overflow_hidden()
                         .h_5()
                         .gap_1()
                         .px_1p5()
@@ -1426,15 +1455,17 @@ impl IssueList {
                         .text_xs()
                         .bg(bg)
                         .text_color(fg)
-                        .children(icon.map(|icon| Icon::new(icon).xsmall()))
-                        .child(
-                            div()
-                                .id(widgets::issue_part("llm-age", issue.id))
-                                .test_support()
-                                .min_w_0()
-                                .truncate()
-                                .child(age),
-                        ),
+                        .children(icon.map(|icon| Icon::new(icon).xsmall().flex_none()))
+                        .when(text, |this| {
+                            this.child(
+                                div()
+                                    .id(widgets::issue_part("llm-age", issue.id))
+                                    .test_support()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(age),
+                            )
+                        }),
                 )
                 .tooltip(card.builder())
                 .into_any_element(),
@@ -1720,7 +1751,7 @@ impl IssueList {
         let closed = issue.status.is_closed();
         let struck = self.strike_done && issue.status.is_done();
         let layout = self.layout.clone();
-        let llm = Self::render_llm_badge(&issue, window, cx);
+        let llm = Self::render_llm_badge(&issue, layout.llm, window, cx);
         let marked = self.marked.contains(&issue.id);
         let theme = cx.theme();
         let hover = theme.list_hover;
@@ -2045,24 +2076,25 @@ impl IssueList {
     fn render_column_header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let border = theme.border;
+        // A button with an empty label shows only an icon: the arrow when
+        // it sorts, the lock otherwise. The narrow LLM status column uses it.
         let sort_header = |id: &'static str, label: &'static str, name: &str, key: SortKey| {
             let active = self.sort.0 == key;
             let events = self.events.clone();
-            let button = Button::new(id)
-                .ghost()
-                .xsmall()
-                .label(label)
-                .when(active, |b| {
-                    b.icon(if self.sort.1 {
-                        IconName::ArrowDown
-                    } else {
-                        IconName::ArrowUp
-                    })
-                })
-                .selected(active)
-                .on_click(move |_, window, cx| {
-                    events.emit(ViewEvent::SortBy(key), window, cx);
-                });
+            let arrow = if self.sort.1 {
+                IconName::ArrowDown
+            } else {
+                IconName::ArrowUp
+            };
+            let button = Button::new(id).ghost().xsmall();
+            let button = if label.is_empty() {
+                button.icon(if active { arrow } else { IconName::Lock })
+            } else {
+                button.label(label).when(active, |b| b.icon(arrow))
+            };
+            let button = button.selected(active).on_click(move |_, window, cx| {
+                events.emit(ViewEvent::SortBy(key), window, cx);
+            });
             with_card(
                 format!("{id}-tip"),
                 button,
@@ -2084,7 +2116,16 @@ impl IssueList {
                 this.child(cell_with(
                     Column::Llm,
                     &layout,
-                    sort_header("sort-llm", "LLM", "LLM status", SortKey::Llm),
+                    sort_header(
+                        "sort-llm",
+                        if columns::llm_shows_text(layout.llm) {
+                            "LLM"
+                        } else {
+                            ""
+                        },
+                        "LLM status",
+                        SortKey::Llm,
+                    ),
                 ))
             })
             .when(self.shows(Column::Order), |this| {
