@@ -16,8 +16,16 @@ use crate::task::panel_motion::LENGTH;
 /// A workspace on demo data with LLM-101 open. LLM-101 has no claim, and
 /// LLM-102 has one, so the claim bar comes and goes between them.
 fn open_task(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
+    open_task_with(Default::default(), cx)
+}
+
+fn open_task_with(
+    panel_heights: std::collections::BTreeMap<String, f32>,
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>) {
     let settings = crate::settings::UiSettings {
         split_side: Some(560.),
+        panel_heights,
         ..Default::default()
     };
     cx.update(crate::init);
@@ -131,4 +139,45 @@ fn off_the_panels_jump_at_once(cx: &mut TestAppContext) {
     assert_eq!(asked, 0, "nothing animates");
     show(&view, 101, cx);
     assert_eq!(body_top(handle, cx), (without_claim, 0));
+}
+
+/// Puts LLM-101 in User review, so it shows the review panel and LLM-102
+/// does not.
+fn review_on_101(view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    use crate::model::data::{Status, StatusType};
+    const SECTION: &str = "Context.\n\n+++ Review\n### Steps to reproduce\n1. Open it.\n\n### What to check\n- It works.\n+++\n";
+    view.update(cx, |this, cx| {
+        this.store().update(cx, |store, _| {
+            store.modify(IssueId::from_u128(101), |i| {
+                i.status = Status::new("User review", StatusType::Started, 9).with_review(true);
+                i.description = SECTION.into();
+                i.claim = None;
+            });
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// The owner found this on LLM-225 to LLM-226: a review panel the owner
+/// dragged to a height, on a task the next one lacks, shrank away and then
+/// kept its minimum height as an empty box. It pushed the panels below it
+/// down until the next redraw.
+#[gpui_kit::test]
+fn a_dragged_panel_the_next_task_lacks_shrinks_to_nothing(cx: &mut TestAppContext) {
+    let heights = [(crate::task::panel_resize::REVIEW.to_string(), 12.)].into();
+    let (handle, view) = open_task_with(heights, cx);
+    review_on_101(&view, cx);
+    show(&view, 102, cx);
+    let at_rest = settle(handle, cx);
+
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    show(&view, 101, cx);
+    settle(handle, cx);
+    show(&view, 102, cx);
+    body_top(handle, cx);
+    wait(LENGTH.as_millis() as u64 + 50, cx);
+    // The change has ended. This frame must already be at rest.
+    let (top, _) = body_top(handle, cx);
+    assert_eq!(top, at_rest, "no empty box is left behind");
+    assert_eq!(settle(handle, cx), at_rest);
 }

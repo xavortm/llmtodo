@@ -112,6 +112,7 @@ pub fn panel(
     if !motion::on(cx) {
         return panel;
     }
+    let absent = panel.is_none();
     let child = match panel {
         Some(panel) => panel,
         None => {
@@ -129,6 +130,7 @@ pub fn panel(
             name,
             key,
             shrink,
+            absent,
             motion: motion.clone(),
             child,
         }
@@ -141,6 +143,8 @@ struct PanelHeight {
     name: &'static str,
     key: IssueId,
     shrink: bool,
+    /// The task has no such panel: this is the empty box shrinking away.
+    absent: bool,
     motion: Rc<RefCell<PanelMotion>>,
     child: AnyElement,
 }
@@ -198,7 +202,13 @@ impl Element for PanelHeight {
         style.min_size.width = px(0.).into();
         // A change needs the width of the last frame to measure the content.
         let (Some((from, t)), Some(width)) = (change, width) else {
-            if self.shrink {
+            if self.absent {
+                // The shrink has ended. The box stays at nothing until the
+                // next render drops it, so it never takes the minimum
+                // height of a dragged panel.
+                style.flex_shrink = 0.;
+                style.size.height = px(0.).into();
+            } else if self.shrink {
                 style.flex_shrink = 1.;
                 style.min_size.height = rems(super::panel_resize::MIN_REM).into();
                 style.overflow.y = Overflow::Hidden;
