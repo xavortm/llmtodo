@@ -46,8 +46,8 @@ const ENTER: Duration = Duration::from_millis(200);
 const FADE: Duration = Duration::from_millis(150);
 /// A panel sliding in: the task view or the sidebar.
 const SLIDE: Duration = Duration::from_millis(220);
-/// A hover fill coming in. Short enough to feel instant, long enough to
-/// show as a fade.
+/// The shared tab hover background fading in. Short enough to feel
+/// instant, long enough to show as a fade. Row fills show at once.
 const FILL_IN: Duration = Duration::from_millis(90);
 /// A hover, press or selection fill going away.
 const FILL_OUT: Duration = Duration::from_millis(240);
@@ -436,8 +436,8 @@ pub struct Fill {
 }
 
 /// Gives `el` its rest, hover and pressed fills. Off, this is the plain
-/// `bg`, `hover` and `active` styles. On, the fill fades between them: in
-/// at once or nearly, out over a short fade. A change of the rest fill,
+/// `bg`, `hover` and `active` styles. On, a fill that turns on shows at
+/// once, and one that goes away fades out. A change of the rest fill,
 /// such as a selection that moves away, fades the same way.
 ///
 /// `key` names the state for this element. Use one that follows the data,
@@ -567,15 +567,11 @@ impl FillState {
     }
 }
 
-/// On is fast, off is soft. A press shows at the moment of the click, and
-/// a selection lands where it moves to at once.
+/// On is instant, off is soft. A hover shows the moment the mouse enters,
+/// a press at the moment of the click, and a selection lands where it
+/// moves to at once. Only a fill going away fades.
 fn fade_length(from: Level, to: Level) -> Duration {
-    match (from, to) {
-        (_, Level::Pressed) => Duration::ZERO,
-        (Level::Clear, Level::Rest) => Duration::ZERO,
-        (from, to) if to > from => FILL_IN,
-        _ => FILL_OUT,
-    }
+    if to > from { Duration::ZERO } else { FILL_OUT }
 }
 
 impl Fade {
@@ -691,6 +687,25 @@ mod tests {
         let (color, running) = state.sample(fill(), Instant::now());
         assert_eq!(color, None, "no rest fill draws nothing");
         assert!(!running);
+    }
+
+    #[test]
+    fn a_hover_shows_at_once_and_fades_on_leave() {
+        let start = Instant::now();
+        let mut state = FillState::default();
+        state.sample(fill(), start);
+        state.hovered = true;
+        let (color, running) = state.sample(fill(), start);
+        assert!(!running, "a hover never waits");
+        assert!((color.unwrap().a - 0.1).abs() < 0.01);
+
+        state.hovered = false;
+        let (color, running) = state.sample(fill(), start);
+        assert!(running, "the leave fades");
+        assert!(color.is_some(), "it starts at the hover");
+        let (color, running) = state.sample(fill(), start + FILL_OUT);
+        assert!(!running, "the fade ends on time");
+        assert_eq!(color, None, "it ends with no fill");
     }
 
     #[test]
@@ -836,19 +851,21 @@ mod tests {
     }
 
     #[test]
-    fn a_reversed_fade_starts_where_the_last_one_was() {
+    fn a_hover_that_comes_back_mid_fade_shows_at_once() {
         let start = Instant::now();
         let mut state = FillState::default();
         state.sample(fill(), start);
         state.hovered = true;
         state.sample(fill(), start);
         state.hovered = false;
-        let mid = start + FILL_IN / 2;
+        state.sample(fill(), start);
+        let mid = start + FILL_OUT / 2;
         let (color, _) = state.sample(fill(), mid);
         let a = color.map_or(0., |c| c.a);
-        assert!(
-            a > 0. && a < 0.1,
-            "it leaves from the partway fill, got {a}"
-        );
+        assert!(a > 0. && a < 0.1, "it is partway out, got {a}");
+        state.hovered = true;
+        let (color, running) = state.sample(fill(), mid);
+        assert!(!running, "the hover does not wait for the fade");
+        assert!((color.unwrap().a - 0.1).abs() < 0.01);
     }
 }
