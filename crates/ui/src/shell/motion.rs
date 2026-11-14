@@ -53,14 +53,13 @@ const FILL_IN: Duration = Duration::from_millis(90);
 const FILL_OUT: Duration = Duration::from_millis(240);
 /// A group's chevron turning.
 const TURN: Duration = Duration::from_millis(180);
-/// One row of a cascade fading in.
-const CASCADE_ROW: Duration = Duration::from_millis(200);
-/// The wait between one cascading row and the next.
-const CASCADE_STEP: Duration = Duration::from_millis(16);
-/// Rows after this many come in with the last one.
-const CASCADE_ROWS: usize = 10;
-/// How far a cascading row drops.
-const CASCADE_TRAVEL: f32 = 8.;
+/// How many rows a wave spreads over. Rows below come in with the last.
+/// More than a full window of rows, so no visible row waits for a jump.
+const WAVE_ROWS: f32 = 40.;
+/// How far a wave row moves into place.
+const WAVE_TRAVEL: f32 = 8.;
+/// A group closing: the rows under it slide up over its rows.
+pub const CLOSE: Duration = Duration::from_millis(180);
 /// How far new content rises into place.
 const SWAP_TRAVEL: f32 = 4.;
 /// How far an overlay drops into place.
@@ -107,28 +106,69 @@ pub fn turn(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut 
     )
 }
 
-/// One row's step in a cascade: the rows of a group that just opened fade
-/// in and drop into place, each a little after the row above it. `index`
-/// counts rows under the header from 0. Returns 1 when the row is in
-/// place. Only the first [`CASCADE_ROWS`] rows wait their turn, so a long
-/// group is never slow.
-pub fn cascade_step(elapsed: Duration, index: usize) -> f32 {
-    let delay = CASCADE_STEP * index.min(CASCADE_ROWS) as u32;
-    let t = elapsed.saturating_sub(delay).as_secs_f32() / CASCADE_ROW.as_secs_f32();
-    ease_out(t)
+/// Rows fading in from top to bottom, each a little after the row above.
+/// The front of the wave starts fast and slows down as it reaches the
+/// bottom, so it settles like every other animation here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wave {
+    /// The rows of a group that just opened. They drop into place.
+    Open,
+    /// Every visible row after a new sort or grouping. They rise into
+    /// place, and faster, so the new order reads at once.
+    Sort,
 }
 
-/// How long a whole cascade runs.
-pub const CASCADE_TOTAL: Duration =
-    Duration::from_millis(CASCADE_STEP.as_millis() as u64 * CASCADE_ROWS as u64)
-        .saturating_add(CASCADE_ROW);
-
-/// Places a cascading row at its step `t`.
-pub fn cascade<E: Styled>(el: E, t: f32) -> E {
-    if t >= 1. {
-        return el;
+impl Wave {
+    /// How long the front takes to reach the last row.
+    fn spread(self) -> Duration {
+        match self {
+            Self::Open => Duration::from_millis(200),
+            Self::Sort => Duration::from_millis(160),
+        }
     }
-    el.opacity(t).top(px(-CASCADE_TRAVEL * (1. - t)))
+
+    /// How long one row takes to come in.
+    fn row(self) -> Duration {
+        match self {
+            Self::Open => Duration::from_millis(200),
+            Self::Sort => Duration::from_millis(150),
+        }
+    }
+
+    /// How long the whole wave runs.
+    pub fn total(self) -> Duration {
+        self.spread() + self.row()
+    }
+
+    /// Where the row `index` places from the wave's top is, from 0 to 1,
+    /// `elapsed` after the wave starts.
+    pub fn step(self, elapsed: Duration, index: usize) -> f32 {
+        // The front follows the ease-out curve, so the row at fraction `f`
+        // of the way down starts when ease_out(t) = f.
+        let f = (index as f32 / WAVE_ROWS).min(1.);
+        let start = 1. - (1. - f).cbrt();
+        let delay = self.spread().mul_f32(start);
+        let t = elapsed.saturating_sub(delay).as_secs_f32() / self.row().as_secs_f32();
+        ease_out(t)
+    }
+
+    /// Places a row at its step `t`.
+    pub fn place<E: Styled>(self, el: E, t: f32) -> E {
+        if t >= 1. {
+            return el;
+        }
+        let travel = match self {
+            Self::Open => -WAVE_TRAVEL,
+            Self::Sort => WAVE_TRAVEL / 2.,
+        };
+        el.opacity(t).top(px(travel * (1. - t)))
+    }
+}
+
+/// How much of a closing group is still showing, from 1 at the start to 0,
+/// `elapsed` after it starts.
+pub fn closing_left(elapsed: Duration) -> f32 {
+    1. - ease_out(elapsed.as_secs_f32() / CLOSE.as_secs_f32())
 }
 
 /// A small card, such as a tooltip, fading in where it stands.
@@ -365,22 +405,37 @@ mod tests {
     }
 
     #[test]
-    fn a_cascade_staggers_the_first_rows_and_ends_on_time() {
-        assert_eq!(cascade_step(Duration::ZERO, 0), 0.);
-        let early = cascade_step(Duration::from_millis(50), 0);
-        let later = cascade_step(Duration::from_millis(50), 2);
-        assert!(early > later, "a lower row starts later");
-        assert_eq!(
-            cascade_step(Duration::from_millis(50), 30),
-            cascade_step(Duration::from_millis(50), CASCADE_ROWS)
-        );
-        for index in [0, 5, CASCADE_ROWS, 200] {
-            assert_eq!(
-                cascade_step(CASCADE_TOTAL, index),
-                1.,
-                "row {index} is in place"
-            );
+    fn a_wave_moves_top_to_bottom_and_ends_on_time() {
+        for wave in [Wave::Open, Wave::Sort] {
+            assert_eq!(wave.step(Duration::ZERO, 0), 0.);
+            let at = Duration::from_millis(60);
+            assert!(wave.step(at, 0) > wave.step(at, 3), "a lower row starts later");
+            assert_eq!(wave.step(at, 40), wave.step(at, 400), "the wave ends at row 40");
+            for index in [0, 5, 39, 40, 200] {
+                assert_eq!(wave.step(wave.total(), index), 1., "row {index} is in place");
+            }
         }
+    }
+
+    #[test]
+    fn the_wave_front_slows_down_toward_the_bottom() {
+        // The same number of rows takes longer to cross further down.
+        let start = |i: usize| {
+            (0..=1000)
+                .map(|ms| Duration::from_millis(ms))
+                .find(|&at| Wave::Open.step(at, i) > 0.)
+                .unwrap()
+        };
+        let top = start(10) - start(0);
+        let bottom = start(39) - start(29);
+        assert!(bottom > top * 2, "top {top:?} bottom {bottom:?}");
+    }
+
+    #[test]
+    fn a_closing_group_shrinks_to_nothing_on_time() {
+        assert_eq!(closing_left(Duration::ZERO), 1.);
+        assert!(closing_left(CLOSE / 2) < 0.5, "it eases out");
+        assert_eq!(closing_left(CLOSE), 0.);
     }
 
     #[test]
