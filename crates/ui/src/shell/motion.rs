@@ -409,10 +409,21 @@ mod tests {
         for wave in [Wave::Open, Wave::Sort] {
             assert_eq!(wave.step(Duration::ZERO, 0), 0.);
             let at = Duration::from_millis(60);
-            assert!(wave.step(at, 0) > wave.step(at, 3), "a lower row starts later");
-            assert_eq!(wave.step(at, 40), wave.step(at, 400), "the wave ends at row 40");
+            assert!(
+                wave.step(at, 0) > wave.step(at, 3),
+                "a lower row starts later"
+            );
+            assert_eq!(
+                wave.step(at, 40),
+                wave.step(at, 400),
+                "the wave ends at row 40"
+            );
             for index in [0, 5, 39, 40, 200] {
-                assert_eq!(wave.step(wave.total(), index), 1., "row {index} is in place");
+                assert_eq!(
+                    wave.step(wave.total(), index),
+                    1.,
+                    "row {index} is in place"
+                );
             }
         }
     }

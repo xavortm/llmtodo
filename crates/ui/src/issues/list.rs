@@ -36,6 +36,7 @@ use crate::model::data::{Assignee, Issue, IssueId, Label, LlmStatus, Status, hid
 use crate::model::scope::Scope;
 use crate::model::store::{Connection, IssueStore};
 use crate::shell::icons::HasIcon as _;
+use crate::shell::motion::Wave;
 use crate::shell::tooltip::{Card, with_card};
 use crate::shell::view_events::{IssueAction, ViewEvent, ViewEvents};
 use crate::shell::widgets::{self, DraggedIssue, label_color};
@@ -120,6 +121,69 @@ pub enum RowClick {
     Toggle,
 }
 
+/// A list animation (LLM-195). Its clock starts at the first frame after
+/// the change.
+struct ListMotion {
+    kind: MotionKind,
+    start: Option<std::time::Instant>,
+    /// The time of the frame being drawn.
+    now: std::time::Instant,
+}
+
+enum MotionKind {
+    /// Rows fade in top to bottom. `groups` names the groups that just
+    /// opened, or None for every group.
+    Wave {
+        wave: Wave,
+        groups: Option<Vec<SharedString>>,
+    },
+    /// A group closes. `ids` are its first rows, drawn under the header
+    /// while the rows below slide up over them. `header` is the header's
+    /// row in this frame.
+    Close {
+        title: SharedString,
+        ids: Vec<IssueId>,
+        header: Option<usize>,
+    },
+}
+
+impl ListMotion {
+    fn wave(wave: Wave, groups: Option<Vec<SharedString>>) -> Self {
+        Self {
+            kind: MotionKind::Wave { wave, groups },
+            start: None,
+            now: std::time::Instant::now(),
+        }
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        self.start.map_or(std::time::Duration::ZERO, |start| {
+            self.now.saturating_duration_since(start)
+        })
+    }
+
+    fn length(&self) -> std::time::Duration {
+        match &self.kind {
+            MotionKind::Wave { wave, .. } => wave.total(),
+            MotionKind::Close { .. } => crate::shell::motion::CLOSE,
+        }
+    }
+}
+
+/// A row's height, in rem: `h_7`.
+const ROW_REM: f32 = 1.75;
+/// A closing group keeps at most this many rows drawn, more than fit in a
+/// window.
+const CLOSING_ROWS: usize = 40;
+/// The row numbers of a closing group's rows, far past any real row, so
+/// their element IDs never meet a real row's.
+const GHOST_ROW: usize = usize::MAX / 2;
+
+/// The height of a closing group's rows, in rem.
+fn closing_height(rows: usize) -> f32 {
+    rows as f32 * ROW_REM
+}
+
 /// The hover group of one task row, for its mark box.
 const ROW_GROUP: &str = "issue-row";
 /// The hover and press group of a mark box's click target.
@@ -139,9 +203,11 @@ pub struct IssueList {
     pub hide_closed_after: Option<u32>,
     /// Experimental: draw a light line through the titles of Done tasks.
     pub strike_done: bool,
-    /// The groups that just opened and when, while their rows cascade in
-    /// (LLM-195). None in the list opens every group.
-    cascade: Option<(Option<Vec<SharedString>>, std::time::Instant)>,
+    /// The list animation that runs now, with animations on (LLM-195).
+    motion: Option<ListMotion>,
+    /// The first row the list drew in the last frame, where a sort's wave
+    /// starts.
+    visible_start: usize,
     /// How many tasks the scope and filter would show but that setting hides.
     hidden_closed: usize,
     /// The issues that pass the filter, in sort order.
@@ -249,7 +315,8 @@ impl IssueList {
             scope: Scope::All,
             hide_closed_after: None,
             strike_done: true,
-            cascade: None,
+            motion: None,
+            visible_start: 0,
             hidden_closed: 0,
             visible: Vec::new(),
             rows: Vec::new(),
@@ -585,10 +652,14 @@ impl IssueList {
         } else {
             (key, false)
         };
+        self.start_motion(ListMotion::wave(Wave::Sort, None), cx);
         self.refresh_keeping_selection(cx);
     }
 
     pub fn group_by(&mut self, group: GroupBy, cx: &mut Context<Self>) {
+        if self.group != group {
+            self.start_motion(ListMotion::wave(Wave::Sort, None), cx);
+        }
         self.group = group;
         self.refresh_keeping_selection(cx);
     }
@@ -597,9 +668,17 @@ impl IssueList {
     pub fn set_group_collapsed(&mut self, title: &str, collapsed: bool, cx: &mut Context<Self>) {
         let key = self.group_key(title);
         if collapsed {
-            self.collapsed.insert(key);
+            if self.collapsed.insert(key) {
+                self.start_close(title, cx);
+            }
         } else if self.collapsed.remove(&key) {
-            self.start_cascade(Some(vec![SharedString::from(title.to_string())]), cx);
+            self.start_motion(
+                ListMotion::wave(
+                    Wave::Open,
+                    Some(vec![SharedString::from(title.to_string())]),
+                ),
+                cx,
+            );
         }
         // Keep the header selected while its group opens or closes.
         if let Some(row) = self.header_row(title) {
@@ -651,35 +730,147 @@ impl IssueList {
         let before = self.collapsed.len();
         self.collapsed.retain(|k| !k.starts_with(&prefix));
         if self.collapsed.len() != before {
-            self.start_cascade(None, cx);
+            self.start_motion(ListMotion::wave(Wave::Open, None), cx);
         }
         self.refresh_keeping_selection(cx);
     }
 
-    /// With animations on, the rows of the groups that just opened cascade
-    /// in over the next frames.
-    fn start_cascade(&mut self, titles: Option<Vec<SharedString>>, cx: &App) {
+    /// Starts a list animation, with animations on. Its clock starts at
+    /// the next frame, so the work of the change itself does not eat into
+    /// it.
+    fn start_motion(&mut self, motion: ListMotion, cx: &App) {
         if crate::shell::motion::on(cx) {
-            self.cascade = Some((titles, cx.background_executor().now()));
+            self.motion = Some(motion);
         }
     }
 
-    /// Where `row` is in a running cascade, from 0 to 1. 1 when no cascade
-    /// runs or the row's group did not just open.
-    fn cascade_step(&self, row: usize, now: std::time::Instant) -> f32 {
-        let Some((titles, at)) = &self.cascade else {
-            return 1.;
-        };
-        let Some(header) = self.group_header_above(row) else {
-            return 1.;
-        };
-        let Row::Header { title, .. } = &self.rows[header] else {
-            return 1.;
-        };
-        if titles.as_ref().is_some_and(|t| !t.contains(title)) {
-            return 1.;
+    /// A group closes: its rows stay drawn under the header for a moment,
+    /// and the rows below slide up over them. Only the rows that can be on
+    /// screen are kept.
+    fn start_close(&mut self, title: &str, cx: &App) {
+        if !crate::shell::motion::on(cx) {
+            return;
         }
-        crate::shell::motion::cascade_step(now.saturating_duration_since(*at), row - header - 1)
+        let Some(header) = self.header_row(title) else {
+            return;
+        };
+        let ids: Vec<IssueId> = self.rows[header + 1..]
+            .iter()
+            .map_while(|row| match row {
+                Row::Issue(id) => Some(*id),
+                Row::Header { .. } => None,
+            })
+            .take(CLOSING_ROWS)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.start_motion(
+            ListMotion {
+                kind: MotionKind::Close {
+                    title: title.to_string().into(),
+                    ids,
+                    header: None,
+                },
+                start: None,
+                now: std::time::Instant::now(),
+            },
+            cx,
+        );
+    }
+
+    /// Where `row` is in a running wave, from 0 to 1. 1 when no wave runs
+    /// or the row is not in it.
+    fn wave_step(&self, row: usize) -> (Wave, f32) {
+        let Some(motion) = &self.motion else {
+            return (Wave::Open, 1.);
+        };
+        let MotionKind::Wave { wave, groups } = &motion.kind else {
+            return (Wave::Open, 1.);
+        };
+        if row >= self.rows.len() {
+            return (*wave, 1.);
+        }
+        let elapsed = motion.elapsed();
+        let index = match groups {
+            // A sort: from the top of the window.
+            _ if *wave == Wave::Sort => row.saturating_sub(self.visible_start),
+            groups => {
+                let Some(header) = self.group_header_above(row) else {
+                    return (*wave, 1.);
+                };
+                let Row::Header { title, .. } = &self.rows[header] else {
+                    return (*wave, 1.);
+                };
+                if header == row || groups.as_ref().is_some_and(|t| !t.contains(title)) {
+                    return (*wave, 1.);
+                }
+                row - header - 1
+            }
+        };
+        (*wave, wave.step(elapsed, index))
+    }
+
+    /// How far `row` sits below its place while a group above it closes,
+    /// in rem. 0 when none closes.
+    fn closing_shift(&self, row: usize) -> f32 {
+        let Some(motion) = &self.motion else {
+            return 0.;
+        };
+        match &motion.kind {
+            MotionKind::Close {
+                ids,
+                header: Some(header),
+                ..
+            } if row > *header && row < self.rows.len() => {
+                closing_height(ids.len()) * crate::shell::motion::closing_left(motion.elapsed())
+            }
+            _ => 0.,
+        }
+    }
+
+    /// The rows of a closing group, cropped from the bottom as the rows
+    /// below slide up. They sit under the header and take no clicks.
+    fn render_closing_rows(
+        &self,
+        title: &str,
+        list_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let motion = self.motion.as_ref()?;
+        let MotionKind::Close {
+            title: closing,
+            ids,
+            ..
+        } = &motion.kind
+        else {
+            return None;
+        };
+        if closing.as_ref() != title || motion.start.is_none() {
+            return None;
+        }
+        let left = crate::shell::motion::closing_left(motion.elapsed());
+        let ids = ids.clone();
+        let rows: Vec<AnyElement> = ids
+            .iter()
+            .enumerate()
+            .map(|(k, id)| self.render_issue_row(GHOST_ROW + k, *id, list_focused, window, cx))
+            .collect();
+        Some(
+            div()
+                .absolute()
+                .top(gpui_kit::rems(ROW_REM))
+                .left_0()
+                .right_0()
+                .h(gpui_kit::rems(closing_height(ids.len()) * left))
+                .overflow_hidden()
+                .children(rows)
+                // Over the rows, so a click in the moment they show reaches
+                // none of them.
+                .child(div().absolute().inset_0().occlude())
+                .into_any_element(),
+        )
     }
 
     /// Whether any group in the list is open.
@@ -1057,7 +1248,11 @@ impl IssueList {
             window,
             cx,
         );
+        let shift = self.closing_shift(row);
+        let closing = self.render_closing_rows(&title, list_focused, window, cx);
         frame
+            .when(shift > 0., |this| this.top(gpui_kit::rems(shift)))
+            .children(closing)
             .test_support()
             .w_full()
             .h_7()
@@ -1314,8 +1509,10 @@ impl IssueList {
             window,
             cx,
         );
-        let step = self.cascade_step(row, cx.background_executor().now());
-        crate::shell::motion::cascade(frame, step)
+        let (wave, step) = self.wave_step(row);
+        let shift = self.closing_shift(row);
+        wave.place(frame, step)
+            .when(shift > 0., |this| this.top(gpui_kit::rems(shift)))
             .test_support()
             .group(ROW_GROUP)
             .relative()
@@ -1861,13 +2058,22 @@ impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
-        // A cascade draws the list each frame until its last row lands.
-        if let Some((_, at)) = &self.cascade {
+        // A list animation draws the list each frame until it ends.
+        if let Some(motion) = &mut self.motion {
             let now = cx.background_executor().now();
-            if now.saturating_duration_since(*at) < crate::shell::motion::CASCADE_TOTAL {
-                window.request_animation_frame();
+            let start = *motion.start.get_or_insert(now);
+            motion.now = now;
+            if let MotionKind::Close { title, header, .. } = &mut motion.kind {
+                let title = title.clone();
+                *header = (0..self.rows.len()).find(
+                    |&ix| matches!(&self.rows[ix], Row::Header { title: t, .. } if *t == title),
+                );
+            }
+            let done = now.saturating_duration_since(start) >= motion.length();
+            if done {
+                self.motion = None;
             } else {
-                self.cascade = None;
+                window.request_animation_frame();
             }
         }
         let rem_size = window.rem_size();
@@ -1905,6 +2111,7 @@ impl Render for IssueList {
                     self.rows.len(),
                     cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                         let list_focused = this.focus.is_focused(window);
+                        this.visible_start = range.start;
                         range
                             .map(|row| this.render_row(row, list_focused, window, cx))
                             .collect::<Vec<_>>()

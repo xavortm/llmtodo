@@ -641,9 +641,89 @@ fn an_opened_group_cascades_in_and_then_stops(cx: &mut TestAppContext) {
     cx.update(|cx| list.update(cx, |list, cx| list.set_group_collapsed(&title, false, cx)));
     frames_asked(handle, cx);
     assert!(frames_asked(handle, cx) > 0, "the rows cascade in");
-    cx.executor()
-        .advance_clock(crate::shell::motion::CASCADE_TOTAL + std::time::Duration::from_millis(50));
+    cx.executor().advance_clock(
+        crate::shell::motion::Wave::Open.total() + std::time::Duration::from_millis(50),
+    );
     frames_asked(handle, cx);
     frames_asked(handle, cx);
     assert_eq!(frames_asked(handle, cx), 0, "the cascade stops");
+}
+
+/// LLM-195: with animations on, a closing group's rows stay drawn under
+/// its header for a moment, cropped from the bottom, and then go.
+#[gpui_kit::test]
+fn a_closing_group_crops_its_rows_and_then_drops_them(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    let list = cx.read(|cx| view.read(cx).list().clone());
+    let title = cx.update(|cx| {
+        list.update(cx, |list, cx| {
+            list.group_by(crate::issues::list::GroupBy::Status, cx);
+            list.rows()
+                .iter()
+                .find_map(|row| match row {
+                    crate::issues::list::Row::Header {
+                        title,
+                        collapsed: false,
+                        count,
+                        ..
+                    } if *count > 0 => Some(title.to_string()),
+                    _ => None,
+                })
+                .expect("an open group")
+        })
+    });
+    frames_asked(handle, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+
+    cx.update(|cx| list.update(cx, |list, cx| list.set_group_collapsed(&title, true, cx)));
+    let ghost = ("row", usize::MAX / 2);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(ghost).is_some(),
+            "the closing rows still show"
+        );
+    })
+    .unwrap();
+    assert!(frames_asked(handle, cx) > 0, "the close animates");
+
+    cx.executor()
+        .advance_clock(crate::shell::motion::CLOSE + std::time::Duration::from_millis(50));
+    frames_asked(handle, cx);
+    frames_asked(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(ghost).is_none(), "they go when it ends");
+    })
+    .unwrap();
+}
+
+/// LLM-195: a new sort sends a wave down the list, which then stops.
+#[gpui_kit::test]
+fn a_new_sort_sends_a_wave_and_then_stops(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    frames_asked(handle, cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0);
+
+    let list = cx.read(|cx| view.read(cx).list().clone());
+    cx.update(|cx| {
+        list.update(cx, |list, cx| {
+            list.sort_by(crate::issues::list::SortKey::Status, cx)
+        })
+    });
+    frames_asked(handle, cx);
+    assert!(frames_asked(handle, cx) > 0, "the wave runs");
+    cx.executor().advance_clock(
+        crate::shell::motion::Wave::Sort.total() + std::time::Duration::from_millis(50),
+    );
+    frames_asked(handle, cx);
+    frames_asked(handle, cx);
+    assert_eq!(frames_asked(handle, cx), 0, "the wave stops");
 }
