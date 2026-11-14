@@ -242,6 +242,10 @@ pub struct IssueList {
     layout: std::rc::Rc<columns::Layout>,
     /// The columns the owner hid from the column heading menu.
     pub hidden_columns: Vec<Column>,
+    /// The columns the last frame planned, once the list knew its width.
+    planned_columns: Option<Vec<Column>>,
+    /// With animations on, the columns that fade in or out (LLM-219).
+    column_fades: crate::shell::motion::Presence<Column>,
     /// What the titles and labels of `visible` ask of the columns. The
     /// workspace asks on each frame, and the answer changes only when
     /// `visible` is computed again.
@@ -337,6 +341,8 @@ impl IssueList {
                 &columns::Demand::default(),
             )),
             hidden_columns: Vec::new(),
+            planned_columns: None,
+            column_fades: Default::default(),
             demand: Cell::new(None),
             background_from: rows::BACKGROUND_FROM,
             build_task: None,
@@ -1035,8 +1041,45 @@ impl IssueList {
         hidden
     }
 
+    /// Whether the rows draw `column`: it shows, or it fades in or out.
     fn shows(&self, column: Column) -> bool {
-        self.layout.columns.contains(&column)
+        self.layout.draws(column)
+    }
+
+    /// With animations on, a column that the list hides or brings back
+    /// fades out or in while its width shrinks or grows (LLM-219). A fade
+    /// starts only when the set of columns changes, not on every width
+    /// change, so a live resize starts one fade per column that crosses
+    /// its limit. The list draws again each frame until the fades end.
+    fn fade_columns(&mut self, layout: &mut columns::Layout, window: &mut Window, cx: &App) {
+        // Before the first layout every column shows. Fading out the ones
+        // the real width hides would play at each start.
+        if self.width.get().is_none() {
+            return;
+        }
+        let before = self.planned_columns.replace(layout.columns.clone());
+        if !crate::shell::motion::on(cx) {
+            self.column_fades.clear();
+            return;
+        }
+        let now = cx.background_executor().now();
+        if let Some(before) = before {
+            for column in Column::ALL {
+                let shown = layout.columns.contains(&column);
+                if before.contains(&column) != shown {
+                    self.column_fades.change(column, shown, now);
+                }
+            }
+        }
+        if !self.column_fades.settle(now) {
+            return;
+        }
+        layout.fade = self.column_fades.all(now).collect();
+        // The labels column fades out at the width it had.
+        if !layout.columns.contains(&Column::Labels) && layout.fading(Column::Labels).is_some() {
+            layout.labels = self.layout.labels;
+        }
+        window.request_animation_frame();
     }
 
     /// Hides `column`, or shows it again. The title always shows.
@@ -2078,7 +2121,8 @@ impl Render for IssueList {
         }
         let rem_size = window.rem_size();
         let demand = self.demand(cx);
-        let layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
+        let mut layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
+        self.fade_columns(&mut layout, window, cx);
         if *self.layout != layout {
             self.layout = std::rc::Rc::new(layout);
         }

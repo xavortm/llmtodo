@@ -261,6 +261,10 @@ pub struct Layout {
     pub columns: Vec<Column>,
     /// The width of the labels column, when it shows.
     pub labels: Rems,
+    /// With animations on, the columns that fade in or out, with how far
+    /// each shows, from 0 to 1. A column that fades out is still drawn,
+    /// though `columns` has left it out. `plan` leaves this empty.
+    pub fade: Vec<(Column, f32)>,
 }
 
 impl Layout {
@@ -271,6 +275,24 @@ impl Layout {
             Column::Labels => Some(self.labels),
             other => other.width(),
         }
+    }
+
+    /// Whether a row draws `column`: it shows, or it fades in or out.
+    pub fn draws(&self, column: Column) -> bool {
+        self.columns.contains(&column) || self.fading(column).is_some()
+    }
+
+    /// How far `column` shows while it fades, or None at rest.
+    pub fn fading(&self, column: Column) -> Option<f32> {
+        self.fade
+            .iter()
+            .find(|(c, _)| *c == column)
+            .map(|(_, shown)| *shown)
+    }
+
+    /// The first column a row draws, which has no gap before it.
+    fn first_drawn(&self) -> Option<Column> {
+        Column::ALL.into_iter().find(|c| self.draws(*c))
     }
 }
 
@@ -348,6 +370,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
         return Layout {
             columns: shown,
             labels: rems(step(labels)),
+            fade: Vec::new(),
         };
     };
     let width = f32::from(width);
@@ -370,6 +393,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
         return Layout {
             columns: shown,
             labels: rems(labels_min()),
+            fade: Vec::new(),
         };
     }
     let cap = (LABELS_MAX.0 * rem).min(width * LABELS_SHARE).max(min);
@@ -392,6 +416,7 @@ pub fn plan(width: Option<Pixels>, rem_size: Pixels, hidden: &[Column], demand: 
     Layout {
         columns: shown,
         labels: rems(step(labels / rem)),
+        fade: Vec::new(),
     }
 }
 
@@ -468,17 +493,50 @@ pub fn row_frame() -> Div {
 }
 
 /// An empty cell of `column`, sized for it by `layout`. The caller fills it.
+///
+/// A cell that fades in or out (LLM-219) is as wide as the part of it that
+/// shows, and as faint. A negative margin takes back the same part of the
+/// gap beside it, so the title beside it grows or shrinks without a jump.
 pub fn cell(column: Column, layout: &Layout) -> Stateful<Div> {
     let cell = div().id(column.id()).h_full().flex().items_center();
-    match layout.width(column) {
-        Some(width) => cell.w(width).flex_none().overflow_hidden(),
-        None => cell.flex_1().min_w_0(),
+    let Some(width) = layout.width(column) else {
+        // While columns fade, the title keeps its minimum. When the list
+        // narrows at once, the columns on their way out are cut at the
+        // right edge, instead of the title dropping to nothing.
+        return if layout.fade.is_empty() {
+            cell.flex_1().min_w_0()
+        } else {
+            cell.flex_1().min_w(TITLE_MIN)
+        };
+    };
+    let cell = cell.flex_none().overflow_hidden();
+    let Some(shown) = layout.fading(column) else {
+        return cell.w(width);
+    };
+    let gap = rems(-GAP.0 * (1. - shown));
+    let cell = cell.w(rems(width.0 * shown)).opacity(shown);
+    if layout.first_drawn() == Some(column) {
+        cell.mr(gap)
+    } else {
+        cell.ml(gap)
     }
 }
 
 /// Puts `child` in a cell of `column`, sized by `layout`. Tests find the
-/// cell by its ID and read its bounds.
+/// cell by its ID and read its bounds. While the cell fades, its content
+/// keeps its full width and the cell crops it, so nothing inside reflows.
 pub fn cell_with(column: Column, layout: &Layout, child: impl IntoElement) -> AnyElement {
+    let child = match (layout.fading(column), layout.width(column)) {
+        (Some(_), Some(width)) => div()
+            .flex_none()
+            .w(width)
+            .h_full()
+            .flex()
+            .items_center()
+            .child(child)
+            .into_any_element(),
+        _ => child.into_any_element(),
+    };
     cell(column, layout)
         .child(child)
         .test_support()

@@ -189,6 +189,89 @@ pub fn closing_left(elapsed: Duration) -> f32 {
     1. - ease_out(elapsed.as_secs_f32() / CLOSE.as_secs_f32())
 }
 
+/// A list column hiding or coming back as the list gets narrower or wider.
+pub const COLUMN: Duration = Duration::from_millis(200);
+
+/// Things that come and go, such as the list's columns. Each eases between
+/// hidden, 0, and shown, 1, over `COLUMN`. A change mid-way turns back from
+/// where the thing is, and takes only the time for the distance left, so a
+/// quick change back and forth never jumps, restarts or stacks.
+pub struct Presence<K> {
+    items: Vec<(K, Tween)>,
+}
+
+impl<K> Default for Presence<K> {
+    fn default() -> Self {
+        Self { items: Vec::new() }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Tween {
+    from: f32,
+    to: f32,
+    start: Instant,
+    length: Duration,
+}
+
+impl Tween {
+    fn at(&self, now: Instant) -> f32 {
+        if self.length.is_zero() {
+            return self.to;
+        }
+        let t = now.saturating_duration_since(self.start).as_secs_f32() / self.length.as_secs_f32();
+        self.from + (self.to - self.from) * ease_out(t)
+    }
+
+    fn done(&self, now: Instant) -> bool {
+        now >= self.start + self.length
+    }
+}
+
+impl<K: Copy + PartialEq> Presence<K> {
+    /// `key` turns shown or hidden at `now`. It starts from where it is,
+    /// or from the other end when it was at rest.
+    pub fn change(&mut self, key: K, shown: bool, now: Instant) {
+        let to = if shown { 1. } else { 0. };
+        let from = self.get(key, now).unwrap_or(1. - to);
+        self.items.retain(|(k, _)| *k != key);
+        self.items.push((
+            key,
+            Tween {
+                from,
+                to,
+                start: now,
+                length: COLUMN.mul_f32((to - from).abs()),
+            },
+        ));
+    }
+
+    /// How far `key` shows at `now`, or None when it is at rest.
+    pub fn get(&self, key: K, now: Instant) -> Option<f32> {
+        self.items
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, tween)| tween.at(now))
+    }
+
+    /// Every key on its way, with how far it shows at `now`.
+    pub fn all(&self, now: Instant) -> impl Iterator<Item = (K, f32)> + '_ {
+        self.items.iter().map(move |(k, tween)| (*k, tween.at(now)))
+    }
+
+    /// Drops the keys that reached their end by `now`. True while any is
+    /// still on its way.
+    pub fn settle(&mut self, now: Instant) -> bool {
+        self.items.retain(|(_, tween)| !tween.done(now));
+        !self.items.is_empty()
+    }
+
+    /// Puts every key at its end at once.
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
+}
+
 /// A small card, such as a tooltip, fading in where it stands.
 pub fn fade_in<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
 where
@@ -465,6 +548,39 @@ mod tests {
         assert_eq!(closing_left(Duration::ZERO), 1.);
         assert!(closing_left(CLOSE / 2) < 0.5, "it eases out");
         assert_eq!(closing_left(CLOSE), 0.);
+    }
+
+    #[test]
+    fn a_column_fades_out_and_settles_on_time() {
+        let start = Instant::now();
+        let mut fades = Presence::default();
+        fades.change(1, false, start);
+        assert_eq!(fades.get(1, start), Some(1.), "it starts shown");
+        let mid = fades.get(1, start + COLUMN / 2).unwrap();
+        assert!(mid > 0. && mid < 0.5, "it eases out, got {mid}");
+        assert_eq!(fades.get(1, start + COLUMN), Some(0.));
+        assert!(fades.settle(start + COLUMN / 2));
+        assert!(!fades.settle(start + COLUMN), "it ends on time");
+        assert_eq!(fades.get(1, start + COLUMN), None);
+    }
+
+    #[test]
+    fn a_column_that_turns_back_starts_where_it_was() {
+        let start = Instant::now();
+        let mut fades = Presence::default();
+        fades.change(1, false, start);
+        let turn = start + COLUMN / 4;
+        let was = fades.get(1, turn).unwrap();
+        fades.change(1, true, turn);
+        assert_eq!(fades.get(1, turn), Some(was), "no jump");
+        // The way back covers only the distance lost, so it ends sooner.
+        let back = turn + COLUMN.mul_f32(1. - was);
+        assert_eq!(fades.get(1, back), Some(1.));
+        assert!(!fades.settle(back));
+        // Another key runs on its own clock.
+        fades.change(2, true, back);
+        assert_eq!(fades.get(2, back), Some(0.), "it starts hidden");
+        assert_eq!(fades.all(back).count(), 1);
     }
 
     #[test]

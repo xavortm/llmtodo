@@ -15,6 +15,8 @@ mod bulk_tests;
 #[cfg(test)]
 mod claims_tests;
 #[cfg(test)]
+mod column_fade_tests;
+#[cfg(test)]
 mod cost_tests;
 #[cfg(test)]
 mod create_tests;
