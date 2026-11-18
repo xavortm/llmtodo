@@ -1306,23 +1306,57 @@ impl IssueList {
     }
 
     /// The project cell of a task row: the project's icon and name. Empty
-    /// for a task with no project.
-    fn project_cell(&self, slug: Option<&str>, muted: gpui_kit::Hsla, cx: &App) -> AnyElement {
+    /// for a task with no project, so a click there opens the task.
+    ///
+    /// A click on the icon or name opens the project, as its sidebar row
+    /// does (LLM-304). The row neither sees the click nor shows as pressed.
+    fn project_cell(
+        &self,
+        row: usize,
+        slug: Option<&str>,
+        muted: gpui_kit::Hsla,
+        cx: &App,
+    ) -> AnyElement {
         let Some(slug) = slug else {
             return div().into_any_element();
         };
         let catalog = &self.store.read(cx).catalog;
         let name = rows::project_title(Some(slug), &catalog.projects);
         let icon = crate::shell::icons::project_icon(&catalog.project_style(slug), muted, cx);
-        h_flex()
-            .id("project")
+        let fg = cx.theme().foreground;
+        let events = self.events.clone();
+        let scope = Scope::Project(SharedString::from(slug.to_string()));
+        let target = h_flex()
+            .id(("project", row))
             .test_support()
+            .max_w_full()
+            .min_w_0()
+            // The padding gives the hover fill room. The negative margin
+            // keeps the icon in line with the column heading.
+            .ml_neg_1()
+            .px_1()
+            .py_0p5()
+            .gap_1p5()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_color(muted)
+            .hover(move |s| s.text_color(fg).bg(fg.opacity(0.12)))
+            .active(move |s| s.text_color(fg).bg(fg.opacity(0.28)))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                events.emit(ViewEvent::PickScope(scope.clone()), window, cx);
+            })
+            .child(icon.small().flex_none())
+            .child(div().min_w_0().truncate().child(name));
+        // On the outside, so the cell still sees the press but the row does
+        // not: the row neither shows as pressed nor starts a drag.
+        h_flex()
             .w_full()
             .min_w_0()
-            .gap_1p5()
-            .text_color(muted)
-            .child(icon.small().flex_none())
-            .child(div().min_w_0().truncate().child(name))
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
+            .child(target)
             .into_any_element()
     }
 
@@ -1897,7 +1931,7 @@ impl IssueList {
             .text_sm()
             .cursor_pointer()
             .when(self.shows(Column::Project), |this| {
-                let project = self.project_cell(issue.project.as_deref(), muted, cx);
+                let project = self.project_cell(row, issue.project.as_deref(), muted, cx);
                 this.child(cell_with(Column::Project, &layout, project))
             })
             .when(self.shows(Column::Check), |this| {
