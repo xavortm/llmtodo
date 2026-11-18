@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Compares ticket estimates with measured active time and cost.
+
+Reads every closed ticket in every team and project through the installed
+`llmtodo` CLI. A ticket counts when it has an estimate and measured time or
+cost. The script prints a report and writes the per-ticket data set.
+
+    scripts/estimate-report                 report, and docs/estimates/tickets.json
+    scripts/estimate-report --full <file>   also write titles and descriptions
+                                            of every ticket to <file>, which
+                                            must stay outside the repo
+
+The repo is public. So the committed data set keeps titles and descriptions
+only for the llmtodo project. Other projects get numeric features only, and
+the Fueled team's project names are replaced by letters.
+"""
+import argparse, collections, concurrent.futures, datetime, json, math, pathlib, re, statistics, subprocess, sys
+
+root = pathlib.Path(__file__).resolve().parent.parent
+OUT = root / "docs" / "estimates" / "tickets.json"
+PUBLIC_TEXT_PROJECTS = {"llmtodo"}
+CRATES = ["core", "api-types", "client", "server", "cli", "ui", "app", "ui-bench"]
+RESEARCH_WORDS = re.compile(r"\b(audit|research|compare|investigate|spike|measure the)\b|\breview( of|:)|^(performance|architecture|code) review", re.I)
+VISUAL_WORDS = re.compile(r"\b(animat\w*|mascot|cat|pixel|drag\w*|slides?|fades?|glide|render\w*|draw\w*|snap)\b", re.I)
+CROSS_WORDS = re.compile(r"\bserver\b.*\b(app|ui)\b|\b(app|ui)\b.*\bserver\b", re.I | re.S)
+REFACTOR_WORDS = re.compile(r"\b(refactor|lift|extract|split|module|rename|move .* (into|to)|common .* shape|architecture)\b", re.I)
+SETUP_WORDS = re.compile(r"\b(set up|setup|scaffold|bootstrap|init|remove unused|clean .* project)\b", re.I)
+BUG_WORDS = re.compile(r"\b(fix|bug|broken|crash|never|wrong|does not|doesn't|no longer|stuck|flicker|fails?)\b", re.I)
+
+
+def cli(*args):
+    out = subprocess.check_output(["llmtodo", *args, "--no-input"], cwd=root)
+    return json.loads(out)
+
+
+def features(row):
+    key = row["key"]
+    view = cli("issue", "view", key)
+    hist = cli("issue", "history", key)
+    desc = view.get("description") or ""
+    text = (view["title"] + "\n" + desc)
+    lower = text.lower()
+    crates = sorted(c for c in CRATES if re.search(rf"crates/{re.escape(c)}\b", lower))
+    labels = view.get("labels") or []
+    ui = (
+        "Area/app" in labels
+        or view["title"].lower().startswith("app:")
+        or "crates/ui" in lower
+        or "gpui" in lower
+    )
+    reviews = view.get("reviews") or []
+    sessions = [s for s in view.get("sessions") or [] if (s.get("active_seconds") or 0) > 0 or (s.get("usage") or {}).get("cost_usd")]
+    # A session that stayed on the ticket for minutes but reported no usage
+    # did work the tracker could not measure, so the ticket's numbers are low.
+    unmeasured = [s for s in view.get("sessions") or []
+                  if not (s.get("usage") or {}).get("cost_usd") and span_minutes(s) >= 3]
+    est_events = [a for a in hist.get("activity", []) if a["field"] in ("estimate_minutes", "estimate_cost_usd")]
+    created_session = next((a["session_id"] for a in hist.get("activity", []) if a["field"] == "created"), None)
+    first_est = est_events[0] if est_events else None
+    claims = [a for a in hist.get("activity", []) if a["field"] in ("claim", "assignee")]
+    models = collections.Counter()
+    for s in view.get("sessions") or []:
+        for m, u in ((s.get("usage") or {}).get("by_model") or {}).items():
+            models[m] += u.get("output", 0)
+    return {
+        "key": key,
+        "team": key.split("-")[0],
+        "project": view["project"],
+        "title": view["title"],
+        "description": desc,
+        "labels": labels,
+        "parent": (view.get("parent") or {}).get("key") if isinstance(view.get("parent"), dict) else view.get("parent"),
+        "estimate_minutes": view.get("estimate_minutes"),
+        "estimate_cost_usd": view.get("estimate_cost_usd"),
+        "active_minutes": round((view.get("active_seconds") or 0) / 60, 2) if view.get("active_seconds") else None,
+        "cost_usd": view.get("cost_usd"),
+        "created_at": view["created_at"],
+        "completed_at": view.get("completed_at"),
+        "estimated_at": first_est["created_at"] if first_est else None,
+        "estimated_by_creator": bool(first_est and first_est["session_id"] == created_session),
+        "estimate_changes": max(0, len(est_events) - 2),
+        "ui": ui,
+        "bug": bool(BUG_WORDS.search(view["title"])),
+        "kind": kind(view["title"], ui),
+        "visual": bool(VISUAL_WORDS.search(view["title"])),
+        "server_and_app": bool(CROSS_WORDS.search(desc)) and bool(re.search(r"\bcli\b", desc, re.I)),
+        "crates": crates,
+        "description_words": len(desc.split()),
+        "children": len(view.get("children") or []),
+        "review_rounds": len(reviews),
+        "changes_requested": sum(1 for r in reviews if r.get("verdict") != "approved"),
+        "working_sessions": len(sessions),
+        "unmeasured_sessions": len(unmeasured),
+        "main_model": models.most_common(1)[0][0] if models else None,
+        "_sessions": [(x["session_id"], x["started_at"], x["last_seen_at"]) for x in sessions],
+    }
+
+
+def mark_interleaved(rows):
+    """Flags tickets whose session worked on another ticket at the same time.
+
+    The server gives a session's new usage to the ticket it writes next. A
+    session that switches between tickets spreads its usage across them, so
+    each ticket's own numbers are unreliable. Their sum is still right.
+    """
+    spans = collections.defaultdict(list)
+    for r in rows:
+        for sid, start, last in r["_sessions"]:
+            spans[sid].append((start, last, r["key"]))
+    for r in rows:
+        r["interleaved"] = any(
+            key != r["key"] and start < last2 and start2 < last
+            for sid, start, last in r["_sessions"]
+            for start2, last2, key in spans[sid]
+        )
+    for r in rows:
+        del r["_sessions"]
+
+
+def kind(title, ui):
+    if RESEARCH_WORDS.search(title):
+        return "research or review"
+    if SETUP_WORDS.search(title):
+        return "project setup"
+    if REFACTOR_WORDS.search(title):
+        return "refactor"
+    if BUG_WORDS.search(title):
+        return "UI bug fix" if ui else "bug fix"
+    return "UI feature or change" if ui else "feature or change"
+
+
+def span_minutes(s):
+    t = lambda x: datetime.datetime.fromisoformat(x.replace("Z", "+00:00"))
+    return (t(s["last_seen_at"]) - t(s["started_at"])).total_seconds() / 60
+
+
+def clean(r):
+    """Measured in full: one ticket per session at a time, no unmeasured
+    session, and at least one active minute."""
+    return not r["unmeasured_sessions"] and not r["interleaved"] and (r["active_minutes"] or 0) >= 1
+
+
+def ratio_stats(pairs):
+    """Median, geometric mean, and share within 2x for actual / estimate."""
+    r = [a / e for e, a in pairs if e and a]
+    if not r:
+        return None
+    logs = [math.log(x) for x in r]
+    return {
+        "n": len(r),
+        "median": statistics.median(r),
+        "geo": math.exp(statistics.mean(logs)),
+        "p25": quantile(r, 0.25),
+        "p75": quantile(r, 0.75),
+        "within2x": sum(1 for x in r if 0.5 <= x <= 2) / len(r),
+        "over": sum(1 for x in r if x > 1) / len(r),
+    }
+
+
+def quantile(xs, q):
+    xs = sorted(xs)
+    i = (len(xs) - 1) * q
+    lo, hi = math.floor(i), math.ceil(i)
+    return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
+
+
+def fmt(s):
+    if not s:
+        return "n=0"
+    return (f"n={s['n']:>3}  median {s['median']:.2f}  geo {s['geo']:.2f}  "
+            f"p25-p75 {s['p25']:.2f}-{s['p75']:.2f}  within 2x {s['within2x']:.0%}  over {s['over']:.0%}")
+
+
+def report(rows):
+    time_pairs = lambda rs: [(r["estimate_minutes"], r["active_minutes"]) for r in rs]
+    cost_pairs = lambda rs: [(r["estimate_cost_usd"], r["cost_usd"]) for r in rs]
+    def line(name, rs):
+        print(f"  {name:<34} time  {fmt(ratio_stats(time_pairs(rs)))}")
+        print(f"  {'':<34} cost  {fmt(ratio_stats(cost_pairs(rs)))}")
+
+    print(f"{len(rows)} closed tickets with an estimate and measured time or cost.")
+    print("Ratios are actual / estimate. Below 1 means the estimate was too high.\n")
+    print("All")
+    line("all", rows)
+    gaps = [r for r in rows if not clean(r)]
+    rows = [r for r in rows if clean(r)]
+    print(f"\n{len(gaps)} tickets have a measurement gap: a session with no usage, a session that")
+    print("worked on another ticket at the same time, or under a minute of active time.")
+    print(f"Every section below uses the other {len(rows)} tickets.")
+    line("measured in full", rows)
+
+    groups = [
+        ("By team", lambda r: r["team"]),
+        ("By project", lambda r: r["project"]),
+        ("Kind of work", lambda r: r["kind"]),
+        ("UI or not", lambda r: "ui" if r["ui"] else "not ui"),
+        ("Bug fix or not", lambda r: "bug" if r["bug"] else "not bug"),
+        ("Crates named", lambda r: "0" if not r["crates"] else ("1" if len(r["crates"]) == 1 else "2+")),
+        ("Review rounds", lambda r: str(min(r["review_rounds"], 2)) + ("+" if r["review_rounds"] >= 2 else "")),
+        ("Working sessions", lambda r: "1" if r["working_sessions"] <= 1 else "2+"),
+        ("Description words", lambda r: "<100" if r["description_words"] < 100 else ("100-300" if r["description_words"] < 300 else "300+")),
+        ("Estimated by", lambda r: "ticket creator" if r["estimated_by_creator"] else "a later session"),
+        ("Estimated", lambda r: "before 2026-11-12" if (r["estimated_at"] or "") < "2026-11-12" else "2026-11-12 or later"),
+        ("Estimate minutes", lambda r: bucket_minutes(r["estimate_minutes"])),
+        ("Main model", lambda r: r["main_model"] or "none"),
+    ]
+    for title, key in groups:
+        print(f"\n{title}")
+        by = collections.defaultdict(list)
+        for r in rows:
+            by[key(r)].append(r)
+        for k in sorted(by):
+            line(k, by[k])
+
+    print("\nActual cost per active minute")
+    cpm = [r["cost_usd"] / r["active_minutes"] for r in rows if r["cost_usd"] and r["active_minutes"] and r["active_minutes"] >= 2]
+    print(f"  n={len(cpm)}  median ${statistics.median(cpm):.2f}  p25-p75 ${quantile(cpm, .25):.2f}-${quantile(cpm, .75):.2f}")
+    print("Estimated cost per estimated minute")
+    epm = [r["estimate_cost_usd"] / r["estimate_minutes"] for r in rows if r["estimate_cost_usd"] and r["estimate_minutes"]]
+    print(f"  n={len(epm)}  median ${statistics.median(epm):.2f}  p25-p75 ${quantile(epm, .25):.2f}-${quantile(epm, .75):.2f}")
+
+    print("\nActual time and cost, by kind of work")
+    by_kind = collections.defaultdict(list)
+    for r in rows:
+        by_kind[r["kind"]].append(r)
+    for k, rs in sorted(by_kind.items()):
+        t = [r["active_minutes"] for r in rs if r["active_minutes"]]
+        c = [r["cost_usd"] for r in rs if r["cost_usd"]]
+        if t and c:
+            print(f"  {k:<34} n={len(t):>3}  time p25 {quantile(t,.25):5.1f}  median {statistics.median(t):5.1f}  p75 {quantile(t,.75):5.1f} min"
+                  f"   cost p25 ${quantile(c,.25):.2f}  median ${statistics.median(c):.2f}  p75 ${quantile(c,.75):.2f}")
+
+    print("\nWhat each estimate size really took, in minutes and dollars")
+    for k in sorted({bucket_minutes(r["estimate_minutes"]) for r in rows}):
+        rs = [r for r in rows if bucket_minutes(r["estimate_minutes"]) == k]
+        t = [r["active_minutes"] for r in rs]
+        c = [r["cost_usd"] for r in rs if r["cost_usd"]]
+        print(f"  estimate {k:<12} n={len(rs):>3}  actual median {statistics.median(t):5.1f} min  p75 {quantile(t,.75):5.1f} min  max {max(t):5.1f}"
+              f"   cost median ${statistics.median(c):.2f}  p75 ${quantile(c,.75):.2f}")
+
+    for name, test in (("visual work: animation, drawing, drag", lambda r: r["visual"]),
+                       ("server, CLI and app in one ticket", lambda r: r["server_and_app"])):
+        print(f"\n{name}")
+        line("yes", [r for r in rows if test(r)])
+        line("no", [r for r in rows if not test(r)])
+        rs = [r for r in rows if test(r)]
+        if rs:
+            t = [r["active_minutes"] for r in rs]; c = [r["cost_usd"] for r in rs]
+            print(f"  {'yes, actual':<34} time p25 {quantile(t,.25):.1f}  median {statistics.median(t):.1f}  p75 {quantile(t,.75):.1f} min"
+                  f"   cost p25 ${quantile(c,.25):.2f}  median ${statistics.median(c):.2f}  p75 ${quantile(c,.75):.2f}")
+
+    print("\nLargest misses, time (actual / estimate)")
+    tp = sorted((r for r in rows if r["estimate_minutes"] and r["active_minutes"]), key=lambda r: r["active_minutes"] / r["estimate_minutes"])
+    for r in tp[:5] + tp[-8:]:
+        print(f"  {r['key']:<8} est {r['estimate_minutes']:>4} min  actual {r['active_minutes']:>6.1f} min  x{r['active_minutes']/r['estimate_minutes']:.2f}  {short(r)}")
+
+
+def bucket_minutes(m):
+    if not m:
+        return "none"
+    for lim in (15, 30, 60, 120):
+        if m <= lim:
+            return f"<= {lim:>3} min"
+    return ">  120 min"
+
+
+def short(r):
+    return r["title"][:60] if r["project"] in PUBLIC_TEXT_PROJECTS else f"({r['project']})"
+
+
+def public(rows):
+    letters = {}
+    out = []
+    for r in rows:
+        r = dict(r)
+        if r["project"] not in PUBLIC_TEXT_PROJECTS:
+            r.pop("title"); r.pop("description")
+        if r["team"] != "LLM":
+            letters.setdefault(r["project"], chr(ord("a") + len(letters)))
+            r["project"] = f"{r['team']}-{letters[r['project']]}"
+        out.append(r)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--full", help="also write every ticket with titles and descriptions to this file")
+    ap.add_argument("--no-write", action="store_true", help="print the report only")
+    args = ap.parse_args()
+
+    listed = cli("issue", "query", "--all-projects", "--type", "completed",
+                 "--fields", "key,estimate_minutes,estimate_cost_usd,active_seconds,cost_usd")
+    keep = [r for r in listed
+            if (r.get("estimate_minutes") or r.get("estimate_cost_usd"))
+            and (r.get("active_seconds") or r.get("cost_usd"))]
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+        rows = list(pool.map(features, keep))
+    mark_interleaved(rows)
+    rows.sort(key=lambda r: (r["team"], int(r["key"].split("-")[1])))
+
+    if args.full:
+        full = pathlib.Path(args.full).resolve()
+        if root in full.parents:
+            sys.exit("--full must point outside the repo, because the repo is public.")
+        full.write_text(json.dumps(rows, indent=1) + "\n")
+    shown = public(rows)
+    if not args.no_write:
+        OUT.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "note": "Written by scripts/estimate-report. Ratios use active_minutes / estimate_minutes and cost_usd / estimate_cost_usd.",
+            "tickets": shown,
+        }
+        OUT.write_text(json.dumps(data, indent=1) + "\n")
+    report(shown)
+
+
+if __name__ == "__main__":
+    main()

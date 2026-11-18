@@ -47,7 +47,9 @@ Estimates let us compare the plan with the real time and cost later. So estimate
 
 ### How to estimate
 
-Estimate from past tasks, not from how big the task feels. The first estimates in this tracker were 3 to 10 times too high for time, and 2 to 8 times too high for cost. Agents work faster than a person, and the time counts only active work.
+Estimate from measured tasks, not from how big the task feels. Agents still guess about 2.5 times too high, for both time and cost. Agents rank tasks well, so a task that feels twice as big does take about twice as long. Only the scale is wrong.
+
+The numbers below come from 150 closed tasks in every project, measured on 2026-11-18. 72 of them were measured in full, and the table uses those 72. `scripts/estimate-report` runs the comparison again.
 
 1. Find two or three closed tasks like this one, and read what they really took:
 
@@ -55,18 +57,26 @@ Estimate from past tasks, not from how big the task feels. The first estimates i
    llmtodo issue query -q "<words from the title>" --fields key,title,estimate_minutes,estimate_cost_usd,active_seconds,cost_usd --limit 10
    ```
 
-2. Start from their real time and cost. `active_seconds` is the real time, and `cost_usd` is the real cost.
-3. If you find no similar task, start from this table. It comes from measured tasks on 2026-11-11.
+2. Start from their real time and cost. `active_seconds` is the real time, and `cost_usd` is the real cost. Skip a task with under 60 active seconds. Its work was not measured in full.
+3. If you find no similar task, start from this table. Write the middle number as your estimate. The range shows where half of the measured tasks fell.
 
-   | Task | Time | Cost |
-   |---|---|---|
-   | Small fix in one place, with a test | 5 to 15 min | $1 to $3 |
-   | UI change across a few files, with tests | 10 to 25 min | $2 to $5 |
-   | Feature across the server, the CLI and the app | 20 to 60 min | $4 to $12 |
-   | Refactor across every crate | 60 to 180 min | $10 to $30 |
+   | Task | Range | Estimate | Cost range | Cost estimate |
+   |---|---|---|---|---|
+   | Small change in one place, with a test | 3 to 9 min | 5 min | $0.65 to $2 | $1.25 |
+   | Feature or fix outside the UI, such as the server, the CLI or a script | 5 to 15 min | 9 min | $1.25 to $4 | $2 |
+   | UI change across a few files, with tests | 5 to 16 min | 11 min | $1.50 to $3 | $2.50 |
+   | Visual work, such as an animation, custom drawing or drag | 12 to 20 min | 14 min | $1.50 to $3.50 | $2.50 |
+   | Feature across the server, the CLI and the app | 25 to 40 min | 35 min | $5 to $7 | $6 |
 
-4. Cost grows with time. Measured tasks cost about $0.15 to $0.45 per active minute. A cost far outside that range for your time estimate is probably wrong.
-5. Add time only for a known risk, such as a bug with no known cause or an API you have not used. Say the risk in your Agent notes.
+4. Check your number against your instinct. Tasks that agents estimated at 15 minutes took 5. Tasks estimated at 30 took 10, and tasks estimated at 60 took 19. So if you have a gut number, multiply it by 0.4.
+5. Only 2 of 72 tasks took over 40 minutes. If your estimate is over 40 minutes, split the task, or check it against a similar closed task first.
+6. Work out the cost from the time. Measured tasks cost $0.22 per active minute, and half of them cost $0.17 to $0.31. A cost outside that range for your time is probably wrong.
+7. Move to the top of the range for these kinds of work. Each one took longer than the rest:
+   - Visual work. Its estimates were 0.69 of the real time, against 0.40 for other work.
+   - A hand-off to a second agent or session. These took a median of 13 minutes, against 7 for one session.
+   - Work the owner reviews in the app before it closes.
+8. Move to the bottom of the range in a small or new project. Tasks outside llmtodo took a median of 7 minutes, against 13 in llmtodo.
+9. Add time only for a known risk, such as a bug with no known cause or an API you have not used. Say the risk in your Agent notes.
 
 ## Mark a ticket as Analyzing
 
