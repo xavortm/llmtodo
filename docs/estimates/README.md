@@ -2,7 +2,7 @@
 
 `tickets.json` holds every closed ticket that has an estimate and measured time or cost. `scripts/estimate-report` writes it and prints the comparison. Run the script again to refresh both.
 
-The repo is public. So the file keeps titles and descriptions only for the llmtodo project. Other projects have numeric fields only, and the Fueled team's projects are named `AST-a` and `AST-b`. Run `scripts/estimate-report --full <file>` with a path outside the repo to get every title and description.
+The repo is public. So the file keeps titles and descriptions only for the llmtodo project. Other projects have numeric fields only, and the Fueled team's projects get letters, such as `AST-a`. Run `scripts/estimate-report --full <file>` with a path outside the repo to get every title and description.
 
 ## Fields
 
