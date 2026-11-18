@@ -4409,7 +4409,12 @@ fn all_issues_shows_the_project_column_first(cx: &mut TestAppContext) {
             "the project column is the left-most"
         );
         // LLM-101 is in App: its row shows the project's name.
-        assert!(window.within(("row", 0usize)).try_find("project").is_some());
+        assert!(
+            window
+                .within(("row", 0usize))
+                .try_find(("project", 0usize))
+                .is_some()
+        );
     })
     .unwrap();
 
@@ -4437,6 +4442,49 @@ fn all_issues_shows_the_project_column_first(cx: &mut TestAppContext) {
                 .try_find(Column::Project.id())
                 .is_some(),
             "All issues brings it back"
+        );
+    })
+    .unwrap();
+}
+
+/// LLM-304: a click on the Project cell opens that project, as the sidebar
+/// does, and leaves the task view closed. A task with no project has no
+/// target there, so a click on its row opens the task.
+#[gpui_kit::test]
+fn clicking_the_project_cell_opens_the_project(cx: &mut TestAppContext) {
+    use crate::model::scope::Scope;
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).scope(cx), Scope::All);
+        // LLM-102, on row 1, is in Server.
+        window.click(("project", 1usize), cx);
+        assert_eq!(view.read(cx).scope(cx), Scope::Project("server".into()));
+        assert!(
+            view.read(cx).detail(cx).is_none(),
+            "the click does not open the task"
+        );
+    })
+    .unwrap();
+
+    run_palette(handle, "all", cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // LLM-105, on row 4, has no project.
+        assert!(
+            window
+                .within(("row", 4usize))
+                .try_find(("project", 4usize))
+                .is_none()
+        );
+        window.click(("row", 4usize), cx);
+        assert_eq!(view.read(cx).scope(cx), Scope::All);
+        let detail = view.read(cx).detail(cx).expect("a click opens the task");
+        assert_eq!(
+            view.read(cx).issue(detail.issue, cx).key.as_ref(),
+            "LLM-105"
         );
     })
     .unwrap();
