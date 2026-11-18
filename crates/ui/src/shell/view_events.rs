@@ -50,6 +50,9 @@ pub enum ViewEvent {
     GroupBy(GroupBy),
     /// The filter panel: replace the `/` filter text.
     SetFilter(String),
+    /// The filter button: open or close the filter panel.
+    ToggleFilterPanel,
+    CloseFilterPanel,
     /// The Add ticket button: opens the create form, as `c` does.
     NewIssue,
     CloseAllGroups,

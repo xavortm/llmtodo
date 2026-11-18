@@ -198,6 +198,11 @@ impl Workspace {
                 }
                 None => "No server to ask".into(),
             }),
+            ("filters", _) => {
+                let open = self.filter_panel.read(cx).is_open();
+                self.set_filter_panel(!open, window, cx);
+                Some(String::new())
+            }
             ("sidebar", _) => {
                 self.set_sidebar_open(!self.sidebar_shown(), window, cx);
                 Some(String::new())
@@ -438,6 +443,30 @@ impl Workspace {
     }
 
     /// Puts `query` in the `/` filter box and filters the list by it.
+    /// Opens or closes the filter panel. It takes focus when it opens, so
+    /// its keys work at once. Closing it gives focus back to the list.
+    pub(crate) fn set_filter_panel(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel_focus = self.filter_panel.read(cx).focus.clone();
+        let had_focus = panel_focus.contains_focused(window, cx);
+        self.filter_panel
+            .update(cx, |panel, cx| panel.set_open(open, cx));
+        self.list.update(cx, |list, cx| {
+            list.filter_panel_open = open;
+            cx.notify();
+        });
+        if open {
+            window.focus(&panel_focus, cx);
+        } else if had_focus {
+            self.focus_list(window, cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn set_filter_text(
         &mut self,
         query: &str,

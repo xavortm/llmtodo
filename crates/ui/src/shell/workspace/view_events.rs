@@ -27,6 +27,11 @@ impl Workspace {
             ViewEvent::SortBy(key) => self.sort_by(key, cx),
             ViewEvent::GroupBy(group) => self.group_by(group, cx),
             ViewEvent::SetFilter(text) => self.set_filter_text(&text, window, cx),
+            ViewEvent::ToggleFilterPanel => {
+                let open = self.filter_panel.read(cx).is_open();
+                self.set_filter_panel(!open, window, cx);
+            }
+            ViewEvent::CloseFilterPanel => self.set_filter_panel(false, window, cx),
             ViewEvent::NewIssue => self.new_issue(&NewIssue, window, cx),
             ViewEvent::CloseAllGroups => self.close_all_groups(&CloseAllGroups, window, cx),
             ViewEvent::OpenAllGroups => self.open_all_groups(&OpenAllGroups, window, cx),

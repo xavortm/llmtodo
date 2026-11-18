@@ -6,6 +6,7 @@ pub mod columns;
 pub mod create;
 pub mod filter;
 pub mod filter_menu;
+pub mod filter_panel;
 pub mod list;
 pub mod rows;
 
@@ -24,7 +25,7 @@ mod create_tests;
 #[cfg(test)]
 mod deps_tests;
 #[cfg(test)]
-mod filter_menu_tests;
+mod filter_panel_tests;
 #[cfg(test)]
 mod hide_tests;
 #[cfg(test)]
