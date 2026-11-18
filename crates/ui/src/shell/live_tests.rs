@@ -1819,3 +1819,44 @@ fn an_agents_priority_change_arrives_live() {
     let ours = crate::model::data::Issue::from_api(&issue, &catalog);
     assert_eq!(ours.priority, crate::model::data::Priority::Urgent);
 }
+
+/// LLM-306: the server refuses a move to User review without a review
+/// section. The app gets a short line for people, and the server's own
+/// message for agents stays as it was.
+#[test]
+fn a_refused_review_move_brings_a_short_summary() {
+    let live = Live::new();
+    let owner = live.client(None);
+    live.rt
+        .block_on(
+            owner.create_status(
+                "LLM",
+                &serde_json::from_value(
+                    json!({"name": "User review", "type": "started", "review": true}),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(_) => Some(()),
+        _ => None,
+    });
+    let update = UpdateIssue {
+        status: Some("User review".into()),
+        ..Default::default()
+    };
+    backend.write("LLM-1", Write::Update(Box::new(update)), WriteKind::Status);
+    let (message, summary) = live.wait(&mut events, "the refused move", |e| match e {
+        Event::WriteFailed {
+            message, summary, ..
+        } => Some((message.clone(), summary.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        summary.as_deref(),
+        Some("LLM-1 needs review steps and checks before User review.")
+    );
+    assert!(message.contains("llmtodo issue review set"), "{message}");
+}

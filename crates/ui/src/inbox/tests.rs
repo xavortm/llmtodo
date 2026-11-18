@@ -784,6 +784,7 @@ fn a_refused_undo_says_why_and_keeps_the_answer(cx: &mut TestAppContext) {
                 kind: WriteKind::UndoAnswer,
                 message: "an agent already acted on LLM-103 after the answer".into(),
                 stale: false,
+                summary: None,
             },
             cx,
         );
@@ -809,6 +810,7 @@ fn a_failed_answer_ends_the_undo_offer(cx: &mut TestAppContext) {
                 kind: WriteKind::Answer,
                 message: "offline".into(),
                 stale: false,
+                summary: None,
             },
             cx,
         );

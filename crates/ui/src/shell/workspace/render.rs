@@ -624,7 +624,21 @@ impl Workspace {
                                 .child(undo),
                         )
                     })
-                    .children(plain_message),
+                    .when_some(plain_message.filter(|m| !m.is_empty()), |this, message| {
+                        // The message keeps to one line. Long text ends in
+                        // an ellipsis, and a hover shows all of it.
+                        let full = message.clone();
+                        this.child(
+                            div()
+                                .id("status-message")
+                                .test_support()
+                                .min_w_0()
+                                .max_w(gpui_kit::px(560.))
+                                .truncate()
+                                .child(one_line(&message))
+                                .tooltip(crate::shell::tooltip::Card::text(full).builder()),
+                        )
+                    }),
             )
             .right(
                 h_flex()
@@ -845,4 +859,9 @@ impl Workspace {
             .with_priority(2),
         )
     }
+}
+
+/// `text` on one line: line breaks and runs of spaces become one space.
+pub(crate) fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
