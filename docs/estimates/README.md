@@ -14,3 +14,10 @@ The repo is public. So the file keeps titles and descriptions only for the llmto
 - `kind`, `ui`, `bug`, `visual` and `server_and_app` come from words in the title and description. `crates` lists the `crates/<name>` paths the description names.
 - `review_rounds` and `changes_requested` count the owner's review answers.
 - `working_sessions` counts sessions with measured usage.
+
+## Other ways to estimate
+
+`scripts/estimate-fit` tests other estimates against the measured tickets. It holds the Jev rubric and every fit in one file. LLM-303 ran it on 2026-11-18. The best method is the agent's own estimate times one fitted scale, the "multiply by 0.4" rule of the llmtodo skill. Neither a fit on counted fields nor Jev beat it, so the CLI has no estimate step.
+
+- `at-estimate.json` holds each description as it was when the agent estimated the ticket. The final description is about 5 times longer, because agents add Agent notes during the work. Its length predicts the real time too well, so every fit uses the earlier text.
+- `jev-answers.json` caches Jev's answers to the rubric for the llmtodo tickets. Jev sees only those, because only they keep their text in this folder.

@@ -1,0 +1,561 @@
+{
+ "AST-123": {
+  "version": 1,
+  "words": 4250,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-112": {
+  "version": 2,
+  "words": 125,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "On 50,000 issues, one filter keystroke takes about 40 ms on the main thread. A live update that changes a title takes about 76 ms. At 10,000 issues these are about 10 ms and 22 ms. At 1,000 issues they fit in a frame. LLM-105 has the full table.\n\nThe cost is the filter, the sort and the rebuilt rows, all done on the main thread. The fix is to run them on a background task and apply the result when it is ready. That needs a rule for the selection while a result is on its way, so I did not do it in LLM-105.\n\nThe owner's tracker holds 113 issues today, so this only matters if a tracker grows past about 10,000 issues.\n"
+ },
+ "LLM-113": {
+  "version": 1,
+  "words": 87,
+  "crates": [
+   "app"
+  ],
+  "gpui": true,
+  "server_and_app": false,
+  "description": "The timings in LLM-105 come from headless test windows. They cover state updates, layout and scene building. They leave out text rasterizing and presenting, so they are not real frame times.\n\nGPUI's `#[gpui::bench]` draws through headless Metal and reports real frame data. It must not run with GPUI's `test-support` feature. `crates/app` enables that feature in its dev-dependencies, so the benchmark needs a separate package that shares the app's views. That means splitting part of the app into a library crate, which is larger than a performance fix.\n"
+ },
+ "LLM-125": {
+  "version": 1,
+  "words": 77,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Finding 4 of LLM-122, step 3 of its suggested order.\n\n- Add an Endpoint trait with the method, path, request, response and whether it writes. Generate the route table from it. The client gets one generic call.\n- Add Change<T> with Keep, Clear and Set. It replaces the empty-string convention in UpdateIssue. waiting_on becomes the enum on the wire.\n- Add enums for the activity entity type and field in api-types.\n- Add ID newtypes in core.\n"
+ },
+ "LLM-126": {
+  "version": 2,
+  "words": 142,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Finding 5 of LLM-122, step 4 of its suggested order.\n\n- One live event stream in client, used by the app and the CLI.\n- One data folder function, so the CLI and the app open the same folder.\n- An identity module with a small Harness trait. Claude Code is the first implementation.\n\n+++ Trackers decision\nThe owner answered Q2 on LLM-122 on 2026-11-11. Trackers stay a development tool behind environment variables for now. One installation is one workspace.\n\nThe owner sees a benefit in separate trackers later, so keep that option open:\n\n- The single data folder function takes the folder as an input or resolves it in one place. Nothing may assume there is only one folder for the life of the process.\n- Add the decision to `SPEC.md`, including that real tracker settings are possible future work.\n+++\n"
+ },
+ "LLM-136": {
+  "version": 1,
+  "words": 188,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11. They want a simple way to set up llmtodo in any new project, by hand or through an LLM.\n\nToday neither part exists. There is no `llmtodo init` command. The `llmtodo` skill lives only in this repo, in `.claude/skills/llmtodo`, so agents in other repos do not have it.\n\n## What to build\n\n- `llmtodo init` writes `.llmtodo.toml` at the git root with the team and project. It offers existing teams and projects, or creates new ones. It also works with flags and `--no-input`, so an agent can run it.\n- Running it again does not overwrite an existing file unless asked.\n- A global skill in `~/.claude/skills`, installed by a repo script or by `llmtodo init`, teaches any agent how to use the tracker and how to run `llmtodo init` in a repo that has no `.llmtodo.toml`.\n- The global skill and the repo skill must not drift apart. Generate one from the other, or make the repo skill point to the global one.\n- The skill must not depend on files that exist only in this repo, such as `docs/agents/issue-tracker.md`.\n"
+ },
+ "LLM-139": {
+  "version": 1,
+  "words": 85,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner looked for the new time and estimate values on LLM-120 and saw only Cost. The task view hides each value that has no data. LLM-120 was done before time tracking existed, and it has no estimates.\n\n- Always show Cost, Time and Estimate in the task view, on the same line as today.\n- A missing value shows a dash, such as \"Time \u2014\" or \"Estimate \u2014\".\n- Estimate shows the time and the cost together, such as \"Estimate 1h 30m \u00b7 $4.00\".\n"
+ },
+ "LLM-142": {
+  "version": 1,
+  "words": 58,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11.\n\n- The panels in the right-hand task view run into each other, so it is hard to see which one is which. Separate them clearly.\n- Move the tags, labels, estimates and dependencies under the title, as a second line.\n- Move the Edit and Preview switch into the description panel.\n"
+ },
+ "LLM-144": {
+  "version": 1,
+  "words": 56,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11. When they approve a ticket in the review panel, the task list scrolls down. The list must keep its scroll position.\n\nApprove moves the ticket to Done, so the row may move to another group or leave the view. Other status changes may cause the same jump. Check them too.\n"
+ },
+ "LLM-145": {
+  "version": 1,
+  "words": 60,
+  "crates": [],
+  "gpui": true,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11.\n\n- The Restart to update button is bright yellow, so it stands out. This is a deliberate exception to the monochrome rule.\n- Its background has a moving gradient animation, if GPUI supports it.\n- The text stays readable on the yellow, in both themes.\n- Hover, pressed and release states still show.\n"
+ },
+ "LLM-149": {
+  "version": 1,
+  "words": 71,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11. When the owner switches to another project, the task panel stays open and still shows a task from the previous project. That is confusing.\n\nWhen the project changes, close the task panel. If a split view shows several tasks, close the ones that do not belong to the new project. View history (back and forward) must not reopen a task from another project by surprise.\n"
+ },
+ "LLM-151": {
+  "version": 1,
+  "words": 167,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11. In the Astro starter team, 13 tickets in \"In Review\" show as locked by an agent. A ticket waiting for review must never be locked.\n\nLLM-138 ends the claim only on a move to the status named \"User review\". The Astro team uses \"In Review\" for the same step.\n\n## Fix\n\n- A status has a review flag. The CLI and the API can set it.\n- A migration sets the flag on statuses named \"In Review\" or \"User review\" in every team, and ends the live claims on issues in those statuses. The activity log records each ended claim.\n- Everything that works for User review today works for any status with the flag: the move ends the claim, the review section is required, the review panel shows, and Approve and Request changes work.\n- The frontier skips issues in a review status.\n- The agent docs and the skill say \"a review status\" instead of naming User review only.\n"
+ },
+ "LLM-152": {
+  "version": 1,
+  "words": 72,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11. Typing :done in the palette and pressing Enter does not mark the task Done.\n\nA lead, not confirmed: LLM-120 changed the palette so a task-writing command runs from Enter only when its first word is typed in full. Its notes say that `do` for status done now shows Unknown command. Check whether `done` is a command word at all, and whether the new rule blocks it.\n"
+ },
+ "LLM-153": {
+  "version": 1,
+  "words": 56,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11. The owner marks several tasks with shift-click, then sets Done. Only the task they clicked moves to Done. Every marked task should move.\n\nCheck every way to change status with tasks marked: the palette, keys, the status menu and the review panel. LLM-117 added marking, and LLM-91 the bulk actions.\n"
+ },
+ "LLM-154": {
+  "version": 1,
+  "words": 77,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner reported this on 2026-11-11, after approving LLM-147. The Approve button now draws with a dark gray background, dark text and a light border. The text is hard to read. It should be filled white with dark text in the dark theme.\n\nIn the owner's screenshot, the Feedback field has focus and is empty. A likely cause, not confirmed: Approve shows a disabled or focused style in this state, and that style overrides the filled look.\n"
+ },
+ "LLM-155": {
+  "version": 1,
+  "words": 62,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11. When the owner approves a ticket in a review status, or sets it to Done, the app selects the next ticket to review and opens it. The next ticket is the top one in the list that is still in a review status. When none is left, the selection stays where LLM-144 puts it today.\n"
+ },
+ "LLM-156": {
+  "version": 1,
+  "words": 114,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11. The sidebar has a Teams section and a Projects section. Each team now groups the owner's work, such as Fueled and Personal, so one tree is clearer.\n\n- Each team is a heading in the sidebar, with its projects listed under it.\n- A click on a team heading shows all of that team's tickets, as a team entry does today.\n- A click on a project shows that project's tickets, as today.\n- A project linked to several teams shows under each of them.\n- Counts stay correct for teams and projects.\n- Keyboard navigation and the hover, pressed and release states work on every entry.\n"
+ },
+ "LLM-157": {
+  "version": 1,
+  "words": 83,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The owner asked for this on 2026-11-11.\n\n- The Labels column is no wider than the Added column.\n- Labels hide earlier than today when the list gets narrow. The title gets the space.\n- The full ticket title shows without trimming whenever the width allows it.\n- An Add ticket button sits to the left of the filter input. It opens the same create window as the c key.\n- The button follows the owner's UX rules: hover, pressed and release states.\n"
+ },
+ "LLM-158": {
+  "version": 1,
+  "words": 327,
+  "crates": [
+   "client",
+   "server"
+  ],
+  "gpui": true,
+  "server_and_app": false,
+  "description": "Before the repo goes public, remove the owner's other projects and local paths from it. The owner does not need any of them in this repo.\n\nA scan on 2026-11-11 found no secrets: no keys, tokens, passwords, databases or `.env` files. gitleaks checked all 221 commits and found one false positive.\n\n## What to remove\n\n1. **Demo content.** The 17 files in `scripts/demo-content/` (`01.md` to `17.md`) are real tickets from the ImperiaQuiz and BackToLife projects. Replace them with made-up text of the same length and the same Markdown shapes, so previews still show real lengths. Remove every `linear.app/alex-testing-linear` link and every link to `xavortm/conquiztador` or `xavortm/imperiaquiz`. Update `scripts/demo-content/README.md`, which says the text comes from the owner's tickets.\n2. **SPEC.md.** Lines 11 to 58 name ImperiaQuiz, `conquiztador`, BackToLife, BringToLife and the workspace `alex-testing-linear`. Describe the same findings without the names, such as \"two existing projects\".\n3. **Tests.** Replace ImperiaQuiz and BackToLife with neutral sample names in `crates/server/tests/api.rs`, `crates/server/tests/import.rs`, `crates/server/src/store/projects.rs` and `crates/client/src/lib.rs`. `import.rs` also links `xavortm/conquiztador/pull/12`.\n4. **Local paths.** `docs/agents/issue-tracker.md` uses `/Users/alex/Development/llmtodo`. Use paths relative to the repo root.\n5. **Check again.** Grep the tree for `imperiaquiz`, `conquiztador`, `backtolife`, `bringtolife`, `alex-testing-linear` and `/Users/`, ignoring case. The result must be empty. Run the tests and `scripts/preview`.\n\n## Owner decision: git history\n\nSteps 1 to 5 clean only the current files. The old text stays in git history: the demo content, the deleted `scripts/demo-content/18.md`, and `HANDOVER.md`, which had `/Users/alex` paths. Removing it needs `git filter-repo` and a force-push to `main`. That rewrites every commit hash, so links to old commits stop working. Ask the owner before you do it.\n\nEvery commit also carries the owner's personal email. A history rewrite can change it to the GitHub noreply address at the same time.\n\n+++ Agent notes\nScan commands: `gitleaks git --redact .` and a grep over `git log --all -p`. Local branches `spike/gpui`, `wave2/filter-llm` and `wave2/undo-answer` are in the scan too. Check whether they were ever pushed before you rewrite history.\n+++\n"
+ },
+ "LLM-160": {
+  "version": 1,
+  "words": 115,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The Labels column had a fixed width of 4 rem. It cut labels even when the title had hundreds of free pixels.\n\nThe list now plans its column widths from the list width and what the rows hold. Room goes out by priority:\n\n1. The title gets enough for most titles. Columns hide, least useful first, only when the title would drop below its minimum.\n2. The Labels column grows until most rows' labels fit.\n3. The title and the labels share the rest until the longest of each fits. The title gets twice the share. Labels never take more than 30% of the list, or 24 rem.\n4. The rest goes to the title.\n"
+ },
+ "LLM-162": {
+  "version": 1,
+  "words": 22,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "On a ticket in a review status, the right-click menu starts with Approve, so the owner can approve without opening the ticket."
+ },
+ "LLM-164": {
+  "version": 1,
+  "words": 19,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Rows of claimed tasks no longer get the amber fill. The Locked badge in the LLM column marks them."
+ },
+ "LLM-165": {
+  "version": 1,
+  "words": 102,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Add the pixel cat mascot to the app. It sits at the bottom left of the left sidebar.\n\nThe art is final. It lives in `design/mascot/`. Open `design/mascot/preview.html` to see it.\n\n## Behaviour\n\n- An agent session is active: the cat works on its laptop.\n- Nothing is going on: the cat sleeps.\n- Hover or click the cat: it sits and watches for a while. Then it walks or sleeps, picked at random. After that it goes back to the rule above.\n\n## Colours\n\n- Light theme: black cat, the \"Soft\" palette.\n- Dark theme: white cat, the \"Pure white\" palette.\n"
+ },
+ "LLM-166": {
+  "version": 1,
+  "words": 72,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Right click \u2192 Approve on several selected tasks approves only the task under the pointer. It must approve every selected task that is in a review status.\n\n## Cause\n\n- The menu's Approve sends `ViewEvent::AnswerReview` for one id. It skips `run_on_marks`, which spreads Status, Labels and Delete over the selection.\n- `answer_review` keeps one answer in flight (`task.review_sending`). A second answer is refused with \"Wait: the last review answer is still sending\".\n"
+ },
+ "LLM-167": {
+  "version": 1,
+  "words": 31,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Add a Settings row to show or hide the sidebar cat. The cat gets a name: **Sudo**. The row shows a cat icon and a switch. It is on by default.\n"
+ },
+ "LLM-168": {
+  "version": 1,
+  "words": 42,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "After an Approve, the app opens the next review ticket in the task panel (LLM-155). When no task panel was open at the time of the Approve, it must not open one. It still moves the selection to the next review ticket.\n"
+ },
+ "LLM-189": {
+  "version": 1,
+  "words": 38,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The bug is the title. INstead, on changing the task from the main list, the view on the right must also change. Since we don't have a 'save' button, it's saved as we type or on focus change."
+ },
+ "LLM-190": {
+  "version": 1,
+  "words": 126,
+  "crates": [
+   "ui"
+  ],
+  "gpui": true,
+  "server_and_app": false,
+  "description": "When several tasks are selected in the list, a click on the ID of one of the selected tasks copies the IDs of all selected tasks. Each ID goes on its own line, in list order.\n\nA click on the ID of a task outside the selection copies only that ID, as today. A single selection also copies only that ID.\n\nThe status message names the count, such as \"Copied 3 IDs\".\n\n+++ Agent notes\n\n- `Workspace::copy_key` in `crates/ui/src/shell/workspace.rs` copies one key today.\n- The multi-selection lives on the list; see the plain-click handling near line 1886 of the same file.\n- Existing clipboard tests are in `crates/ui/src/shell/tests.rs` around line 748.\n- Check that the click on the ID does not end the multi-selection first.\n\n+++\n"
+ },
+ "LLM-192": {
+  "version": 1,
+  "words": 55,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Any icon with no text label next to it shows a tooltip on hover. The tooltip says what the icon means or does.\n\nThis covers icon buttons and status icons everywhere in the app: the list, the task view, the sidebar, the title bar and the status bar.\n\nThe owner asked for this on 2026-11-13.\n"
+ },
+ "LLM-196": {
+  "version": 2,
+  "words": 379,
+  "crates": [
+   "api-types",
+   "ui"
+  ],
+  "gpui": true,
+  "server_and_app": true,
+  "description": "Each project can have its own icon, picked from the Lucide icon set. The app already uses Lucide icons through GPUI Kit.\n\n## What to build\n\n1. A project has an optional icon. Projects without one keep today's icon.\n2. The app shows the project's icon wherever it shows the project, such as the sidebar.\n3. The owner picks the icon in the app, from a searchable icon picker. A filter by name finds an icon fast, and the first match is selected.\n4. The CLI can set and clear the icon, such as `llmtodo project update <slug> --icon rocket` and `--icon none`. Agents get full coverage, as for every other field.\n5. The server stores the icon name and refuses a name that is not a Lucide icon.\n\nThe owner asked for this on 2026-11-13.\n\n+++ Agent notes\n\n- `Project` lives in `crates/api-types/src/lib.rs`. A new field needs a server migration, the client, the CLI and `scripts/gen-agent-docs`.\n- The sidebar draws projects in `crates/ui/src/shell/sidebar.rs`. App icon names go through `crates/ui/src/shell/icons.rs`.\n- GPUI Kit bundles about 1,800 Lucide SVGs in `gpui-component/crates/assets`, but its asset macro embeds only the icons an app lists. Check how this app registers icons before you plan the picker. Embedding every icon grows the binary. Measure the size and say it in these notes.\n- The server and the app must agree on the list of valid names. Keep one list, in a crate both can use.\n+++\n\n+++ Scope change\n\nThe owner changed the scope on 2026-11-13:\n\n- The owner sets only a color for each project in the app. There is no icon picker in the app for now.\n- Agents pick the icon. When an agent creates a project, or runs `llmtodo init --create`, it picks a Lucide icon that fits the project. The skill guide says how.\n- The CLI sets both: `project update <slug> --icon <name>|none` and `--color <hex>|none`.\n- The app draws the project icon in the project color wherever it shows the project. With no color, the icon stays monochrome.\n- The color picker is a small set of preset swatches that read well in every theme, plus None. Every swatch has hover and press states.\n- After this lands, the agent picks icons for the existing projects.\n+++\n"
+ },
+ "LLM-198": {
+  "version": 1,
+  "words": 81,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "In hover cards, such as the cards on read-only tabs in the task view, the text under the heading was larger than the heading. Its line height was also tall.\n\nCard text now uses the small text size, the same as the heading, with a line height of 1.3.\n\nDesign rule, from the owner on 2026-11-13: small info elements, such as cards, captions and badges, use a smaller font than body text and a line height near 1.3. SPEC.md records it.\n"
+ },
+ "LLM-199": {
+  "version": 1,
+  "words": 59,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "If I click on a key to copy, output \"Copied\" instantly. Same for any other that does the same thing that does not have other UI update. Example - do not do anything on marking a task 'approved' as this already moves it to 'done'. But we need it for the click to copy because there nothing other happens."
+ },
+ "LLM-202": {
+  "version": 1,
+  "words": 55,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The left side of the status bar said \"Connected to <url>\" next to the issue count. The right side already shows \"Live \u00b7 <url>\", so the message said the same thing twice. The app no longer shows it. A reconnect after an outage clears the \"Offline\" message instead.\n\nThe owner asked for this on 2026-11-13.\n"
+ },
+ "LLM-205": {
+  "version": 1,
+  "words": 44,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The title bar at the top of the window gets a 1px border under it again, in every theme and mode. The bar keeps the plain page color.\n\nThe owner asked for this on 2026-11-13. It reverses the earlier rule of no bottom border.\n"
+ },
+ "LLM-211": {
+  "version": 1,
+  "words": 34,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "In the macOS theme, the green check on done tasks is too faint. Raise its contrast in light and dark mode, so it reads clearly against rows, selected rows and hovered rows. Related: LLM-204."
+ },
+ "LLM-212": {
+  "version": 1,
+  "words": 55,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "Zoom in and zoom out must not change the font size or the size of any element in the title bar. This covers everything to the right of the three macOS window buttons. The rest of the app still zooms. Related: LLM-84 added zoom, and LLM-148 kept the tabs at a fixed height when zooming."
+ },
+ "LLM-213": {
+  "version": 1,
+  "words": 76,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The title bar's folder path shows the app's working folder. An app started from the Dock or Finder has the working folder /, so the bar always shows /. The app knows no local folder for a project.\n\nFix: the title bar shows the current project's name and its linked repo, such as xavortm/llmtodo. With no project in scope, it shows the tracker's name. It never shows the working folder. LLMTODO_PROJECT_DIR keeps working for development runs."
+ },
+ "LLM-214": {
+  "version": 1,
+  "words": 95,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "The Settings field \"Hide after\" takes 0. With 0, the list hides every Done and Canceled task at once, whatever its age.\n\nOne exception, for every value of Hide after: a closed task stays visible while an open task still depends on it, directly or through other tasks. Steps in an epic's order are such a chain, because order edges are blocks relations. So the done steps of an ordered epic stay on screen while later steps are open. When every task in the chain is closed, the chain hides like any other closed task."
+ },
+ "LLM-217": {
+  "version": 1,
+  "words": 86,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "LLM-216 keeps the dependency graph in memory for depth and open dependents. The app still runs issue query --depends-on and --closed-blockers-of after each live event, and both use recursive SQL. On a long chain they likely take about half a second each.\n\nMake both filters read the in-memory graph. Better still, send the tasks whose depth or open dependents changed in the live event itself, so the app needs no refresh query. Keep the CLI filters. Add perf tests on the 49,000-task chain cases from LLM-216."
+ },
+ "LLM-218": {
+  "version": 1,
+  "words": 33,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "When Animations is on, Close all groups closes every open group with the same smooth crop as closing one group. Today only a single close animates.\n\nThe owner asked for this on 2026-11-14."
+ },
+ "LLM-219": {
+  "version": 1,
+  "words": 36,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "When Animations is on and the window gets narrower or wider, a column that hides or shows fades and changes width smoothly. Today it appears or disappears at once.\n\nThe owner asked for this on 2026-11-14."
+ },
+ "LLM-220": {
+  "version": 1,
+  "words": 33,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "When Animations is on, the hover background in the task view tab bar slides left or right to the tab under the mouse, instead of jumping.\n\nThe owner asked for this on 2026-11-14."
+ },
+ "LLM-221": {
+  "version": 1,
+  "words": 39,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-222": {
+  "version": 1,
+  "words": 177,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-226": {
+  "version": 1,
+  "words": 102,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-228": {
+  "version": 1,
+  "words": 110,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-236": {
+  "version": 1,
+  "words": 211,
+  "crates": [
+   "ui"
+  ],
+  "gpui": true,
+  "server_and_app": false,
+  "description": "The LLM status column keeps its full width until the list is very narrow, then it hides. It should shrink early instead.\n\n## What to build\n\n- When the list runs short of space, the LLM column shrinks first, before any other column hides.\n- The narrow column is as wide as the badge icon: the lock, or the eye for Analyzing. The age text hides.\n- The tooltip still shows the full card.\n- The column hides last, as today, only when even the narrow form does not fit.\n\n+++ Agent notes\n- Owner request, 2026-11-14: \"LLM column should shrink quickly when there's no space for it, now it remains open until it's too narrow. when it shrinks it can be just a lock icon width.\"\n- Width and hide order live in `crates/ui/src/issues/columns.rs` (`LLM_BADGE_REM`, `Column::width`, `hide_rank`, `plan`). The badge renders in `render_llm_badge` in `crates/ui/src/issues/list.rs`.\n- Suggested shape: `plan` picks a compact LLM width as the first step when space runs out, ahead of hide rank 0. The header cell and every row must use the same width.\n- Animate the width change like the other column changes (LLM-219 fade) if it fits cleanly.\n- Update the plan tests in `columns.rs` and add a test for the compact badge.\n+++\n"
+ },
+ "LLM-237": {
+  "version": 1,
+  "words": 40,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-238": {
+  "version": 1,
+  "words": 148,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false,
+  "description": "In the All issues view, tasks from many projects mix in one list. The owner cannot see which project a task belongs to.\n\n## What to build\n\n- A Project column in the issue list. It shows the project's icon and name.\n- The Project column shows only in the All issues view. It is the left-most column.\n- Group by gets a Project option. Each group is one project, with its icon and name in the header.\n- Group by Project works in every view, but it is most useful in All issues.\n\n## Done when\n\n- All issues shows the Project column first, on the left.\n- Team and project views do not show the column.\n- Group by Project splits the list into one group per project.\n- The group-by cycle and the command palette include Project.\n- Tests cover the column and the grouping.\n"
+ },
+ "LLM-254": {
+  "version": 1,
+  "words": 232,
+  "crates": [],
+  "gpui": true,
+  "server_and_app": false
+ },
+ "LLM-255": {
+  "version": 1,
+  "words": 232,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-256": {
+  "version": 1,
+  "words": 229,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-257": {
+  "version": 1,
+  "words": 132,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-260": {
+  "version": 1,
+  "words": 176,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-267": {
+  "version": 1,
+  "words": 0,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-268": {
+  "version": 1,
+  "words": 0,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-269": {
+  "version": 1,
+  "words": 0,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-270": {
+  "version": 2,
+  "words": 185,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-272": {
+  "version": 1,
+  "words": 203,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-273": {
+  "version": 2,
+  "words": 277,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-274": {
+  "version": 1,
+  "words": 244,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-275": {
+  "version": 1,
+  "words": 252,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-277": {
+  "version": 1,
+  "words": 274,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-278": {
+  "version": 1,
+  "words": 142,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-279": {
+  "version": 1,
+  "words": 124,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-280": {
+  "version": 2,
+  "words": 152,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-281": {
+  "version": 1,
+  "words": 263,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-282": {
+  "version": 1,
+  "words": 196,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-283": {
+  "version": 1,
+  "words": 183,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-284": {
+  "version": 3,
+  "words": 263,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-286": {
+  "version": 2,
+  "words": 397,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ },
+ "LLM-287": {
+  "version": 1,
+  "words": 22,
+  "crates": [],
+  "gpui": false,
+  "server_and_app": false
+ }
+}
