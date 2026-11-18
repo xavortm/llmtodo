@@ -286,6 +286,8 @@ pub struct IssueList {
     query: Filter,
     /// The team or project the sidebar picked.
     pub scope: Scope,
+    /// Whether the filter panel is open, so its button shows pressed.
+    pub filter_panel_open: bool,
     /// Hide closed tasks this many days old. None shows them all.
     pub hide_closed_after: Option<u32>,
     /// Experimental: draw a light line through the titles of Done tasks.
@@ -409,6 +411,7 @@ impl IssueList {
             filter,
             query: Filter::default(),
             scope: Scope::All,
+            filter_panel_open: false,
             hide_closed_after: None,
             strike_done: true,
             motion: None,
@@ -2209,25 +2212,24 @@ impl IssueList {
             .when_some(collapse_all, |this, button| this.child(button))
     }
 
-    /// The filter panel button. It shows how many filter words are on.
+    /// The filter panel button. It shows how many filter words are on, and
+    /// opens or closes the filter panel.
     fn filter_button(&self) -> AnyElement {
         let words = self.query.word_count();
+        let events = self.events.clone();
         let button = Button::new("filter-panel")
             .ghost()
             .small()
             .icon(IconName::ListFilter)
             .when(words > 0, |b| b.label(words.to_string()))
-            .selected(words > 0)
-            .dropdown_menu(filter_menu::filter_menu(
-                self.store.clone(),
-                self.filter.clone(),
-                self.scope.clone(),
-                self.events.clone(),
-            ));
+            .selected(words > 0 || self.filter_panel_open)
+            .on_click(move |_, window, cx| {
+                events.emit(ViewEvent::ToggleFilterPanel, window, cx);
+            });
         with_card(
             "filter-panel-tip",
             button,
-            Card::text("Filter the list (:filter status:todo)"),
+            Card::text("Filter panel (:filters)"),
         )
     }
 

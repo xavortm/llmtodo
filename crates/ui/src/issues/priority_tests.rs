@@ -10,7 +10,7 @@ use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowO
 
 use crate::issues::columns::{self, Column, Demand};
 use crate::issues::filter::Filter;
-use crate::issues::filter_menu::FilterPanel;
+use crate::issues::filter_panel::FilterPanel;
 use crate::issues::list::Row;
 use crate::model::data::Priority;
 use crate::shell::view_events::{IssueAction, ViewEvent};

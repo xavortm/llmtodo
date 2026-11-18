@@ -173,6 +173,7 @@ pub fn bind_keys(cx: &mut App) {
     crate::inbox::bind_keys(cx);
     crate::settings::view::bind_keys(cx);
     crate::issues::claims::bind_keys(cx);
+    crate::issues::filter_panel::bind_keys(cx);
 }
 
 /// Rows of the `?` overlay: keys, then what they do.
@@ -189,6 +190,7 @@ pub(super) const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl-O / Ctrl-I", "Previous / next view"),
             ("Mouse 4 / 5", "Previous / next view"),
             ("/", "Filter"),
+            (":filters", "Show or hide the filter panel"),
             (":", "Command palette"),
             ("e", "Edit the description"),
             ("E", "Edit it in $EDITOR, saved on each write"),
@@ -334,6 +336,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "group project",
     "group priority",
     "group none",
+    "filters",
     "sidebar",
     "settings",
     "all",

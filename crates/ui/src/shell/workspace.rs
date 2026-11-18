@@ -41,6 +41,7 @@ use crate::issues::claims::{ClaimsEvent, ClaimsList};
 use crate::issues::columns::{Column, ToggleColumn};
 use crate::issues::create::{self, CreateEvent, CreateForm, Draft};
 use crate::issues::filter::Filter;
+use crate::issues::filter_panel::FilterPanelView;
 use crate::issues::list::{GroupBy, IssueList, RowClick, SortKey};
 use crate::model::backend::{self, Backend, Write, WriteKind};
 use crate::model::data::{
@@ -257,6 +258,8 @@ pub struct Workspace {
     focus: FocusHandle,
     store: Entity<IssueStore>,
     sidebar: Entity<Sidebar>,
+    /// The filter panel at the right of the list (LLM-247).
+    filter_panel: Entity<FilterPanelView>,
     /// The cat under the sidebar. It shows and ticks only with the sidebar,
     /// and only while `mascot_on`.
     mascot: Entity<Mascot>,
@@ -454,6 +457,8 @@ impl Workspace {
         let task =
             cx.new(|cx| TaskView::new(issues.clone(), events.clone(), answers.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(issues.clone(), events.clone(), cx));
+        let filter_panel =
+            cx.new(|cx| FilterPanelView::new(issues.clone(), list.clone(), events.clone(), cx));
         let mascot = cx.new(|cx| Mascot::new(issues.clone(), cx));
         let palette = cx.new(|cx| Palette::new(focus.clone(), window, cx));
         let create = cx.new(|cx| CreateForm::new(focus.clone(), window, cx));
@@ -600,6 +605,7 @@ impl Workspace {
             focus,
             store: issues,
             sidebar,
+            filter_panel,
             mascot,
             mascot_on: true,
             list,
@@ -1650,6 +1656,16 @@ impl Workspace {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    /// Whether the filter panel is open.
+    pub fn filter_panel_open(&self, cx: &App) -> bool {
+        self.filter_panel.read(cx).is_open()
+    }
+
+    /// The filter panel row the keys point at.
+    pub fn filter_panel_row(&self, cx: &App) -> Option<SharedString> {
+        self.filter_panel.read(cx).highlighted(cx)
+    }
+
     pub fn filter_text(&self, cx: &App) -> SharedString {
         self.list.read(cx).filter.read(cx).value()
     }
@@ -3247,6 +3263,8 @@ impl Workspace {
             self.create.update(cx, |form, cx| form.close(window, cx));
         } else if self.settings_shown(cx) {
             self.leave_settings(window, cx);
+        } else if self.filter_panel.read(cx).is_open() {
+            self.set_filter_panel(false, window, cx);
         } else if filter.focus_handle(cx).contains_focused(window, cx) {
             self.focus_list(window, cx);
         } else if self.task.read(cx).focus.contains_focused(window, cx) {

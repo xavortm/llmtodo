@@ -120,9 +120,27 @@ impl Workspace {
         };
         let size = saved.clamp(range.start, range.end);
         let open = self.detail(cx).is_some();
+        // The filter panel sits at the right of the list and pushes it
+        // narrower. Nothing covers the list, so it takes clicks and shows
+        // each filter change at once. With animations on, the panel fades
+        // in and slides a short way from the right.
+        let filters_open = self.filter_panel.read(cx).is_open();
+        let list = h_flex()
+            .size_full()
+            .overflow_hidden()
+            .child(div().flex_1().min_w_0().h_full().child(cached(&self.list)))
+            .when(filters_open, |this| {
+                this.child(crate::shell::motion::slide_in(
+                    div().h_full().flex_none().child(self.filter_panel.clone()),
+                    "filter-panel-slide",
+                    1.5,
+                    true,
+                    cx,
+                ))
+            });
         group
             .with_handle_appearance(std::rc::Rc::new(Self::divider))
-            .child(cached(&self.list).into_any_element())
+            .child(list.into_any_element())
             .child(
                 // Fixed: only a drag on the divider changes its size, never
                 // the content of the task that is open.
