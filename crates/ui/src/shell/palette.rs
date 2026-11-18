@@ -26,8 +26,8 @@ const TYPED_IN_FULL: &[&str] = &["release"];
 /// not run `assign me`. The first match still shows as selected, and a
 /// suggestion picked with ctrl-n or a click runs as usual.
 const WRITES: &[&str] = &[
-    "assign", "unassign", "status", "label", "wait", "delete", "restore", "depends", "blocks",
-    "undepend", "unblock", "mine", "theirs",
+    "assign", "unassign", "status", "priority", "label", "wait", "delete", "restore", "depends",
+    "blocks", "undepend", "unblock", "mine", "theirs",
 ];
 
 /// Whether Enter must not run `command`, the suggestion at `selected`, for

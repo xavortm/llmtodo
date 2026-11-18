@@ -1787,3 +1787,35 @@ fn backend_saves_a_project_color() {
     });
     assert!(message.contains("#rrggbb"), "{message}");
 }
+
+/// LLM-301: an agent sets a priority, as `issue update -p` does. The
+/// change reaches the app live, and the app's issue carries it.
+#[test]
+fn an_agents_priority_change_arrives_live() {
+    let live = Live::new();
+    let (_backend, mut events) = live.backend();
+    let snapshot = live.wait(&mut events, "snapshot", |e| match e {
+        Event::Snapshot(s) => Some(s.raw.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        snapshot.issues[0].priority,
+        llmtodo_client::types::Priority::None
+    );
+    let agent = live.client(Some("agent-priority"));
+    let update = UpdateIssue {
+        priority: Some(llmtodo_client::types::Priority::Urgent),
+        ..Default::default()
+    };
+    live.rt
+        .block_on(agent.update_issue("LLM-1", &update))
+        .unwrap();
+    let issue = live.wait(&mut events, "the priority change", |e| {
+        issues_in(e)
+            .into_iter()
+            .find(|i| i.priority == llmtodo_client::types::Priority::Urgent)
+    });
+    let catalog = crate::model::data::Catalog::default();
+    let ours = crate::model::data::Issue::from_api(&issue, &catalog);
+    assert_eq!(ours.priority, crate::model::data::Priority::Urgent);
+}

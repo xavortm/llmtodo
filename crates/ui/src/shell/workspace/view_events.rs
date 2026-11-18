@@ -95,6 +95,7 @@ impl Workspace {
                 }
             }
             IssueAction::SetStatus(status) => self.set_status(id, status, cx),
+            IssueAction::SetPriority(priority) => self.set_priority(id, priority, cx),
             IssueAction::ToggleLabel(label) => self.toggle_label(id, label, cx),
             IssueAction::SetWaitingOn(waiting) => self.set_waiting_on(id, waiting, cx),
             IssueAction::SetParent(parent) => self.set_parent(id, parent, cx),
@@ -147,6 +148,7 @@ impl Workspace {
         }
         let (verb, arg) = match action {
             IssueAction::SetStatus(status) => ("status", status.name.to_string()),
+            IssueAction::SetPriority(priority) => ("priority", priority.as_str().to_string()),
             IssueAction::ToggleLabel(label) => ("label", label.name.to_string()),
             IssueAction::Delete => ("delete", String::new()),
             _ => return false,

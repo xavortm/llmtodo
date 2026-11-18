@@ -7,9 +7,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{Context, Entity, ParentElement as _, Styled as _, Window};
 
-use crate::model::data::{IssueId, WaitingOn};
+use crate::model::data::{IssueId, WaitingOn, priority_name};
 use crate::model::store::IssueStore;
-use crate::shell::icons::HasIcon as _;
+use crate::shell::icons::{HasIcon as _, PRIORITIES};
 use crate::shell::view_events::{IssueAction, ViewEvent, ViewEvents};
 
 /// Every item also has a palette command,
@@ -27,6 +27,8 @@ pub fn issue_menu(
             return menu;
         };
         let status_events = events.clone();
+        let priority_events = events.clone();
+        let current_priority = issue.priority;
         let label_events = events.clone();
         let copy_events = events.clone();
         let edit_events = events.clone();
@@ -74,6 +76,23 @@ pub fn issue_menu(
                                 let status = status.clone();
                                 events.emit(
                                     ViewEvent::OnIssue(id, IssueAction::SetStatus(status)),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    )
+                })
+            })
+            .submenu("Priority", window, cx, move |menu, _, _| {
+                PRIORITIES.into_iter().fold(menu, |menu, priority| {
+                    let events = priority_events.clone();
+                    menu.item(
+                        PopupMenuItem::new(priority_name(priority))
+                            .icon(Icon::new(priority.icon()))
+                            .checked(priority == current_priority)
+                            .on_click(move |_, window, cx| {
+                                events.emit(
+                                    ViewEvent::OnIssue(id, IssueAction::SetPriority(priority)),
                                     window,
                                     cx,
                                 );

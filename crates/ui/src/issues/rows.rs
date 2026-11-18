@@ -8,7 +8,9 @@ use gpui_shared_string::SharedString;
 
 use crate::issues::filter::ResolvedFilter;
 use crate::issues::list::{GroupBy, Row, SortKey};
-use crate::model::data::{Issue, IssueId, Label, LabelColor, Place, Status};
+use crate::model::data::{
+    Issue, IssueId, Label, LabelColor, Place, Priority, Status, priority_name,
+};
 use crate::model::scope::{Scope, ViewMembers};
 
 /// From this many issues in the store, the list builds its rows on a
@@ -245,6 +247,12 @@ fn sort(issues: &mut [&Issue], input: &RowsInput<'_>) {
             let i = *i;
             (std::cmp::Reverse(i.added), i.key.as_ref() as &str)
         }),
+        // Urgent first, no priority last, as the server's default order.
+        SortKey::Priority => issues.sort_by_cached_key(|i| {
+            let i = *i;
+            let key: &str = i.key.as_ref();
+            (i.priority.sort_rank(), key_order(key), key)
+        }),
         SortKey::Llm => {
             let now = input.now;
             issues.sort_by_cached_key(|i| {
@@ -356,6 +364,27 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
                 groups[ix].3.push(issue.id);
             }
             groups.push(("Unassigned".into(), None, None, none));
+            groups
+        }
+        GroupBy::Priority => {
+            // Urgent first, then the tasks with no priority.
+            let mut groups: Vec<Group> = [
+                Priority::Urgent,
+                Priority::High,
+                Priority::Medium,
+                Priority::Low,
+                Priority::None,
+            ]
+            .into_iter()
+            .map(|p| (priority_name(p).into(), None, None, Vec::new()))
+            .collect();
+            for issue in issues {
+                let ix = match issue.priority {
+                    Priority::None => 4,
+                    p => usize::from(p.as_number()) - 1,
+                };
+                groups[ix].3.push(issue.id);
+            }
             groups
         }
         GroupBy::Project => {

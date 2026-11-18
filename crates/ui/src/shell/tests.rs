@@ -1826,7 +1826,7 @@ fn deleted_keys(view: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String
 }
 
 /// The index of "Move to Trash" in the task menu, separators included.
-pub(crate) const TRASH_ITEM: usize = 7;
+pub(crate) const TRASH_ITEM: usize = 8;
 
 #[gpui_kit::test]
 fn the_task_menu_acts_on_its_task_after_a_snapshot_reorders_the_list(cx: &mut TestAppContext) {
@@ -4448,7 +4448,9 @@ fn group_by_project_splits_the_list_by_project(cx: &mut TestAppContext) {
     use crate::issues::list::GroupBy;
     assert_eq!(GroupBy::parse("project"), Some(GroupBy::Project));
     assert_eq!(GroupBy::Parent.next(), GroupBy::Project);
-    assert_eq!(GroupBy::Project.next(), GroupBy::None);
+    // LLM-301: priority comes after project in the cycle.
+    assert_eq!(GroupBy::Project.next(), GroupBy::Priority);
+    assert_eq!(GroupBy::Priority.next(), GroupBy::None);
     let (handle, view) = open(cx);
     run_palette(handle, "group project", cx);
     cx.update_window(handle, |_, window, cx| {

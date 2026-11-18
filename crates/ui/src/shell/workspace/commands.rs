@@ -156,6 +156,15 @@ impl Workspace {
                 }
                 None => Some(format!("Unknown label: {arg}")),
             },
+            ("priority", Some(id)) => match parse_priority(arg) {
+                Some(priority) => {
+                    self.set_priority(id, priority, cx);
+                    None
+                }
+                None => Some(format!(
+                    "Priority is urgent, high, medium, low or none, not {arg}"
+                )),
+            },
             ("wait", Some(id)) => match parse_waiting_on(arg) {
                 Some(waiting) => {
                     self.set_waiting_on(id, waiting, cx);
@@ -461,6 +470,7 @@ impl Workspace {
             "added" | "date" => (SortKey::Added, "Sorted by date added"),
             "key" => (SortKey::Key, "Sorted by key"),
             "llm" => (SortKey::Llm, "Sorted by LLM status"),
+            "priority" => (SortKey::Priority, "Sorted by priority"),
             _ => return format!("Unknown sort: {arg}"),
         };
         self.sort_by(key, cx);
@@ -519,6 +529,21 @@ impl Workspace {
                 Ok(message) => message + &skipped(held.len()),
                 Err(message) => return Some(message),
             },
+            "priority" => {
+                let Some(priority) = parse_priority(arg) else {
+                    return Some(format!(
+                        "Priority is urgent, high, medium, low or none, not {arg}"
+                    ));
+                };
+                for id in &free {
+                    self.set_priority(*id, priority, cx);
+                }
+                let what = match priority {
+                    Priority::None => "no priority".to_string(),
+                    p => priority_name(p).to_lowercase(),
+                };
+                format!("{} now {what}", tasks(free.len())) + &skipped(held.len())
+            }
             "label" => {
                 let Some(label) = catalog.find_label(arg) else {
                     return Some(format!("Unknown label: {arg}"));
@@ -769,6 +794,20 @@ fn find_named<T>(items: &[T], wanted: &str, name: impl Fn(&T) -> String) -> Opti
 
 /// The argument of `:wait`: `agent`, `owner` or `none`. `Some(None)` clears
 /// the field; `None` means the word is unknown.
+/// The priority `:priority` names: a level, `none`, or Linear's number,
+/// 0 for none to 4 for low.
+fn parse_priority(arg: &str) -> Option<Priority> {
+    let arg = arg.trim().to_lowercase();
+    if let Ok(n) = arg.parse::<i64>() {
+        return Priority::from_number(n);
+    }
+    match arg.as_str() {
+        "no" | "no-priority" => Some(Priority::None),
+        "med" => Some(Priority::Medium),
+        word => word.parse().ok(),
+    }
+}
+
 fn parse_waiting_on(arg: &str) -> Option<Option<WaitingOn>> {
     match arg.trim().to_lowercase().as_str() {
         "agent" | "a" => Some(Some(WaitingOn::Agent)),
@@ -808,6 +847,10 @@ mod tests {
 
     #[test]
     fn wait_accepts_its_short_words_and_refuses_others() {
+        assert_eq!(parse_priority("High"), Some(Priority::High));
+        assert_eq!(parse_priority("1"), Some(Priority::Urgent));
+        assert_eq!(parse_priority("none"), Some(Priority::None));
+        assert_eq!(parse_priority("soon"), None);
         assert_eq!(parse_waiting_on("a"), Some(Some(WaitingOn::Agent)));
         assert_eq!(parse_waiting_on("me"), Some(Some(WaitingOn::Owner)));
         assert_eq!(parse_waiting_on("none"), Some(None));

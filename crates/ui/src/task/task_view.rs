@@ -31,9 +31,9 @@ use gpui_kit::{
 use llmtodo_api_types::IssueGit;
 
 use crate::inbox::AnswerInputs;
-use crate::model::data::{Issue, IssueId};
+use crate::model::data::{Issue, IssueId, Priority, priority_name};
 use crate::model::store::IssueStore;
-use crate::shell::icons::HasIcon as _;
+use crate::shell::icons::{HasIcon as _, PRIORITIES};
 use crate::shell::tooltip::{Card, with_card};
 use crate::shell::view_events::{IssueAction, ViewEvent, ViewEvents};
 use crate::shell::widgets::{self, lock_colors};
@@ -1972,6 +1972,7 @@ impl TaskView {
     /// estimates, and the dependencies. Each is one group. The line wraps
     /// on a narrow task view, and a group wraps inside itself too.
     fn render_meta_line(&self, issue: &Issue, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let priority = self.render_priority_button(issue);
         let labels = self.render_labels_group(issue, cx);
         let cost = self.render_cost_line(issue, cx);
         let deps = self.render_dependencies(issue, cx);
@@ -1987,9 +1988,54 @@ impl TaskView {
             .px_3()
             .pb_2()
             .text_xs()
+            .child(priority)
             .child(labels)
             .child(cost)
             .child(deps)
+    }
+
+    /// The priority button: the level's icon and name. Its menu changes
+    /// the priority, as the right-click menu does.
+    fn render_priority_button(&self, issue: &Issue) -> impl IntoElement + use<> {
+        let issue_id = issue.id;
+        let current = issue.priority;
+        let store = self.store.clone();
+        let events = self.events.clone();
+        let name = match current {
+            Priority::None => "Priority",
+            p => priority_name(p),
+        };
+        with_card(
+            "priority-tip",
+            Button::new("priority")
+                .ghost()
+                .xsmall()
+                .icon(current.icon())
+                .label(name)
+                .dropdown_menu(move |menu, _, cx| {
+                    // The task may have changed since the button drew.
+                    let current = store.read(cx).get(issue_id).map_or(current, |i| i.priority);
+                    PRIORITIES.into_iter().fold(menu, |menu, priority| {
+                        let events = events.clone();
+                        menu.item(
+                            PopupMenuItem::new(priority_name(priority))
+                                .icon(Icon::new(priority.icon()))
+                                .checked(priority == current)
+                                .on_click(move |_, window, cx| {
+                                    events.emit(
+                                        ViewEvent::OnIssue(
+                                            issue_id,
+                                            IssueAction::SetPriority(priority),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        )
+                    })
+                }),
+            Card::text("Set the priority (p)"),
+        )
     }
 
     /// The label tags, then the Labels button that changes them.

@@ -64,6 +64,8 @@ pub enum Column {
     Llm,
     /// The order line of the task's parent, under "group by parent".
     Order,
+    /// The task's priority as one icon. No priority shows nothing.
+    Priority,
     Status,
     Key,
     Title,
@@ -81,11 +83,12 @@ pub enum Column {
 
 impl Column {
     /// Every column, left to right.
-    pub const ALL: [Column; 14] = [
+    pub const ALL: [Column; 15] = [
         Column::Project,
         Column::Check,
         Column::Llm,
         Column::Order,
+        Column::Priority,
         Column::Status,
         Column::Key,
         Column::Title,
@@ -106,6 +109,7 @@ impl Column {
             Column::Check => "col-check",
             Column::Llm => "col-llm",
             Column::Order => "col-order",
+            Column::Priority => "col-priority",
             Column::Status => "col-status",
             Column::Key => "col-key",
             Column::Title => "col-title",
@@ -126,6 +130,7 @@ impl Column {
             Column::Check => "Checkbox",
             Column::Llm => "LLM status",
             Column::Order => "Order",
+            Column::Priority => "Priority",
             Column::Status => "Status",
             Column::Key => "Key",
             Column::Title => "Title",
@@ -162,6 +167,8 @@ impl Column {
             // when the list runs short of room.
             Column::Llm => Some(rems(LLM_BADGE_REM)),
             Column::Order => Some(rems(ORDER_REM)),
+            // One icon.
+            Column::Priority => Some(rems(1.25)),
             Column::Status => Some(rems(5.)),
             Column::Key => Some(rems(4.)),
             Column::Title => None,
@@ -191,10 +198,11 @@ impl Column {
             Column::Added => Some(3),
             Column::Assignee => Some(4),
             Column::Waiting => Some(5),
-            Column::Order => Some(6),
-            Column::Deps => Some(7),
-            Column::Project => Some(8),
-            Column::Llm => Some(9),
+            Column::Priority => Some(6),
+            Column::Order => Some(7),
+            Column::Deps => Some(8),
+            Column::Project => Some(9),
+            Column::Llm => Some(10),
             Column::Check | Column::Status | Column::Key | Column::Title => None,
         }
     }
@@ -603,10 +611,12 @@ mod tests {
 
     const REM: f32 = 16.;
     /// The list hides the order column unless it groups by parent, and
-    /// the project column outside All issues.
-    const NO_ORDER: &[Column] = &[Column::Order, Column::Project];
+    /// the project column outside All issues. The widths below were
+    /// worked out before the priority column (LLM-301), so these tests
+    /// hide it too. `issues::priority_tests` checks where it hides.
+    const NO_ORDER: &[Column] = &[Column::Order, Column::Project, Column::Priority];
 
-    /// Every column but the order and project columns.
+    /// Every column but the order, project and priority columns.
     fn shown() -> Vec<Column> {
         Column::ALL
             .into_iter()
@@ -614,19 +624,26 @@ mod tests {
             .collect()
     }
 
-    /// Every column but the project column.
+    /// Every column but the project and priority columns.
     fn with_order() -> Vec<Column> {
         Column::ALL
             .into_iter()
-            .filter(|c| *c != Column::Project)
+            .filter(|c| !matches!(c, Column::Project | Column::Priority))
             .collect()
     }
 
     #[test]
     fn the_order_column_hides_after_waiting_and_before_deps() {
         use Column::*;
-        let at =
-            |width: f32| plan(Some(px(width)), px(REM), &[Project], &Demand::default()).columns;
+        let at = |width: f32| {
+            plan(
+                Some(px(width)),
+                px(REM),
+                &[Project, Priority],
+                &Demand::default(),
+            )
+            .columns
+        };
         assert_eq!(at(2000.), with_order());
         // 20 px more than the list without it, and one more gap of 8.
         assert_eq!(at(904.), with_order());
@@ -795,7 +812,7 @@ mod tests {
     #[test]
     fn the_owners_choice_applies_before_the_width_rule() {
         use Column::*;
-        let hidden = [Labels, Key, Check, Time, Order, Project];
+        let hidden = [Labels, Key, Check, Time, Order, Project, Priority];
         let without = [Llm, Status, Title, Deps, Waiting, Assignee, Cost, Added];
         let none = Demand::default();
         assert_eq!(visible(None, px(REM), &hidden, &none), without);
@@ -891,7 +908,12 @@ mod tests {
         let less = comfortable_width_for(
             &none,
             px(REM),
-            &[Column::Labels, Column::Order, Column::Project],
+            &[
+                Column::Labels,
+                Column::Order,
+                Column::Project,
+                Column::Priority,
+            ],
         );
         assert_eq!(f32::from(all) - f32::from(less), 64. + 8.);
     }

@@ -18,7 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::{App, Context, Entity, SharedString, Styled as _, Window};
 
 use crate::issues::filter::{self, Filter, has_word, toggle_word};
-use crate::model::data::{Assignee, Catalog, Issue, LabelColor, OWNER_NAME};
+use crate::model::data::{Assignee, Catalog, Issue, LabelColor, OWNER_NAME, priority_name};
 use crate::model::scope::Scope;
 use crate::model::store::IssueStore;
 use crate::shell::icons::HasIcon as _;
@@ -41,6 +41,7 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterPanel {
     pub statuses: Vec<Entry>,
+    pub priorities: Vec<Entry>,
     pub labels: Vec<Entry>,
     pub assignees: Vec<Entry>,
     pub llm: Vec<Entry>,
@@ -88,6 +89,21 @@ impl FilterPanel {
                 false,
             ));
         }
+
+        let priorities = crate::shell::icons::PRIORITIES
+            .into_iter()
+            .map(|priority| {
+                let ours = |v: &str| filter::priority_word(v) == Some(priority);
+                entry(
+                    priority_name(priority).into(),
+                    priority.icon(),
+                    "priority",
+                    &ours,
+                    format!("priority:{}", priority.as_str()),
+                    false,
+                )
+            })
+            .collect();
 
         // A filter word holds no spaces, so a label with one cannot be a
         // word. The panel leaves it out.
@@ -178,6 +194,7 @@ impl FilterPanel {
 
         Self {
             statuses,
+            priorities,
             labels,
             assignees,
             llm,
@@ -251,6 +268,15 @@ pub fn filter_menu(
             "Status",
             IconName::CircleDot,
             panel.statuses,
+            events.clone(),
+            window,
+            cx,
+        );
+        let menu = section(
+            menu,
+            "Priority",
+            IconName::SignalHigh,
+            panel.priorities,
             events.clone(),
             window,
             cx,

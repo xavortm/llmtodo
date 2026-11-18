@@ -330,6 +330,14 @@ pub fn issues(catalog: &Catalog) -> Vec<Issue> {
                 order_step: None,
                 title: (*title).into(),
                 status: status(catalog, status_name),
+                // Every level shows in previews, and some tasks have none.
+                priority: match ix % 6 {
+                    0 => crate::model::data::Priority::Urgent,
+                    1 => crate::model::data::Priority::High,
+                    2 => crate::model::data::Priority::Medium,
+                    3 => crate::model::data::Priority::Low,
+                    _ => crate::model::data::Priority::None,
+                },
                 assignee: match ix % 4 {
                     0 => Some(Assignee::Person(crate::model::data::OWNER_NAME.into())),
                     1 => Some(Assignee::Agent(claude())),

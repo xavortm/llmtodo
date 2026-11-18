@@ -739,6 +739,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::new_issue))
             .on_action(cx.listener(Self::toggle_mark))
+            .on_action(cx.listener(Self::pick_priority))
             .on_action(cx.listener(Self::sidebar_down))
             .on_action(cx.listener(Self::sidebar_up))
             .on_action(cx.listener(Self::sidebar_top))

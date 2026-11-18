@@ -49,6 +49,8 @@ pub enum SortKey {
     Added,
     /// Locked, then Analyzing, then the rest.
     Llm,
+    /// Urgent first, no priority last.
+    Priority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,8 @@ pub enum GroupBy {
     Parent,
     /// One group per project, by project name, then the tasks with none.
     Project,
+    /// One group per level, urgent first, then the tasks with none.
+    Priority,
 }
 
 impl GroupBy {
@@ -72,6 +76,7 @@ impl GroupBy {
             "assignee" | "owner" => Some(Self::Assignee),
             "parent" | "epic" => Some(Self::Parent),
             "project" | "projects" => Some(Self::Project),
+            "priority" => Some(Self::Priority),
             _ => None,
         }
     }
@@ -84,6 +89,7 @@ impl GroupBy {
             Self::Assignee => "Assignee",
             Self::Parent => "Parent",
             Self::Project => "Project",
+            Self::Priority => "Priority",
         }
     }
 
@@ -94,7 +100,8 @@ impl GroupBy {
             Self::Label => Self::Assignee,
             Self::Assignee => Self::Parent,
             Self::Parent => Self::Project,
-            Self::Project => Self::None,
+            Self::Project => Self::Priority,
+            Self::Priority => Self::None,
         }
     }
 }
@@ -681,6 +688,7 @@ impl IssueList {
             || old.parent != new.parent
             || old.order_step != new.order_step
             || old.status != new.status
+            || old.priority != new.priority
             || old.labels != new.labels
             || old.assignee != new.assignee
             || old.added != new.added
@@ -732,6 +740,7 @@ impl IssueList {
             GroupBy::Project => {
                 rows::project_title(i.project.as_deref(), &self.store.read(cx).catalog.projects)
             }
+            GroupBy::Priority => crate::model::data::priority_name(i.priority).into(),
         };
         self.header_row(&title)
     }
@@ -1597,6 +1606,15 @@ impl IssueList {
                 let style = self.store.read(cx).catalog.project_style(&slug);
                 crate::shell::icons::project_icon(&style, muted_fg, cx)
             });
+        // Under "group by priority", the level's icon before its name.
+        let priority_icon = (self.group == GroupBy::Priority)
+            .then(|| {
+                crate::shell::icons::PRIORITIES
+                    .into_iter()
+                    .find(|p| crate::model::data::priority_name(*p) == title.as_ref())
+            })
+            .flatten()
+            .map(|p| Icon::new(p.icon()).small().text_color(muted_fg));
         let success = theme.success;
         let frame = crate::shell::motion::fill(
             h_flex().id(("row", row)),
@@ -1622,6 +1640,7 @@ impl IssueList {
                 this.child(div().size_2().rounded_full().bg(color))
             })
             .when_some(project_icon, |this, icon| this.child(icon.small()))
+            .children(priority_icon)
             .when_some(status.clone(), |this, status| {
                 this.child(
                     Icon::new(status.icon())
@@ -1891,6 +1910,13 @@ impl IssueList {
                 let mark = self.order.get(row).copied().flatten();
                 this.child(cell_with(Column::Order, &layout, order_cell(mark, cx)))
             })
+            .when(self.shows(Column::Priority), |this| {
+                this.child(cell_with(
+                    Column::Priority,
+                    &layout,
+                    priority_cell(&issue, muted),
+                ))
+            })
             .when(self.shows(Column::Status), |this| {
                 this.child(cell_with(
                     Column::Status,
@@ -2124,6 +2150,7 @@ impl IssueList {
                         [
                             GroupBy::None,
                             GroupBy::Status,
+                            GroupBy::Priority,
                             GroupBy::Label,
                             GroupBy::Assignee,
                             GroupBy::Parent,
@@ -2202,6 +2229,12 @@ impl IssueList {
         // A button with an empty label shows only an icon: the arrow when
         // it sorts, the lock otherwise. The narrow LLM status column uses it.
         let sort_header = |id: &'static str, label: &'static str, name: &str, key: SortKey| {
+            // An icon-only header shows its column's icon at rest.
+            let idle = if key == SortKey::Priority {
+                IconName::SignalHigh
+            } else {
+                IconName::Lock
+            };
             let active = self.sort.0 == key;
             let events = self.events.clone();
             let arrow = if self.sort.1 {
@@ -2211,7 +2244,7 @@ impl IssueList {
             };
             let button = Button::new(id).ghost().xsmall();
             let button = if label.is_empty() {
-                button.icon(if active { arrow } else { IconName::Lock })
+                button.icon(if active { arrow } else { idle })
             } else {
                 button.label(label).when(active, |b| b.icon(arrow))
             };
@@ -2256,6 +2289,13 @@ impl IssueList {
             })
             .when(self.shows(Column::Order), |this| {
                 this.child(cell_with(Column::Order, &layout, div()))
+            })
+            .when(self.shows(Column::Priority), |this| {
+                this.child(cell_with(
+                    Column::Priority,
+                    &layout,
+                    sort_header("sort-priority", "", "priority", SortKey::Priority),
+                ))
             })
             .when(self.shows(Column::Status), |this| {
                 this.child(cell_with(
@@ -2583,6 +2623,25 @@ fn status_cell(issue: &Issue, muted: gpui_kit::Hsla, cx: &App) -> impl IntoEleme
             muted
         }))
         .child(div().truncate().child(issue.status.name.clone()))
+}
+
+/// The priority cell of a row: the level's icon, with its name on hover.
+/// A task with no priority shows nothing.
+fn priority_cell(issue: &Issue, muted: gpui_kit::Hsla) -> impl IntoElement + use<> {
+    let priority = issue.priority;
+    h_flex().w_full().justify_center().when(
+        priority != crate::model::data::Priority::None,
+        |this| {
+            this.child(with_card(
+                widgets::issue_part("priority", issue.id),
+                Icon::new(priority.icon()).small().text_color(muted),
+                Card::text(format!(
+                    "Priority: {}",
+                    crate::model::data::priority_name(priority)
+                )),
+            ))
+        },
+    )
 }
 
 /// The assignee cell of a row: an agent's icon or a person's name.

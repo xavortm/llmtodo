@@ -30,6 +30,8 @@ mod hide_tests;
 #[cfg(test)]
 mod order_tests;
 #[cfg(test)]
+mod priority_tests;
+#[cfg(test)]
 mod render_cost_tests;
 #[cfg(test)]
 mod scroll_tests;

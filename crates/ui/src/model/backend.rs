@@ -107,6 +107,7 @@ impl Snapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteKind {
     Status,
+    Priority,
     Labels,
     Assignee,
     WaitingOn,

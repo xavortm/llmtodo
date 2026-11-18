@@ -280,6 +280,7 @@ Gap review additions:
 
 - Each team has its own statuses. Each status has a fixed type: backlog, unstarted, started, completed or canceled. A new team starts with Backlog, Todo, In Progress, In Review, Done, Canceled and Duplicate. "Open" means any type other than completed or canceled.
 - Priority uses Linear's five levels: none, urgent, high, medium, low.
+- In the app (LLM-301), each level has one fixed Lucide icon: an octagon alert for urgent and signal bars for high, medium and low. The list's Priority column shows the icon, and nothing for none. It hides after the waiting column when room runs short. The right-click menu, the task view's Priority button, `p` and `:priority <level>` set it, on every marked task too. `:sort priority`, `:group priority` and the filter word `priority:<level>` work like their status versions. A saved view keeps one priority, because the server's query takes one.
 - An issue takes at most one label from each label group.
 - Attachments are links (PRs, commits, URLs) and local file paths.
 - The server stores every description and document revision, plus an activity log of field changes. `issue history` lists revisions. `issue restore --revision` brings one back.

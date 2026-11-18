@@ -5,7 +5,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon};
 use gpui_kit::{App, Hsla, Styled as _};
 
-use crate::model::data::{Agent, Assignee, ProjectStyle, Status, StatusType};
+use crate::model::data::{Agent, Assignee, Priority, ProjectStyle, Status, StatusType};
 use crate::model::scope::Scope;
 
 pub trait HasIcon {
@@ -23,6 +23,29 @@ impl HasIcon for Status {
         }
     }
 }
+
+/// One fixed icon per level. The list shows no icon for `None`; menus
+/// show a dash for it.
+impl HasIcon for Priority {
+    fn icon(&self) -> IconName {
+        match self {
+            Priority::Urgent => IconName::OctagonAlert,
+            Priority::High => IconName::SignalHigh,
+            Priority::Medium => IconName::SignalMedium,
+            Priority::Low => IconName::SignalLow,
+            Priority::None => IconName::Minus,
+        }
+    }
+}
+
+/// Every level as menus list it: urgent first, no priority last.
+pub const PRIORITIES: [Priority; 5] = [
+    Priority::Urgent,
+    Priority::High,
+    Priority::Medium,
+    Priority::Low,
+    Priority::None,
+];
 
 impl HasIcon for Agent {
     /// Lucide has no brand marks, so these are stand-ins. Claude gets the

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use gpui_shared_string::SharedString;
 use llmtodo_api_types as api;
+pub use llmtodo_api_types::Priority;
 pub use llmtodo_api_types::WaitingOn;
 
 pub use llmtodo_api_types::StatusType;
@@ -427,6 +428,8 @@ pub struct Issue {
     pub order_step: Option<u32>,
     pub title: SharedString,
     pub status: Status,
+    /// Linear's five levels. `Priority::None` shows no icon.
+    pub priority: Priority,
     pub assignee: Option<Assignee>,
     pub labels: Vec<Label>,
     pub added: Date,
@@ -468,6 +471,18 @@ pub struct Issue {
     pub estimate_minutes: Option<u32>,
     /// The cost estimate in dollars, set before work starts.
     pub estimate_cost: Option<f64>,
+}
+
+/// The name the app shows for a priority level, such as `High`. It is
+/// also the title of the level's group.
+pub fn priority_name(priority: Priority) -> &'static str {
+    match priority {
+        Priority::Urgent => "Urgent",
+        Priority::High => "High",
+        Priority::Medium => "Medium",
+        Priority::Low => "Low",
+        Priority::None => "No priority",
+    }
 }
 
 /// A cost as the app shows it. Amounts too small for cents still show that
@@ -614,6 +629,7 @@ impl Issue {
             order_step: issue.order_step,
             title: issue.title.clone().into(),
             status: catalog.status(&issue.team, &issue.status),
+            priority: issue.priority,
             assignee: issue.assignee.as_ref().map(Assignee::from_actor),
             labels,
             added: Date::from_timestamp(issue.created_at),

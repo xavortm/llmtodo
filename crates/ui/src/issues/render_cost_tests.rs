@@ -52,8 +52,11 @@ fn old_groups(issues: &[&Issue], group: GroupBy, catalog: &Catalog) -> Vec<(Stri
         issues.iter().filter(|i| keep(i)).map(|i| i.id).collect()
     };
     let mut groups: Vec<(String, Vec<IssueId>)> = match group {
-        // Parent groups came after LLM-178, so they have no old code.
-        GroupBy::None | GroupBy::Parent | GroupBy::Project => return Vec::new(),
+        // Parent, project and priority groups came after LLM-178, so they
+        // have no old code.
+        GroupBy::None | GroupBy::Parent | GroupBy::Project | GroupBy::Priority => {
+            return Vec::new();
+        }
         GroupBy::Status => {
             let mut statuses = catalog.all_statuses();
             for issue in issues {

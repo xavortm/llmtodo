@@ -44,7 +44,8 @@ use crate::issues::filter::Filter;
 use crate::issues::list::{GroupBy, IssueList, RowClick, SortKey};
 use crate::model::backend::{self, Backend, Write, WriteKind};
 use crate::model::data::{
-    Assignee, Catalog, Claim, Issue, IssueId, Label, OWNER_NAME, Status, WaitingOn,
+    Assignee, Catalog, Claim, Issue, IssueId, Label, OWNER_NAME, Priority, Status, WaitingOn,
+    priority_name,
 };
 use crate::model::drafts::DraftStore;
 use crate::model::external_editor::ExternalEdits;
@@ -1408,6 +1409,7 @@ impl Workspace {
                 "status" => SortKey::Status,
                 "added" => SortKey::Added,
                 "llm" => SortKey::Llm,
+                "priority" => SortKey::Priority,
                 _ => SortKey::Key,
             },
             settings.sort_reversed,
@@ -1497,6 +1499,7 @@ impl Workspace {
                 SortKey::Status => "status",
                 SortKey::Added => "added",
                 SortKey::Llm => "llm",
+                SortKey::Priority => "priority",
             }
             .into(),
             sort_reversed: list.sort.1,
@@ -2988,6 +2991,16 @@ impl Workspace {
         });
     }
 
+    /// `p`: opens the palette on the priority commands. The first one is
+    /// selected, ctrl-n and ctrl-p move, and Enter sets it on the selected
+    /// task, or on every marked task.
+    fn pick_priority(&mut self, _: &PickPriority, window: &mut Window, cx: &mut Context<Self>) {
+        if self.target(cx).is_none() && self.list.read(cx).marked.is_empty() {
+            return;
+        }
+        self.open_palette_with("priority ", window, cx);
+    }
+
     fn clear_marks(&mut self, cx: &mut Context<Self>) -> bool {
         let had = !self.list.read(cx).marked.is_empty();
         if had {
@@ -4122,6 +4135,30 @@ impl Workspace {
             ..Default::default()
         };
         self.send(id, Write::Update(Box::new(update)), WriteKind::Parent, cx);
+        self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
+    }
+
+    /// Sets the priority of one task. The list sorts and groups by it, so
+    /// the rows build again.
+    pub fn set_priority(&mut self, id: IssueId, priority: Priority, cx: &mut Context<Self>) {
+        if !self.editable(id, cx) {
+            return;
+        }
+        let Some(message) = self.edit_issue(id, cx, |issue, _| {
+            issue.priority = priority;
+            match priority {
+                Priority::None => format!("{} has no priority", issue.key),
+                p => format!("{} is {}", issue.key, priority_name(p)),
+            }
+        }) else {
+            return;
+        };
+        self.message = message.into();
+        let update = llmtodo_client::types::UpdateIssue {
+            priority: Some(priority),
+            ..Default::default()
+        };
+        self.send(id, Write::Update(Box::new(update)), WriteKind::Priority, cx);
         self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
     }
 

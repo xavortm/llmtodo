@@ -6,6 +6,8 @@
 //!   words keep issues in any of them.
 //! - `label:bug` keeps issues with that label. Several label words keep
 //!   issues with all of them.
+//! - `priority:high` keeps one priority: `urgent`, `high`, `medium`, `low`
+//!   or `none`. Several priority words keep issues with any of them.
 //! - `assignee:me`, `assignee:none` or part of an actor name.
 //! - `llm:any` keeps tasks with an agent on them, Locked or Analyzing.
 //!   `llm:locked` and `llm:analyzing` keep one of the two. A bare `llm` is
@@ -22,7 +24,9 @@ use llmtodo_api_types::{
     ASSIGNEE_OWNER, AssigneeRef, FilterSubject, IssueFilter, IssueQuery, StatusType,
 };
 
-use crate::model::data::{Assignee, Catalog, Issue, LLM_RANK_ANALYZING, OWNER_NAME, Status};
+use crate::model::data::{
+    Assignee, Catalog, Issue, LLM_RANK_ANALYZING, OWNER_NAME, Priority, Status,
+};
 use crate::model::scope::Scope;
 
 /// Which LLM status an `llm:` word keeps.
@@ -53,6 +57,8 @@ pub struct Filter {
     /// `status:open`.
     pub open: bool,
     pub labels: Vec<String>,
+    /// `priority:` words, as typed.
+    pub priorities: Vec<String>,
     pub assignee: Option<String>,
     pub llm: Option<LlmWord>,
 }
@@ -62,6 +68,16 @@ pub struct Filter {
 pub struct ResolvedFilter {
     pub text: String,
     pub shared: IssueFilter,
+    /// With `priority:` words, an issue passes with any one of these
+    /// levels. None keeps every issue. The shared filter has no priority,
+    /// so the app checks it here.
+    pub priorities: Option<Vec<Priority>>,
+}
+
+/// The priority a `priority:` word names. A word that names none keeps
+/// no issue, as an unknown status does.
+pub(crate) fn priority_word(word: &str) -> Option<Priority> {
+    word.parse().ok()
 }
 
 /// The status type a filter word names, if it names one.
@@ -130,6 +146,7 @@ fn filter_word(word: &str) -> Option<(&'static str, &str)> {
     let key = match key {
         "status" => "status",
         "label" => "label",
+        "priority" => "priority",
         "assignee" => "assignee",
         "llm" if LlmWord::parse(value).is_some() => "llm",
         _ => return None,
@@ -200,6 +217,7 @@ impl Filter {
                 Some(("status", "open")) => out.open = true,
                 Some(("status", v)) => out.statuses.push(v.to_string()),
                 Some(("label", v)) => out.labels.push(v.to_string()),
+                Some(("priority", v)) => out.priorities.push(v.to_string()),
                 Some(("assignee", v)) => out.assignee = Some(v.to_string()),
                 Some(("llm", v)) => out.llm = LlmWord::parse(v),
                 _ => text.push(word),
@@ -214,6 +232,7 @@ impl Filter {
         self.statuses.len()
             + usize::from(self.open)
             + self.labels.len()
+            + self.priorities.len()
             + usize::from(self.assignee.is_some())
             + usize::from(self.llm.is_some())
     }
@@ -270,7 +289,25 @@ impl Filter {
         ResolvedFilter {
             text: self.text.clone(),
             shared: self.shared(catalog),
+            priorities: self.priority_levels(),
         }
+    }
+
+    /// The levels the `priority:` words name, or None with no such word.
+    /// A word that names no level adds none, so it can match nothing.
+    fn priority_levels(&self) -> Option<Vec<Priority>> {
+        if self.priorities.is_empty() {
+            return None;
+        }
+        let mut out = Vec::new();
+        for word in &self.priorities {
+            if let Some(p) = priority_word(word)
+                && !out.contains(&p)
+            {
+                out.push(p);
+            }
+        }
+        Some(out)
     }
 
     /// The server query a saved view stores for this filter in `scope`.
@@ -295,6 +332,14 @@ impl Filter {
             .find(|w| Self::status_names(w, catalog).is_empty())
         {
             return Err(format!("Unknown status: {word}"));
+        }
+        if let Some(word) = self.priorities.iter().find(|w| priority_word(w).is_none()) {
+            return Err(format!("Unknown priority: {word}"));
+        }
+        match self.priority_levels().as_deref() {
+            None | Some([]) => {}
+            Some([one]) => query.priority = Some(*one),
+            Some(_) => return Err("A saved view keeps one priority".into()),
         }
         query.filter = self.shared(catalog);
         query.filter.labels = self
@@ -342,7 +387,11 @@ impl ResolvedFilter {
                 .labels
                 .iter()
                 .any(|l| contains_lowercase(&l.name, text));
-        text_ok && self.shared.matches(&IssueAt { issue, now })
+        let priority_ok = self
+            .priorities
+            .as_ref()
+            .is_none_or(|levels| levels.contains(&issue.priority));
+        text_ok && priority_ok && self.shared.matches(&IssueAt { issue, now })
     }
 }
 

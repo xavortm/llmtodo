@@ -8,7 +8,7 @@ use std::sync::Arc;
 use gpui_kit::{App, SharedString, Window};
 
 use crate::issues::list::{GroupBy, RowClick, SortKey};
-use crate::model::data::{IssueId, Label, Status, WaitingOn};
+use crate::model::data::{IssueId, Label, Priority, Status, WaitingOn};
 use crate::model::scope::Scope;
 
 /// What a click on an issue asks for. The issue may be gone by the time the
@@ -17,6 +17,7 @@ use crate::model::scope::Scope;
 pub enum IssueAction {
     CopyKey,
     SetStatus(Status),
+    SetPriority(Priority),
     ToggleLabel(Label),
     SetWaitingOn(Option<WaitingOn>),
     /// The parent's key, or none to make it a top-level task.
