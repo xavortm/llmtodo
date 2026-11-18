@@ -1287,6 +1287,7 @@ fn refuse_as_stale(view: &Entity<Workspace>, server_text: &str, cx: &mut TestApp
                 kind: crate::model::backend::WriteKind::Description,
                 message: "stale".into(),
                 stale: true,
+                summary: None,
             },
             cx,
         );
@@ -1912,6 +1913,7 @@ fn a_save_that_fails_offline_keeps_the_owners_text(cx: &mut TestAppContext) {
                 kind: crate::model::backend::WriteKind::Description,
                 message: "the server is offline, so nothing was saved".into(),
                 stale: false,
+                summary: None,
             },
             cx,
         );
@@ -4527,4 +4529,91 @@ fn group_by_project_splits_the_list_by_project(cx: &mut TestAppContext) {
         assert_eq!(view.read(cx).current_settings(cx).group, "project");
     })
     .unwrap();
+}
+
+/// LLM-306: a failed save keeps the status bar message on one line. Long
+/// text ends in an ellipsis, and a hover shows all of it in a card.
+#[gpui_kit::test]
+fn a_long_failed_save_message_stays_on_one_line(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let long = format!(
+        "LLM-101 cannot move:\n\n{}\n+++ Review\n### Steps to reproduce\n1. Open it.\n+++",
+        "A very long line of server text. ".repeat(20)
+    );
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            crate::model::backend::Event::WriteFailed {
+                key: "LLM-101".into(),
+                kind: crate::model::backend::WriteKind::Status,
+                message: long.clone(),
+                stale: false,
+                summary: None,
+            },
+            cx,
+        );
+    });
+    cx.read(|cx| {
+        assert_eq!(
+            view.read(cx).message(),
+            format!("Could not save LLM-101: {long}")
+        )
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let line = window.find("status-count").bounds();
+        let message = window.find("status-message").bounds();
+        assert!(
+            message.size.height <= line.size.height + px(1.),
+            "the message takes {message:?}, one line is {line:?}"
+        );
+        assert!(message.size.width <= px(560.), "{message:?}");
+    })
+    .unwrap();
+
+    // A hover opens a card with the full text, just above the message.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("status-message", cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let message = window.find("status-message").bounds();
+        let card = window
+            .try_find("tooltip-card")
+            .expect("a hover on the message opens a card")
+            .bounds();
+        let gap = (message.top() - card.bottom()).abs();
+        assert!(gap < px(24.), "card {card:?} far from {message:?}");
+        assert!(card.size.height > message.size.height * 4., "{card:?}");
+    })
+    .unwrap();
+}
+
+/// LLM-306: a refused move to a review status shows the backend's short
+/// line for people, not the server's message for agents.
+#[gpui_kit::test]
+fn a_refused_review_move_shows_the_short_summary(cx: &mut TestAppContext) {
+    let (_handle, view) = open(cx);
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            crate::model::backend::Event::WriteFailed {
+                key: "LLM-101".into(),
+                kind: crate::model::backend::WriteKind::Status,
+                message: "LLM-101 cannot move to a review status: ...\n\n+++ Review\n+++".into(),
+                stale: false,
+                summary: Some("LLM-101 needs review steps and checks before User review.".into()),
+            },
+            cx,
+        );
+    });
+    cx.read(|cx| {
+        assert_eq!(
+            view.read(cx).message(),
+            "LLM-101 needs review steps and checks before User review."
+        )
+    });
 }

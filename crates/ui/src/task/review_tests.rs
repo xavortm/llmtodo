@@ -176,6 +176,7 @@ fn a_refused_answer_shows_the_error_in_the_panel(cx: &mut TestAppContext) {
                 kind: WriteKind::Review,
                 message: "the server is down".into(),
                 stale: false,
+                summary: None,
             },
             cx,
         );
@@ -591,6 +592,7 @@ fn answer(view: &Entity<Workspace>, key: &str, refusal: Option<&str>, cx: &mut T
             kind: WriteKind::Review,
             message: message.into(),
             stale: false,
+            summary: None,
         },
     };
     view.update(cx, |this, cx| this.apply_event(event, cx));

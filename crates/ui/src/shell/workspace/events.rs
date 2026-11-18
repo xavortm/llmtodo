@@ -121,7 +121,8 @@ impl Workspace {
                 kind,
                 message,
                 stale,
-            } => self.on_write_failed(key, kind, message, stale, cx),
+                summary,
+            } => self.on_write_failed(key, kind, message, stale, summary, cx),
         }
         cx.notify();
     }
@@ -317,12 +318,14 @@ impl Workspace {
     }
 
     /// A write failed. A failed description save keeps the owner's text.
+    /// A `summary` from the backend replaces the server's message.
     fn on_write_failed(
         &mut self,
         key: String,
         kind: WriteKind,
         message: String,
         stale: bool,
+        summary: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let key: SharedString = key.into();
@@ -381,7 +384,9 @@ impl Workspace {
                 .into();
             }
             FailedSave::NothingKept => {
-                self.message = format!("Could not save {key}: {message}").into();
+                self.message = summary
+                    .unwrap_or_else(|| format!("Could not save {key}: {message}"))
+                    .into();
             }
         }
     }

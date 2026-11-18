@@ -297,6 +297,9 @@ pub enum Event {
         message: String,
         /// The description changed on the server since the owner opened it.
         stale: bool,
+        /// A short line for people that replaces the server's message in
+        /// the status bar, such as for a refused move to a review status.
+        summary: Option<String>,
     },
 }
 
@@ -523,6 +526,7 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                             kind,
                             message: "the server is offline, so nothing was saved".into(),
                             stale: false,
+                            summary: None,
                         });
                         state.pending.keys.insert(key);
                     }
@@ -1318,6 +1322,42 @@ async fn refresh_rows(
     Ok(open_key)
 }
 
+/// A short line for people when the server refuses a write for a reason the
+/// app knows. The server's own message stays as it is, because agents read
+/// it: for a refused review move it holds a CLI command and the Markdown
+/// format.
+pub(crate) fn refusal_summary(
+    key: &str,
+    status: Option<&str>,
+    err: &ClientError,
+) -> Option<String> {
+    let ClientError::Api { detail, .. } = err else {
+        return None;
+    };
+    if detail.details.get("reason").and_then(|r| r.as_str()) != Some("review_section_missing") {
+        return None;
+    }
+    let missing: Vec<&str> = detail
+        .details
+        .get("missing")
+        .and_then(|m| m.as_array())
+        .map(|m| m.iter().filter_map(|h| h.as_str()).collect())
+        .unwrap_or_default();
+    let steps = missing
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(llmtodo_core::review::STEPS_HEADING));
+    let checks = missing
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(llmtodo_core::review::CHECKS_HEADING));
+    let needs = match (steps, checks) {
+        (true, false) => "review steps",
+        (false, true) => "review checks",
+        _ => "review steps and checks",
+    };
+    let target = status.unwrap_or("a review status");
+    Some(format!("{key} needs {needs} before {target}."))
+}
+
 async fn apply_write(
     client: &Client,
     key: &str,
@@ -1331,6 +1371,10 @@ async fn apply_write(
     if let Write::SetOrder(order) = &write {
         undo.extend(order.steps.iter().flatten().map(ToString::to_string));
     }
+    let status = match &write {
+        Write::Update(update) => update.status.clone(),
+        _ => None,
+    };
     let mut detail = None;
     let mut keep = |d: IssueDetail| {
         let issue = d.issue.clone();
@@ -1396,6 +1440,7 @@ async fn apply_write(
                     kind,
                     message: err.to_string(),
                     stale: err.code() == ErrorCode::StaleVersion,
+                    summary: refusal_summary(key, status.as_deref(), &err),
                 },
             );
             if unreachable {
@@ -1495,5 +1540,51 @@ mod tests {
             slow_flush: Duration::ZERO,
         };
         assert!(State::default().spawn(&target).is_none());
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    fn refused(details: serde_json::Value) -> ClientError {
+        ClientError::Api {
+            status: 422,
+            detail: llmtodo_api_types::ErrorDetail {
+                code: ErrorCode::Validation,
+                message: "LLM-9 cannot move to a review status:\n\n+++ Review\n+++".into(),
+                details,
+            },
+        }
+    }
+
+    #[test]
+    fn a_refused_review_move_names_what_is_missing() {
+        let both = refused(serde_json::json!({
+            "reason": "review_section_missing",
+            "missing": ["Steps to reproduce", "What to check"],
+        }));
+        assert_eq!(
+            refusal_summary("LLM-9", Some("User review"), &both).as_deref(),
+            Some("LLM-9 needs review steps and checks before User review.")
+        );
+        let checks = refused(serde_json::json!({
+            "reason": "review_section_missing",
+            "missing": ["What to check"],
+        }));
+        assert_eq!(
+            refusal_summary("LLM-9", None, &checks).as_deref(),
+            Some("LLM-9 needs review checks before a review status.")
+        );
+    }
+
+    #[test]
+    fn other_refusals_keep_the_server_message() {
+        let other = refused(serde_json::json!({ "reason": "estimate_missing" }));
+        assert_eq!(refusal_summary("LLM-9", Some("Done"), &other), None);
+        assert_eq!(
+            refusal_summary("LLM-9", None, &refused(serde_json::Value::Null)),
+            None
+        );
     }
 }
