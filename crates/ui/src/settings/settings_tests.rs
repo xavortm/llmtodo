@@ -906,3 +906,53 @@ fn the_sidebar_closes_smoothly_and_then_goes(cx: &mut TestAppContext) {
     frames_asked(handle, cx);
     assert_eq!(left(cx), None, "it goes when closed");
 }
+
+#[gpui_kit::test]
+fn the_four_theme_cards_share_one_row_at_any_width(cx: &mut TestAppContext) {
+    use crate::shell::theme::ColorTheme;
+    let (handle, view) = open(cx);
+    run(handle, &view, "settings", cx);
+
+    for width in [1200., 700.] {
+        cx.simulate_window_resize(
+            handle,
+            gpui_kit::size(gpui_kit::px(width), gpui_kit::px(800.)),
+        );
+        cx.run_until_parked();
+        let cards: Vec<_> = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                ColorTheme::ALL
+                    .map(|name| {
+                        let id = format!("settings-theme-{}", name.id());
+                        gpui_kit::base::test_support::find(window, &[], &id.into())
+                            .expect("a card per theme")
+                            .bounds()
+                    })
+                    .to_vec()
+            })
+            .unwrap();
+        assert_eq!(cards.len(), 4);
+        let first = cards[0];
+        for (ix, card) in cards.iter().enumerate() {
+            assert_eq!(
+                card.origin.y, first.origin.y,
+                "{width}: card {ix} is on the first row"
+            );
+            assert!(
+                (card.size.width - first.size.width).abs() < gpui_kit::px(0.5),
+                "{width}: card {ix} has the same width"
+            );
+            assert!(
+                card.size.width > gpui_kit::px(40.),
+                "{width}: card {ix} is wide enough"
+            );
+        }
+        for pair in cards.windows(2) {
+            assert!(
+                pair[0].right() <= pair[1].origin.x,
+                "{width}: cards do not overlap"
+            );
+        }
+    }
+}

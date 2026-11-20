@@ -68,6 +68,11 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// Theme cards on one line in Settings. A fifth theme starts a second line.
+const PREVIEWS_PER_ROW: u16 = 4;
+/// Width over height of a theme card's picture.
+const PREVIEW_ASPECT: f32 = 9. / 5.5;
+
 /// One line of the form, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
@@ -679,10 +684,14 @@ impl SettingsView {
                 self.theme_card(name, name == current, &colors, cx)
             })
             .collect();
-        h_flex()
+        // One row of equal cards that share the row's width, so every
+        // theme fits on one line at any window width.
+        div()
+            .grid()
+            .grid_cols(PREVIEWS_PER_ROW)
+            .w_full()
             .pt_2()
             .gap_3()
-            .flex_wrap()
             .children(cards)
             .into_any_element()
     }
@@ -758,6 +767,8 @@ impl SettingsView {
             .id(group.clone())
             .group(group.clone())
             .test_support()
+            .w_full()
+            .min_w_0()
             .gap_1()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -770,8 +781,10 @@ impl SettingsView {
                         "settings-theme-{}-frame",
                         name.id()
                     )))
-                    .w(rems(9.))
-                    .h(rems(5.5))
+                    // The card takes its column's width and keeps the
+                    // picture's shape.
+                    .w_full()
+                    .aspect_ratio(PREVIEW_ASPECT)
                     .rounded(ui.radius)
                     .border_2()
                     .border_color(ring)
@@ -782,7 +795,13 @@ impl SettingsView {
                     })
                     .child(h_flex().size_full().child(sidebar).child(page)),
             )
-            .child(div().text_xs().text_color(label).child(name.label()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(label)
+                    .truncate()
+                    .child(name.label()),
+            )
             .into_any_element()
     }
 }
