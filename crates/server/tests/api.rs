@@ -4035,3 +4035,334 @@ async fn order_step_moves_one_task_and_trash_rewrites_the_edges() {
     assert_eq!(depth(&k[5]).await, 1);
     t.stop().await;
 }
+
+/// Keys of the issues a text or similar search finds.
+async fn search_keys(t: &T, field: &str, terms: &str) -> Vec<String> {
+    let v = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ field: terms }),
+        )
+        .await;
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn doc_titles(t: &T, terms: &str) -> Vec<String> {
+    let v = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/documents?search={terms}"),
+            json!(null),
+        )
+        .await;
+    v.as_array()
+        .or_else(|| v["items"].as_array())
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn fts_count(db: &mut sqlx::SqliteConnection, sql: &'static str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(&mut *db).await.unwrap()
+}
+
+/// Every FTS row has its key in `search_rows`, and the tables hold one row
+/// per issue, live comment and document (LLM-4).
+async fn assert_search_rows_consistent(db: &mut sqlx::SqliteConnection) {
+    let issues = fts_count(db, "SELECT count(*) FROM issues").await;
+    let entities = fts_count(db, "SELECT (SELECT count(*) FROM issues) + (SELECT count(*) FROM comments) + (SELECT count(*) FROM documents)").await;
+    let indexed = fts_count(db, "SELECT (SELECT count(*) FROM issues) + (SELECT count(*) FROM comments WHERE deleted_at IS NULL) + (SELECT count(*) FROM documents)").await;
+    assert_eq!(
+        fts_count(db, "SELECT count(*) FROM search_fts").await,
+        indexed,
+        "search_fts rows"
+    );
+    assert_eq!(
+        fts_count(db, "SELECT count(*) FROM issues_trgm").await,
+        issues,
+        "issues_trgm rows"
+    );
+    assert_eq!(
+        fts_count(db, "SELECT count(*) FROM search_rows").await,
+        entities,
+        "search_rows keys"
+    );
+    let orphans = fts_count(
+        db,
+        "SELECT count(*) FROM search_fts f LEFT JOIN search_rows r ON r.id = f.rowid
+         WHERE r.id IS NULL OR r.entity_type <> f.entity_type OR r.entity_id <> f.entity_id",
+    )
+    .await;
+    assert_eq!(orphans, 0, "FTS rows without their key");
+    let orphans = fts_count(
+        db,
+        "SELECT count(*) FROM issues_trgm g LEFT JOIN search_rows r ON r.id = g.rowid
+         WHERE r.id IS NULL OR r.entity_type <> 'issue' OR r.entity_id <> g.issue_id",
+    )
+    .await;
+    assert_eq!(orphans, 0, "trigram rows without their key");
+}
+
+/// LLM-4: the search triggers find their rows by rowid. Each kind of write
+/// still adds, replaces and removes the right FTS rows.
+#[tokio::test]
+async fn search_rows_follow_every_write() {
+    use sqlx::Connection as _;
+    let t = T::new().await;
+    let mut db = sqlx::SqliteConnection::connect(&format!(
+        "sqlite://{}",
+        t._dir.path().join("llmtodo.db").display()
+    ))
+    .await
+    .unwrap();
+    let o = owner();
+    t.ok(
+        &o,
+        "POST",
+        "/v1/projects",
+        json!({ "name": "Notebook", "teams": ["ALX"] }),
+    )
+    .await;
+    let a = t
+        .issue(
+            "Zebra crossing",
+            json!({ "description": "An aardvark sighting." }),
+        )
+        .await;
+    let b = t.issue("Quiet issue", json!({})).await;
+    let c = t
+        .ok(
+            &o,
+            "POST",
+            &format!("/v1/issues/{b}/comments"),
+            json!({ "body": "A pelican landed." }),
+        )
+        .await;
+    let comment = c["id"].as_str().unwrap().to_string();
+    t.ok(
+        &o,
+        "POST",
+        &format!("/v1/issues/{b}/comments"),
+        json!({ "body": "Second comment, about otters." }),
+    )
+    .await;
+    t.ok(
+        &o,
+        "POST",
+        "/v1/documents",
+        json!({ "project": "notebook", "title": "Narwhal notes", "body": "Tusks.\n" }),
+    )
+    .await;
+    assert_eq!(search_keys(&t, "text", "zebra").await, [a.as_str()]);
+    assert_eq!(search_keys(&t, "text", "aardvark").await, [a.as_str()]);
+    assert_eq!(search_keys(&t, "similar", "ebra cross").await, [a.as_str()]);
+    assert_eq!(search_keys(&t, "text", "pelican").await, [b.as_str()]);
+    assert_eq!(doc_titles(&t, "narwhal").await, ["Narwhal notes"]);
+    assert_search_rows_consistent(&mut db).await;
+
+    // Title and description.
+    t.ok(
+        &o,
+        "PATCH",
+        &format!("/v1/issues/{a}"),
+        json!({ "title": "Yak crossing" }),
+    )
+    .await;
+    assert!(search_keys(&t, "text", "zebra").await.is_empty());
+    assert!(search_keys(&t, "similar", "ebra").await.is_empty());
+    assert_eq!(search_keys(&t, "text", "yak").await, [a.as_str()]);
+    assert_eq!(search_keys(&t, "similar", "Yak cro").await, [a.as_str()]);
+    t.ok(
+        &o,
+        "PATCH",
+        &format!("/v1/issues/{a}"),
+        json!({ "body": "A bison herd.", "force": true }),
+    )
+    .await;
+    assert!(search_keys(&t, "text", "aardvark").await.is_empty());
+    assert_eq!(search_keys(&t, "text", "bison").await, [a.as_str()]);
+    assert_eq!(search_keys(&t, "similar", "bison herd").await, [a.as_str()]);
+    assert_search_rows_consistent(&mut db).await;
+
+    // The key, by a team move.
+    t.ok(
+        &o,
+        "POST",
+        "/v1/teams",
+        json!({ "key": "WEB", "name": "Web" }),
+    )
+    .await;
+    let moved = t
+        .ok(
+            &o,
+            "PATCH",
+            &format!("/v1/issues/{a}"),
+            json!({ "team": "WEB" }),
+        )
+        .await;
+    let new_key = moved["key"].as_str().unwrap().to_string();
+    assert_ne!(new_key, a);
+    let title: String = sqlx::query_scalar(
+        "SELECT f.title FROM search_fts f JOIN search_rows r ON r.id = f.rowid
+         WHERE r.entity_type = 'issue' AND r.entity_id = (SELECT id FROM issues WHERE key = ?)",
+    )
+    .bind(&new_key)
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(title, format!("{new_key} Yak crossing"));
+    assert_eq!(search_keys(&t, "text", "yak").await, [new_key.as_str()]);
+    assert_search_rows_consistent(&mut db).await;
+
+    // Comment edit and delete.
+    t.ok(
+        &o,
+        "PATCH",
+        &format!("/v1/comments/{comment}"),
+        json!({ "body": "A heron landed." }),
+    )
+    .await;
+    assert!(search_keys(&t, "text", "pelican").await.is_empty());
+    assert_eq!(search_keys(&t, "text", "heron").await, [b.as_str()]);
+    assert_search_rows_consistent(&mut db).await;
+    t.ok(
+        &o,
+        "DELETE",
+        &format!("/v1/comments/{comment}"),
+        json!(null),
+    )
+    .await;
+    assert!(search_keys(&t, "text", "heron").await.is_empty());
+    assert_eq!(search_keys(&t, "text", "otters").await, [b.as_str()]);
+    assert_search_rows_consistent(&mut db).await;
+
+    // Document edit.
+    t.ok(
+        &o,
+        "PATCH",
+        "/v1/documents/notebook%2Fnarwhal-notes",
+        json!({ "title": "Walrus notes" }),
+    )
+    .await;
+    assert!(doc_titles(&t, "narwhal").await.is_empty());
+    assert_eq!(doc_titles(&t, "walrus").await, ["Walrus notes"]);
+    assert_search_rows_consistent(&mut db).await;
+
+    // Issue delete: a prune removes the issue's rows and its comments' rows.
+    t.ok(&o, "DELETE", &format!("/v1/issues/{b}"), json!(null))
+        .await;
+    t.ok(
+        &o,
+        "POST",
+        "/v1/prune",
+        json!({ "before": "2999-01-01T00:00:00Z" }),
+    )
+    .await;
+    let left = fts_count(
+        &mut db,
+        "SELECT count(*) FROM search_fts WHERE search_fts MATCH 'otters OR quiet'",
+    )
+    .await;
+    assert_eq!(left, 0);
+    assert_search_rows_consistent(&mut db).await;
+    assert_eq!(search_keys(&t, "text", "yak").await, [new_key]);
+
+    // The trigger deletes find rows by rowid. FTS5 shows a rowid lookup as
+    // `INDEX 0:=` and a full scan as `INDEX 0:`.
+    for sql in [
+        "EXPLAIN QUERY PLAN DELETE FROM search_fts WHERE rowid = (SELECT id FROM search_rows WHERE entity_type = 'issue' AND entity_id = 'x')",
+        "EXPLAIN QUERY PLAN DELETE FROM search_fts WHERE rowid IN (SELECT id FROM search_rows WHERE issue_id = 'x')",
+        "EXPLAIN QUERY PLAN DELETE FROM issues_trgm WHERE rowid = (SELECT id FROM search_rows WHERE entity_type = 'issue' AND entity_id = 'x')",
+    ] {
+        let rows: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(sql).fetch_all(&mut db).await.unwrap();
+        let plan: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+        assert!(
+            plan.iter().any(|p| p.ends_with("VIRTUAL TABLE INDEX 0:=")),
+            "{sql}: {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|p| p.starts_with("SEARCH search_rows")),
+            "{sql}: {plan:?}"
+        );
+    }
+    db.close().await.unwrap();
+    t.stop().await;
+}
+
+/// LLM-4: migration 0018 rebuilds the FTS tables with the same rows, so
+/// ranked results stay the same.
+#[tokio::test]
+async fn fts_rowid_migration_keeps_search_results() {
+    use sqlx::Connection as _;
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = sqlx::SqliteConnection::connect(&format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("m.db").display()
+    ))
+    .await
+    .unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    files.sort();
+    let (before, after): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|p| p.file_name().unwrap().to_str().unwrap() < "0018");
+    async fn run(db: &mut sqlx::SqliteConnection, files: &[std::path::PathBuf]) {
+        for f in files {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(std::fs::read_to_string(f).unwrap()))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+    }
+    run(&mut db, &before).await;
+    // The rows go in without their parents, so foreign keys stay off here.
+    sqlx::raw_sql(
+        "PRAGMA foreign_keys = OFF;
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60)
+         INSERT INTO issues (id, team_id, number, key, title, description, status_id, created_at, updated_at)
+         SELECT 'i' || i, 't', i, 'ALX-' || i, 'title ' || i || ' alpha' || (i % 7), 'body beta' || (i % 5) || ' gamma ' || i, 's', 'x', 'x' FROM n;
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 90)
+         INSERT INTO comments (id, issue_id, body, created_at, updated_at)
+         SELECT 'c' || i, 'i' || (i % 60 + 1), 'comment beta' || (i % 3) || ' delta', 'x', 'x' FROM n;
+         UPDATE comments SET deleted_at = 'x' WHERE id IN ('c1', 'c2', 'c3');
+         INSERT INTO documents (id, project_id, slug, title, body, created_at, updated_at)
+         VALUES ('d1', 'p', 'one', 'Alpha3 doc', 'beta1 gamma', 'x', 'x'), ('d2', 'p', 'two', 'Other', 'delta', 'x', 'x');",
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    const RANKED: &str = "SELECT entity_type || ' ' || entity_id || ' ' || coalesce(issue_id, '-') || ' ' || printf('%.9f', rank)
+         FROM search_fts WHERE search_fts MATCH 'alpha3 OR beta1 OR delta OR gamma' ORDER BY rank, entity_id";
+    const SIMILAR: &str = "SELECT issue_id || ' ' || printf('%.9f', rank)
+         FROM issues_trgm WHERE issues_trgm MATCH 'eta1' ORDER BY rank, issue_id";
+    let ranked: Vec<String> = sqlx::query_scalar(RANKED).fetch_all(&mut db).await.unwrap();
+    let similar: Vec<String> = sqlx::query_scalar(SIMILAR)
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+    assert!(ranked.len() > 50 && !similar.is_empty());
+
+    run(&mut db, &after).await;
+    let ranked_after: Vec<String> = sqlx::query_scalar(RANKED).fetch_all(&mut db).await.unwrap();
+    let similar_after: Vec<String> = sqlx::query_scalar(SIMILAR)
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(ranked_after, ranked);
+    assert_eq!(similar_after, similar);
+    assert_search_rows_consistent(&mut db).await;
+    db.close().await.unwrap();
+}
