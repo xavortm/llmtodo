@@ -203,6 +203,11 @@ pub async fn record_changed(
 /// its version and `updated_at` stay as they are. One transaction clears
 /// the pending mark too, so a crash leaves the work to the next start.
 pub async fn backfill(pool: &SqlitePool) -> ApiResult<()> {
+    // A plain read first, so a start with nothing to fill takes no write
+    // lock. The mark is checked again under the lock below.
+    if !store::questions::backfill_pending(&mut *pool.acquire().await?).await? {
+        return Ok(());
+    }
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if !store::questions::backfill_pending(&mut tx).await? {
         return Ok(());

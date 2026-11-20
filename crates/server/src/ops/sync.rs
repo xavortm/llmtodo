@@ -61,6 +61,24 @@ fn read_manifest(folder: &Path) -> ApiResult<Option<SyncManifest>> {
     }
 }
 
+/// How long a status read waits for the manifest.
+const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads the manifest off the async runtime, with a time limit. A file in a
+/// cloud-synced folder can block while the sync client downloads it, and
+/// the status read must not hang a runtime thread on it (LLM-4).
+async fn read_manifest_bounded(folder: PathBuf) -> ApiResult<Option<SyncManifest>> {
+    let read = tokio::task::spawn_blocking(move || read_manifest(&folder));
+    match tokio::time::timeout(MANIFEST_TIMEOUT, read).await {
+        Ok(Ok(found)) => found,
+        Ok(Err(e)) => Err(ApiError::internal(format!("read sync manifest: {e}"))),
+        Err(_) => Err(ApiError::internal(format!(
+            "reading the sync manifest took over {} seconds",
+            MANIFEST_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
 /// Writes `data` to `path` through a temporary file and a rename.
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp-llmtodo");
@@ -210,7 +228,7 @@ async fn set_state(st: &AppState, generation: i64, primary: bool, clear: Clear) 
 pub async fn status(st: &AppState) -> ApiResult<SyncStatus> {
     let f = folder(st, None).await.ok();
     let remote = match &f {
-        Some(f) => read_manifest(f)?,
+        Some(f) => read_manifest_bounded(f.clone()).await?,
         None => None,
     };
     Ok(SyncStatus {

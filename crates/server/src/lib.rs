@@ -218,20 +218,36 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
     })
 }
 
-/// Writes a daily backup, and one at startup when the newest is older than a
-/// day, because the server may not run every day.
+/// How long after start the first daily backup waits. `VACUUM INTO` copies
+/// the whole database, so it waits out the app's first load (LLM-4).
+const FIRST_BACKUP_DELAY: Duration = Duration::from_secs(60);
+
+/// The wait before the next daily backup. One that is due at start still
+/// waits `FIRST_BACKUP_DELAY`.
+fn backup_wait(due: Duration, first: bool) -> Duration {
+    if first {
+        due.max(FIRST_BACKUP_DELAY)
+    } else {
+        due
+    }
+}
+
+/// Writes a daily backup, and one soon after startup when the newest is older
+/// than a day, because the server may not run every day.
 async fn backup_loop(state: AppState) {
     let day = Duration::from_secs(24 * 3600);
     let mut failures = 0u32;
+    let mut first = true;
     loop {
         let due = match db::newest_daily_backup(&state.data_dir) {
             None => Duration::ZERO,
             Some(t) => day.saturating_sub(t.elapsed().unwrap_or(day)),
         };
         tokio::select! {
-            _ = tokio::time::sleep(due) => {}
+            _ = tokio::time::sleep(backup_wait(due, first)) => {}
             _ = state.shutdown.notified() => return,
         }
+        first = false;
         let has_data = match state.pool().acquire().await {
             Ok(mut c) => store::issues::count_all(&mut c).await.unwrap_or(0),
             Err(_) => 0,
@@ -298,6 +314,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_backup_waits_a_minute_after_start() {
+        assert_eq!(backup_wait(Duration::ZERO, true), FIRST_BACKUP_DELAY);
+        assert_eq!(backup_wait(Duration::ZERO, false), Duration::ZERO);
+        let later = Duration::from_secs(3600);
+        assert_eq!(backup_wait(later, true), later);
+    }
 
     #[test]
     fn a_failed_backup_backs_off_up_to_six_hours() {
