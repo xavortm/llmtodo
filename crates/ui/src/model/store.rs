@@ -78,6 +78,36 @@ pub struct IssueStore {
     /// switches between them.
     pub trackers: Vec<Tracker>,
     pub tracker: usize,
+    /// Counts up on every recorded change (LLM-7).
+    revision: u64,
+    /// The latest changes, oldest first: the revision each one made, and
+    /// the issue it touched, or None for a change to everything.
+    changes: std::collections::VecDeque<(u64, Option<IssueId>)>,
+}
+
+/// How many changes the store remembers. A view that saw none of them
+/// redraws in full.
+const CHANGES_KEPT: usize = 256;
+
+/// What changed in the store since a view last looked (LLM-7). A view
+/// that shows only some issues redraws only when one of them changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreChange {
+    /// Anything may have changed: the catalog, the connection, the whole
+    /// list, or a write the store did not record.
+    Everything,
+    /// Only these issues, or their detail, changed.
+    Issues(std::collections::HashSet<IssueId>),
+}
+
+impl StoreChange {
+    /// Whether the change may touch any of `ids`.
+    pub fn touches(&self, ids: impl IntoIterator<Item = IssueId>) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Issues(changed) => ids.into_iter().any(|id| changed.contains(&id)),
+        }
+    }
 }
 
 /// Counts over the issues that are not in the Trash.
@@ -148,6 +178,55 @@ impl IssueStore {
             server_url: None,
             trackers: Vec::new(),
             tracker: 0,
+            revision: 0,
+            changes: Default::default(),
+        }
+    }
+
+    /// Counts up on every recorded change. A view caches what it computed
+    /// from the store by this number.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// What changed after revision `seen`. Every write to a public field,
+    /// such as the catalog, the connection or the view, must call
+    /// [`Self::touch_all`]. A notify with no recorded change counts as a
+    /// change to everything, so a write that forgets still redraws.
+    pub fn changes_since(&self, seen: u64) -> StoreChange {
+        if seen >= self.revision {
+            return StoreChange::Everything;
+        }
+        // The change right after `seen` must still be here.
+        if self.changes.front().is_none_or(|(rev, _)| *rev > seen + 1) {
+            return StoreChange::Everything;
+        }
+        let mut ids = std::collections::HashSet::new();
+        for (rev, id) in self.changes.iter().rev() {
+            if *rev <= seen {
+                break;
+            }
+            match id {
+                Some(id) => {
+                    ids.insert(*id);
+                }
+                None => return StoreChange::Everything,
+            }
+        }
+        StoreChange::Issues(ids)
+    }
+
+    /// Records a change to everything: the catalog, the connection, the
+    /// trackers, the view or the server address.
+    pub fn touch_all(&mut self) {
+        self.note(None);
+    }
+
+    fn note(&mut self, id: Option<IssueId>) {
+        self.revision += 1;
+        self.changes.push_back((self.revision, id));
+        if self.changes.len() > CHANGES_KEPT {
+            self.changes.pop_front();
         }
     }
 
@@ -164,6 +243,7 @@ impl IssueStore {
     /// New text counts as held text, and its questions replace the old.
     pub fn modify<R>(&mut self, id: IssueId, f: impl FnOnce(&mut Issue) -> R) -> Option<R> {
         let ix = *self.index.get(&id)?;
+        self.note(Some(id));
         let before = self.issues[ix].description.clone();
         let key_before = self.issues[ix].key.clone();
         self.tally.remove(Tally::of(&self.issues[ix]));
@@ -234,7 +314,21 @@ impl IssueStore {
                 next.insert(id, qs);
             }
         }
-        self.questions = next;
+        let old = std::mem::replace(&mut self.questions, next);
+        let changed: Vec<IssueId> = old
+            .iter()
+            .filter(|(id, qs)| self.questions.get(id) != Some(qs))
+            .map(|(id, _)| *id)
+            .chain(
+                self.questions
+                    .keys()
+                    .filter(|id| !old.contains_key(id))
+                    .copied(),
+            )
+            .collect();
+        for id in changed {
+            self.note(Some(id));
+        }
     }
 
     /// Takes question `number` of `id` off the open list, for an answer on
@@ -243,6 +337,8 @@ impl IssueStore {
     pub fn take_open_question(&mut self, id: IssueId, number: u32) -> Option<usize> {
         let open = self.questions.get_mut(&id)?;
         let ix = open.iter().position(|q| q.number == number)?;
+        self.note(Some(id));
+        let open = self.questions.get_mut(&id)?;
         open.remove(ix);
         let left = open.len();
         if left == 0 {
@@ -260,6 +356,7 @@ impl IssueStore {
     /// Puts in a new catalog and maps every issue to it. Returns the names
     /// that changed.
     pub fn remap(&mut self, catalog: Catalog) -> Renames {
+        self.touch_all();
         let renames = catalog.renames_from(&self.catalog);
         for issue in &mut self.issues {
             self.tally.remove(Tally::of(issue));
@@ -276,6 +373,7 @@ impl IssueStore {
     }
 
     pub fn set_git(&mut self, id: IssueId, git: IssueGit) {
+        self.note(Some(id));
         self.git.insert(id, git);
     }
 
@@ -287,6 +385,7 @@ impl IssueStore {
     /// Tests put in relations as a fetch would.
     #[cfg(test)]
     pub fn set_relations(&mut self, id: IssueId, relations: Vec<Relation>) {
+        self.note(Some(id));
         self.relations.insert(id, relations);
     }
 
@@ -312,6 +411,7 @@ impl IssueStore {
         git: IssueGit,
         sessions: Vec<WorkSession>,
     ) {
+        self.note(Some(id));
         self.relations.insert(id, relations);
         self.reviews.insert(id, reviews);
         self.git.insert(id, git);
@@ -392,6 +492,7 @@ impl IssueStore {
     /// Replaces every issue. A later copy of the same ID wins. A copy that
     /// came without text keeps the text the store holds for its version.
     pub fn replace_all(&mut self, issues: Vec<Issue>) {
+        self.touch_all();
         let old = std::mem::take(&mut self.issues);
         let old_index = std::mem::take(&mut self.index);
         let old_keys = std::mem::take(&mut self.keys);
@@ -425,6 +526,7 @@ impl IssueStore {
     /// copy it replaced. A copy without text keeps the text of the copy it
     /// replaces, when the versions match.
     pub fn upsert(&mut self, mut issue: Issue) -> Option<Issue> {
+        self.note(Some(issue.id));
         if let Some(&ix) = self.index.get(&issue.id) {
             issue.keep_text_of(&self.issues[ix]);
         }
@@ -456,6 +558,30 @@ mod tests {
 
     fn id(n: u128) -> IssueId {
         IssueId::from_u128(n)
+    }
+
+    /// LLM-7: the store says which issues changed since a revision, and
+    /// anything else counts as a change to everything.
+    #[test]
+    fn the_store_records_which_issues_changed() {
+        let mut store = IssueStore::new();
+        let seen = store.revision();
+        assert_eq!(store.changes_since(seen), StoreChange::Everything);
+        store.set_git(id(1), IssueGit::default());
+        store.set_git(id(2), IssueGit::default());
+        let change = store.changes_since(seen);
+        assert!(change.touches([id(2)]));
+        assert!(!change.touches([id(3)]));
+        let seen = store.revision();
+        store.touch_all();
+        assert_eq!(store.changes_since(seen), StoreChange::Everything);
+        // Too old: the log forgot what came after it.
+        let seen = store.revision();
+        for _ in 0..=CHANGES_KEPT {
+            store.set_git(id(1), IssueGit::default());
+        }
+        assert_eq!(store.changes_since(seen), StoreChange::Everything);
+        assert!(!store.changes_since(seen + 1).touches([id(2)]));
     }
 
     /// LLM-171: a list copy makes a held detail old, so the task fetches it

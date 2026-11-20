@@ -279,6 +279,11 @@ const CHECK_GROUP: &str = "issue-row-check";
 pub struct IssueList {
     /// The rows' hover fills, drawn under this view (LLM-7).
     pub fill_layer: Entity<crate::shell::motion::FillLayer>,
+    /// The store revision this list last looked at, and the issues its
+    /// last render drew. A store change to none of them does not draw the
+    /// list: a change that moves rows refilters, which draws it (LLM-7).
+    store_seen: u64,
+    drawn: std::cell::RefCell<HashSet<IssueId>>,
     store: Entity<IssueStore>,
     events: ViewEvents,
     /// The workspace's focus, which is the list's focus.
@@ -405,7 +410,15 @@ impl IssueList {
                 .placeholder("Filter: text, status:todo, label:bug, assignee:me")
         });
         // The list is cached, and its rows draw each issue from the store.
-        cx.observe(&store, |_, _, cx| cx.notify()).detach();
+        cx.observe(&store, |this: &mut Self, store, cx| {
+            let store = store.read(cx);
+            let change = store.changes_since(this.store_seen);
+            this.store_seen = store.revision();
+            if change.touches(this.drawn.borrow().iter().copied()) {
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             store,
             events,
@@ -418,6 +431,8 @@ impl IssueList {
             strike_done: true,
             motion: None,
             fill_layer: cx.new(|_| Default::default()),
+            store_seen: 0,
+            drawn: Default::default(),
             visible_start: 0,
             hidden_closed: 0,
             visible: Vec::new(),
@@ -463,6 +478,12 @@ impl IssueList {
     /// The scroll handle of the list. The benchmarks scroll through it.
     pub fn scroll_handle(&self) -> &UniformListScrollHandle {
         &self.scroll
+    }
+
+    /// The issues the last render drew.
+    #[cfg(test)]
+    pub fn drawn(&self) -> HashSet<IssueId> {
+        self.drawn.borrow().clone()
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -1879,6 +1900,7 @@ impl IssueList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.drawn.borrow_mut().insert(id);
         // A shared copy: one counter bump, not a copy of the issue.
         let Some(issue) = self.store.read(cx).get_shared(id) else {
             return div().id(("row", row)).h_7().into_any_element();
@@ -2584,6 +2606,7 @@ impl Render for IssueList {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
         self.fill_layer.update(cx, |layer, _| layer.start_frame());
+        self.drawn.borrow_mut().clear();
         // A list animation draws the list each frame until it ends.
         if let Some(motion) = &mut self.motion {
             let now = cx.background_executor().now();

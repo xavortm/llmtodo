@@ -92,6 +92,12 @@ pub struct TaskView {
     /// The answer fields of owner questions, shared with the inbox.
     answers: Entity<AnswerInputs>,
     open: Option<Detail>,
+    /// The store's revision and keys revision this view last looked at,
+    /// and the other issues its last render showed, such as a parent or a
+    /// dependency. A store change to none of them, nor to the open task,
+    /// does not draw this view (LLM-7).
+    store_seen: (u64, u64),
+    shown: std::cell::RefCell<std::collections::HashSet<IssueId>>,
     /// Focus for the task view while it shows the preview.
     pub focus: FocusHandle,
     preview_scroll: ScrollHandle,
@@ -170,13 +176,20 @@ impl TaskView {
         });
         // The view is cached. It draws the open task from the store, and
         // the answer fields from `answers`.
-        cx.observe(&store, |_, _, cx| cx.notify()).detach();
+        cx.observe(&store, |this: &mut Self, store, cx| {
+            if this.store_changed(&store, cx) {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.observe(&answers, |_, _, cx| cx.notify()).detach();
         Self {
             store,
             events,
             answers,
             open: None,
+            store_seen: (0, 0),
+            shown: Default::default(),
             focus: cx.focus_handle(),
             preview_scroll: ScrollHandle::new(),
             preview_width: Default::default(),
@@ -935,7 +948,11 @@ impl TaskView {
         let radius = theme.radius;
         let border = theme.border;
         let events = self.events.clone();
-        let title = self.store.read(cx).by_key(&parent).map(|p| p.title.clone());
+        let held = self.store.read(cx).by_key(&parent);
+        if let Some(p) = held {
+            self.shown.borrow_mut().insert(p.id);
+        }
+        let title = held.map(|p| p.title.clone());
         let open_key = parent.clone();
         let chip = h_flex()
             .id(SharedString::from(format!("dep-order-{verb}")))
@@ -991,6 +1008,9 @@ impl TaskView {
         let key: SharedString = link.key.to_string().into();
         let store = self.store.read(cx);
         let held = store.by_key(&key);
+        if let Some(held) = held {
+            self.shown.borrow_mut().insert(held.id);
+        }
         let team = key.split('-').next().unwrap_or_default().to_string();
         let status = held.map_or_else(
             || store.catalog.status(&team, &link.status),
@@ -2090,6 +2110,24 @@ impl TaskView {
     }
 }
 
+impl TaskView {
+    /// Whether a store change may change what this view shows: the open
+    /// task or its detail, another task it shows, or the set of keys its
+    /// links read. It records what it saw.
+    fn store_changed(&mut self, store: &Entity<IssueStore>, cx: &App) -> bool {
+        let store = store.read(cx);
+        let change = store.changes_since(self.store_seen.0);
+        let keys = store.keys_revision();
+        let keys_changed = keys != self.store_seen.1;
+        self.store_seen = (store.revision(), keys);
+        let Some(open) = self.open.map(|d| d.issue) else {
+            return change == crate::model::store::StoreChange::Everything;
+        };
+        keys_changed
+            || change.touches(std::iter::once(open).chain(self.shown.borrow().iter().copied()))
+    }
+}
+
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tab_hover.update(cx, |hover, _| hover.start_frame());
@@ -2099,6 +2137,7 @@ impl Render for TaskView {
             // Off, no panel keeps a height to change from.
             self.panel_motion.borrow_mut().clear();
         }
+        self.shown.borrow_mut().clear();
         let Some(detail) = self.open else {
             return div().into_any_element();
         };

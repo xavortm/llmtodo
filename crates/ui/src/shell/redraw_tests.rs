@@ -183,3 +183,114 @@ fn hovering_a_sidebar_row_renders_sidebar_0_times(cx: &mut TestAppContext) {
     assert_eq!(render_count::of::<IssueList>(), 0);
     assert_eq!(render_count::of::<TaskView>(), 0);
 }
+
+/// Opens a window `height` px tall with the sidebar shown and a task open.
+fn open_sized(height: f32, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
+    cx.update(crate::init);
+    let (handle, view) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1400.), px(height)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| cx.new(|cx| Workspace::new(window, cx)),
+        )
+        .expect("open test window")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        if !view.read(cx).sidebar_shown() {
+            window.press("cmd-b", cx);
+        }
+        window.press("j", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    (handle, view)
+}
+
+/// Runs `change`, then draws one frame, and counts renders across both.
+fn after(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    change: impl FnOnce(&mut TestAppContext),
+) {
+    render_count::reset();
+    change(cx);
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| draw(window, cx))
+        .unwrap();
+}
+
+/// A live change to the text of `id`, which no list filter reads.
+fn new_text(view: &Entity<Workspace>, id: llmtodo_core::IssueId, cx: &mut TestAppContext) {
+    view.update(cx, |this, cx| {
+        let mut issue = this.issue(id, cx).clone();
+        issue.description = format!("{}\n\nMore text.", issue.description).into();
+        this.receive_issue(issue, cx);
+    });
+}
+
+#[gpui_kit::test]
+fn a_live_update_to_an_off_screen_issue_renders_neither_task_view_nor_list(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view) = open_sized(420., cx);
+    let (open, drawn, all) = cx.read(|cx| {
+        let this = view.read(cx);
+        let open = this.detail(cx).unwrap().issue;
+        let drawn = this.list().read(cx).drawn();
+        let (issues, _) = this.issues_and_catalog(cx);
+        (open, drawn, issues)
+    });
+    assert!(drawn.contains(&open));
+    let parent_key = all.iter().find(|i| i.id == open).unwrap().parent.clone();
+    let off = all
+        .iter()
+        .find(|i| !drawn.contains(&i.id) && i.id != open && Some(&i.key) != parent_key.as_ref())
+        .expect("an issue below the fold")
+        .id;
+
+    // Opening the task marked its git panel as asked for, without a
+    // notify. The first store change after carries that along.
+    after(handle, cx, |cx| new_text(&view, off, cx));
+    after(handle, cx, |cx| new_text(&view, off, cx));
+    assert_eq!(render_count::of::<TaskView>(), 0);
+    assert_eq!(render_count::of::<IssueList>(), 0);
+
+    // The open task's own text draws the task view.
+    after(handle, cx, |cx| new_text(&view, open, cx));
+    assert!(render_count::of::<TaskView>() > 0);
+}
+
+#[gpui_kit::test]
+fn a_store_change_does_not_rescan_scope_counts_when_nothing_counted_changed(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view) = open_sized(900., cx);
+    let sidebar = cx.read(|cx| view.read(cx).sidebar().clone());
+    let scans = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).scans);
+    let before = scans(cx);
+    let id = cx.read(|cx| view.read(cx).visible_issue(2, cx).id);
+
+    after(handle, cx, |cx| new_text(&view, id, cx));
+    assert_eq!(render_count::of::<Sidebar>(), 0);
+    assert_eq!(scans(cx), before, "no count changed");
+
+    // A move to the Trash changes the counts.
+    after(handle, cx, |cx| {
+        view.update(cx, |this, cx| {
+            let mut issue = this.issue(id, cx).clone();
+            issue.deleted = true;
+            this.receive_issue(issue, cx);
+        })
+    });
+    assert_eq!(render_count::of::<Sidebar>(), 1);
+    assert_eq!(scans(cx), before + 1);
+}
