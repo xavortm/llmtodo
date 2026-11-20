@@ -123,11 +123,14 @@ pub enum ColorTheme {
     Gruvbox,
     /// Apple's system colors, Xcode's code colors and the system font.
     MacOs,
+    /// Catppuccin: Latte in light mode, Mocha in dark mode, with the mauve
+    /// accent. See `assets/themes/NOTICE.md`.
+    Catppuccin,
 }
 
 impl ColorTheme {
     /// Every theme, in the order the Settings picker shows them.
-    pub const ALL: [Self; 3] = [Self::Default, Self::Gruvbox, Self::MacOs];
+    pub const ALL: [Self; 4] = [Self::Default, Self::Gruvbox, Self::MacOs, Self::Catppuccin];
 
     /// The name in `ui.json` and in the `:theme` command.
     pub fn id(self) -> &'static str {
@@ -135,6 +138,7 @@ impl ColorTheme {
             Self::Default => "default",
             Self::Gruvbox => "gruvbox",
             Self::MacOs => "macos",
+            Self::Catppuccin => "catppuccin",
         }
     }
 
@@ -147,6 +151,7 @@ impl ColorTheme {
             Self::Default => "Default",
             Self::Gruvbox => "Gruvbox",
             Self::MacOs => "macOS",
+            Self::Catppuccin => "Catppuccin",
         }
     }
 
@@ -173,6 +178,7 @@ impl ColorTheme {
             }
             Self::Gruvbox => GRUVBOX.with(|set| pick(set, mode)),
             Self::MacOs => MACOS.with(|set| pick(set, mode)),
+            Self::Catppuccin => CATPPUCCIN.with(|set| pick(set, mode)),
         }
     }
 
@@ -181,7 +187,7 @@ impl ColorTheme {
     pub fn ui_font(self) -> &'static str {
         match self {
             Self::MacOs => ".SystemUIFont",
-            Self::Default | Self::Gruvbox => UI_FONT,
+            Self::Default | Self::Gruvbox | Self::Catppuccin => UI_FONT,
         }
     }
 }
@@ -191,6 +197,8 @@ thread_local! {
         load_set(include_str!("../../assets/themes/gruvbox.json"));
     static MACOS: Vec<Rc<ThemeConfig>> =
         load_set(include_str!("../../assets/themes/macos.json"));
+    static CATPPUCCIN: Vec<Rc<ThemeConfig>> =
+        load_set(include_str!("../../assets/themes/catppuccin.json"));
 }
 
 fn load_set(json: &str) -> Vec<Rc<ThemeConfig>> {
@@ -285,9 +293,10 @@ fn style_colors(theme: &mut Theme, name: ColorTheme) {
     theme.button_primary_foreground =
         text_on(theme.button_primary, theme.button_primary_foreground, theme);
 
-    // Apple's system green is too faint on white rows for the done check.
-    // It keeps 3:1, the WCAG rule for icons, on every row fill.
-    if name == ColorTheme::MacOs {
+    // Apple's system green and Latte's green are too faint on light rows
+    // for the done check. It keeps 3:1, the WCAG rule for icons, on every
+    // row fill.
+    if matches!(name, ColorTheme::MacOs | ColorTheme::Catppuccin) {
         theme.success = ensure_contrast(theme.success, &row_fills(theme), 3.0);
     }
 }
@@ -575,19 +584,33 @@ mod tests {
 
     /// LLM-211: the done check reads on every row fill, at 3:1 or more.
     #[gpui_kit::test]
-    fn macos_done_check_keeps_3_to_1_on_every_row(cx: &mut gpui_kit::TestAppContext) {
+    fn the_done_check_keeps_3_to_1_on_every_row(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
-        for mode in [ThemeMode::Dark, ThemeMode::Light] {
-            cx.update(|cx| {
-                set_theme(ColorTheme::MacOs, mode, cx);
-                let t = cx.theme();
-                for (ix, fill) in row_fills(t).into_iter().enumerate() {
-                    let fill = blend(fill, t.background);
-                    let ratio = contrast(t.success, fill);
-                    assert!(ratio >= 3.0, "{mode:?} fill {ix}: {ratio:.2}");
-                }
-            });
+        for name in [ColorTheme::MacOs, ColorTheme::Catppuccin] {
+            for mode in [ThemeMode::Dark, ThemeMode::Light] {
+                cx.update(|cx| {
+                    set_theme(name, mode, cx);
+                    let t = cx.theme();
+                    for (ix, fill) in row_fills(t).into_iter().enumerate() {
+                        let fill = blend(fill, t.background);
+                        let ratio = contrast(t.success, fill);
+                        assert!(ratio >= 3.0, "{name:?} {mode:?} fill {ix}: {ratio:.2}");
+                    }
+                });
+            }
         }
+    }
+
+    #[gpui_kit::test]
+    fn catppuccin_is_latte_in_light_and_mocha_in_dark(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            set_theme(ColorTheme::Catppuccin, ThemeMode::Dark, cx);
+            assert_eq!(cx.theme().theme_name().as_ref(), "Catppuccin Mocha");
+            set_mode(ThemeMode::Light, cx);
+            assert_eq!(cx.theme().theme_name().as_ref(), "Catppuccin Latte");
+            assert_eq!(cx.theme().font_family.as_ref(), UI_FONT);
+        });
     }
 
     #[gpui_kit::test]
@@ -641,8 +664,9 @@ mod tests {
         }
         assert_eq!(ColorTheme::from_id("nope"), None);
         assert_eq!(ColorTheme::Default.next(true), ColorTheme::Gruvbox);
-        assert_eq!(ColorTheme::Default.next(false), ColorTheme::MacOs);
+        assert_eq!(ColorTheme::Default.next(false), ColorTheme::Catppuccin);
         assert_eq!(ColorTheme::Gruvbox.next(true), ColorTheme::MacOs);
-        assert_eq!(ColorTheme::MacOs.next(true), ColorTheme::Default);
+        assert_eq!(ColorTheme::MacOs.next(true), ColorTheme::Catppuccin);
+        assert_eq!(ColorTheme::Catppuccin.next(true), ColorTheme::Default);
     }
 }

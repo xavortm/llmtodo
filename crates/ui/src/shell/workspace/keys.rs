@@ -366,5 +366,6 @@ pub(super) const COMMANDS: &[&str] = &[
     "theme default",
     "theme gruvbox",
     "theme macos",
+    "theme catppuccin",
     "split auto",
 ];

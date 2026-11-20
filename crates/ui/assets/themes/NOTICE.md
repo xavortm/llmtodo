@@ -8,6 +8,10 @@
   follow Apple's published system colors for macOS and Xcode's default code
   colors. It contains no Apple artwork or fonts. The theme asks for the system
   font, which macOS supplies.
+- `catppuccin.json`: written for llmtodo. The colors are the Latte (light) and
+  Mocha (dark) palettes from <https://catppuccin.com/palette>, © 2021 Catppuccin,
+  MIT license. Code colors follow Catppuccin's style guide. The accent is mauve,
+  Catppuccin's default.
 
 The app applies its own contrast rules over these colors at run time. See
 `crates/ui/src/shell/theme.rs`.

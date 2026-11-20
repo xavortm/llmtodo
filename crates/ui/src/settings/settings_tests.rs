@@ -281,6 +281,18 @@ fn a_click_on_a_theme_preview_picks_it_and_keeps_the_mode(cx: &mut TestAppContex
         cx.read(|cx| cx.theme().font_family.to_string()),
         ".SystemUIFont"
     );
+
+    click(handle, "settings-theme-catppuccin", cx);
+    assert_eq!(store.load().color_theme, "catppuccin");
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().to_string()),
+        "Catppuccin Latte"
+    );
+    click(handle, "settings-row-dark", cx);
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().to_string()),
+        "Catppuccin Mocha"
+    );
 }
 
 #[gpui_kit::test]
