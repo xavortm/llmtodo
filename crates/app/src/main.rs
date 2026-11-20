@@ -24,13 +24,12 @@ fn main() {
         app_icon::set_dock_icon();
         let store = settings::SettingsStore::default_location();
         let saved = store.load();
-        let mode = if saved.theme == "light" {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
-        };
         let color_theme = theme::ColorTheme::from_id(&saved.color_theme).unwrap_or_default();
-        theme::set_theme(color_theme, mode, cx);
+        theme::set_theme(color_theme, ThemeMode::Dark, cx);
+        // Auto reads macOS's appearance before the window opens, so the
+        // first frame already has the right mode.
+        let appearance = theme::Appearance::from_id(&saved.theme).unwrap_or_default();
+        theme::set_appearance(appearance, cx.window_appearance(), cx);
         app_menus::set_menus(cx);
         // Reopen where the window was, at its last size.
         let bounds = match saved.window {

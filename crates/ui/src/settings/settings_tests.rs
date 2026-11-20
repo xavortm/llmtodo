@@ -182,9 +182,46 @@ fn a_click_on_a_switch_row_applies_and_saves_at_once(cx: &mut TestAppContext) {
         cx.read(|cx| view.read(cx).current_settings(cx).theme),
         "dark"
     );
-    click(handle, "settings-row-dark", cx);
+    click(handle, "settings-appearance-light", cx);
     assert_eq!(store.load().theme, "light");
     assert!(shown(&view, cx), "a switch does not leave the view");
+}
+
+#[gpui_kit::test]
+fn the_appearance_control_picks_dark_auto_or_light(cx: &mut TestAppContext) {
+    use gpui_kit::component::ActiveTheme as _;
+    let is_dark = |cx: &TestAppContext| cx.read(|cx| cx.theme().is_dark());
+
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
+    run(handle, &view, "settings", cx);
+    assert!(is_dark(cx));
+
+    // The test window reports a light macOS appearance.
+    click(handle, "settings-appearance-auto", cx);
+    assert_eq!(store.load().theme, "auto");
+    assert!(!is_dark(cx), "auto follows macOS");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).settings_view().read(cx).selected_row()),
+        Row::Appearance
+    );
+
+    click(handle, "settings-appearance-dark", cx);
+    assert_eq!(store.load().theme, "dark");
+    assert!(is_dark(cx));
+
+    // h and l step along the control and stop at its ends.
+    press(handle, &["l"], cx);
+    assert_eq!(store.load().theme, "auto");
+    press(handle, &["l", "l"], cx);
+    assert_eq!(store.load().theme, "light");
+    press(handle, &["enter"], cx);
+    assert_eq!(store.load().theme, "dark", "enter wraps around");
+
+    run(handle, &view, "theme auto", cx);
+    assert_eq!(store.load().theme, "auto");
+    run(handle, &view, "theme dark", cx);
+    assert_eq!(store.load().theme, "dark");
 }
 
 #[gpui_kit::test]
@@ -223,7 +260,7 @@ fn the_keyboard_moves_flips_and_steps(cx: &mut TestAppContext) {
     assert_eq!(text, "110");
 
     press(handle, &["ctrl-p"], cx);
-    assert_eq!(selected(cx), Row::DarkMode);
+    assert_eq!(selected(cx), Row::Appearance);
     press(handle, &["ctrl-p", "ctrl-p", "ctrl-p"], cx);
     assert_eq!(selected(cx), Row::HideClosedDays);
     // The days row is off until the setting is on.
@@ -248,7 +285,7 @@ fn a_click_on_a_theme_preview_picks_it_and_keeps_the_mode(cx: &mut TestAppContex
         "Gruvbox Dark"
     );
 
-    click(handle, "settings-row-dark", cx);
+    click(handle, "settings-appearance-light", cx);
     assert_eq!(store.load().theme, "light");
     assert_eq!(
         store.load().color_theme,
@@ -288,7 +325,7 @@ fn a_click_on_a_theme_preview_picks_it_and_keeps_the_mode(cx: &mut TestAppContex
         cx.read(|cx| cx.theme().theme_name().to_string()),
         "Catppuccin Latte"
     );
-    click(handle, "settings-row-dark", cx);
+    click(handle, "settings-appearance-dark", cx);
     assert_eq!(
         cx.read(|cx| cx.theme().theme_name().to_string()),
         "Catppuccin Mocha"

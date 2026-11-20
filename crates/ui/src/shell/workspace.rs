@@ -20,7 +20,7 @@ use std::sync::Arc;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _, ThemeMode, TitleBar,
+    ActiveTheme as _, Icon, Selectable as _, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{EditorState, InputEvent},
@@ -576,6 +576,12 @@ impl Workspace {
                     .update(cx, |mascot, cx| mascot.set_paused(hidden, cx));
             }),
         );
+        // On Auto, the theme follows macOS between light and dark.
+        subscriptions.push(cx.observe_window_appearance(window, |_, window, cx| {
+            if crate::shell::theme::follow_system(window.appearance(), cx) {
+                window.refresh();
+            }
+        }));
         // The window frame, saved when it moves or resizes.
         subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
             this.window_moved(frame_of(window), cx);
@@ -1493,12 +1499,7 @@ impl Workspace {
             .map(|i| i.key.to_string())
             .or_else(|| self.restore_task.clone());
         UiSettings {
-            theme: if cx.theme().is_dark() {
-                "dark"
-            } else {
-                "light"
-            }
-            .into(),
+            theme: crate::shell::theme::appearance(cx).id().into(),
             color_theme: crate::shell::theme::color_theme(cx).id().into(),
             sort: match list.sort.0 {
                 SortKey::Key => "key",
@@ -2400,14 +2401,14 @@ impl Workspace {
         self.persist(cx);
     }
 
-    /// The Settings switch and `:theme` both come here.
-    pub fn set_dark(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = if dark {
-            ThemeMode::Dark
-        } else {
-            ThemeMode::Light
-        };
-        crate::shell::theme::set_mode(mode, cx);
+    /// The Settings appearance control and `:theme` both come here.
+    pub fn set_appearance(
+        &mut self,
+        choice: crate::shell::theme::Appearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::shell::theme::set_appearance(choice, window.appearance(), cx);
         window.refresh();
         self.persist(cx);
     }

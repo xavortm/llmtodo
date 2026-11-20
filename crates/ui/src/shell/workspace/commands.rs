@@ -325,8 +325,9 @@ impl Workspace {
                 self.edit_description(&EditDescription, window, cx);
                 Some(String::new())
             }
-            ("theme", _) if arg == "dark" || arg == "light" => {
-                self.set_dark(arg == "dark", window, cx);
+            ("theme", _) if crate::shell::theme::Appearance::from_id(arg).is_some() => {
+                let choice = crate::shell::theme::Appearance::from_id(arg).unwrap_or_default();
+                self.set_appearance(choice, window, cx);
                 Some(format!("Theme: {arg}"))
             }
             ("theme", _) if crate::shell::theme::ColorTheme::from_id(arg).is_some() => {

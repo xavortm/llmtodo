@@ -13,7 +13,9 @@
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex,
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
+    button::{Button, ButtonGroup},
+    h_flex,
     input::{InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, StepAction},
     switch::Switch,
     tag::Tag,
@@ -73,7 +75,7 @@ pub enum Row {
     HideClosedDays,
     Vim,
     Theme,
-    DarkMode,
+    Appearance,
     Zoom,
     OpenLast,
     Mascot,
@@ -86,7 +88,7 @@ const ROWS: [Row; 10] = [
     Row::HideClosedDays,
     Row::Vim,
     Row::Theme,
-    Row::DarkMode,
+    Row::Appearance,
     Row::Zoom,
     Row::OpenLast,
     Row::Mascot,
@@ -101,7 +103,7 @@ impl Row {
             Self::HideClosedDays => "settings-row-hide-days",
             Self::Vim => "settings-row-vim",
             Self::Theme => "settings-row-theme",
-            Self::DarkMode => "settings-row-dark",
+            Self::Appearance => "settings-row-appearance",
             Self::Zoom => "settings-row-zoom",
             Self::OpenLast => "settings-row-open-last",
             Self::Mascot => "settings-row-mascot",
@@ -116,7 +118,7 @@ impl Row {
             Self::HideClosedDays => "Hide after",
             Self::Vim => "Vim keys in the editor",
             Self::Theme => "Theme",
-            Self::DarkMode => "Dark mode",
+            Self::Appearance => "Appearance",
             Self::Zoom => "Zoom",
             Self::OpenLast => "Open the last view at start",
             Self::Mascot => "Sudo the cat",
@@ -138,10 +140,14 @@ impl Row {
         self == Self::StrikeDone
     }
 
-    /// A number row holds its own field, and the theme row its previews.
-    /// Clicking the row itself does nothing, so it gets no hover change.
+    /// A number row holds its own field, the theme row its previews and
+    /// the appearance row its buttons. Clicking the row itself does
+    /// nothing, so it gets no hover change.
     fn is_switch(self) -> bool {
-        !matches!(self, Self::HideClosedDays | Self::Zoom | Self::Theme)
+        !matches!(
+            self,
+            Self::HideClosedDays | Self::Zoom | Self::Theme | Self::Appearance
+        )
     }
 }
 
@@ -386,6 +392,10 @@ impl SettingsView {
                 let next = theme::color_theme(cx).next(up);
                 self.write(ViewEvent::SetColorTheme(next), window, cx);
             }
+            Row::Appearance => {
+                let next = theme::appearance(cx).step(up);
+                self.write(ViewEvent::SetAppearance(next), window, cx);
+            }
             _ => {}
         }
     }
@@ -401,9 +411,9 @@ impl SettingsView {
                 let next = theme::color_theme(cx).next(true);
                 self.write(ViewEvent::SetColorTheme(next), window, cx);
             }
-            Row::DarkMode => {
-                let dark = values.theme != "dark";
-                self.write(ViewEvent::SetDark(dark), window, cx);
+            Row::Appearance => {
+                let next = theme::appearance(cx).cycle();
+                self.write(ViewEvent::SetAppearance(next), window, cx);
             }
             Row::OpenLast => {
                 self.write(
@@ -457,10 +467,11 @@ impl SettingsView {
                  and sleeps when nothing happens"
                 .into(),
             Row::Theme => "Every theme has a light and a dark mode".into(),
+            Row::Appearance => "Auto follows macOS".into(),
             Row::Animations => "Short movement when panels open, menus appear, and you hover or click"
                 .into(),
             Row::StrikeDone => "A light line through the titles of Done tasks in the list".into(),
-            Row::DarkMode | Row::Zoom => return None,
+            Row::Zoom => return None,
         };
         Some(text)
     }
@@ -525,7 +536,8 @@ impl SettingsView {
             Row::Vim => switch(values.vim_editor),
             // The previews sit under the title, see `render_row`.
             Row::Theme => div().into_any_element(),
-            Row::DarkMode => switch(values.theme == "dark"),
+            // Built in `render_row`, which can listen for its clicks.
+            Row::Appearance => div().into_any_element(),
             Row::Zoom => self.number_field(row, &self.zoom, "%", false, window, cx),
             Row::OpenLast => switch(values.open_last_view),
             Row::Mascot => switch(values.mascot),
@@ -542,7 +554,11 @@ impl SettingsView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let control = self.control(row, values, window, cx);
+        let control = if row == Row::Appearance {
+            self.appearance_control(cx)
+        } else {
+            self.control(row, values, window, cx)
+        };
         let help = self.help(row, values, cx);
         let selected = ix == self.selected && self.focus.is_focused(window);
         let theme = cx.theme();
@@ -611,6 +627,43 @@ impl SettingsView {
                     }),
             )
             .child(div().flex_none().child(control))
+            .into_any_element()
+    }
+
+    /// Dark, Auto and Light as one segmented control. The picked one stays
+    /// pressed.
+    fn appearance_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = theme::appearance(cx);
+        let row = ROWS.iter().position(|r| *r == Row::Appearance).unwrap_or(0);
+        theme::Appearance::ALL
+            .into_iter()
+            .fold(
+                ButtonGroup::new("settings-appearance")
+                    .outline()
+                    .compact()
+                    .small(),
+                |group, choice| {
+                    group.child(
+                        Button::new(SharedString::from(format!(
+                            "settings-appearance-{}",
+                            choice.id()
+                        )))
+                        .label(choice.label())
+                        .tab_stop(false)
+                        .selected(choice == current),
+                    )
+                },
+            )
+            .on_click(cx.listener(move |this, clicked: &Vec<usize>, window, cx| {
+                let Some(choice) = clicked
+                    .first()
+                    .and_then(|ix| theme::Appearance::ALL.get(*ix))
+                else {
+                    return;
+                };
+                this.selected = row;
+                this.write(ViewEvent::SetAppearance(*choice), window, cx);
+            }))
             .into_any_element()
     }
 

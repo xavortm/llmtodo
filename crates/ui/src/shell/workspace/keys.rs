@@ -362,6 +362,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "mine",
     "theirs",
     "theme dark",
+    "theme auto",
     "theme light",
     "theme default",
     "theme gruvbox",

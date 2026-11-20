@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Theme, ThemeConfig, ThemeMode, ThemeRegistry, ThemeSet,
 };
-use gpui_kit::{App, FontWeight, Hsla, Rgba, StyleRefinement, Styled as _};
+use gpui_kit::{App, FontWeight, Hsla, Rgba, StyleRefinement, Styled as _, WindowAppearance};
 
 pub const UI_FONT: &str = "IBM Plex Sans";
 pub const CODE_FONT: &str = "Lilex";
@@ -224,6 +224,95 @@ impl gpui_kit::Global for CurrentTheme {}
 
 pub fn color_theme(cx: &App) -> ColorTheme {
     cx.try_global::<CurrentTheme>().map_or_default(|t| t.0)
+}
+
+/// How the app picks the light or dark mode of its theme. `Auto` follows
+/// the macOS appearance, and changes along with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Appearance {
+    #[default]
+    Dark,
+    Auto,
+    Light,
+}
+
+impl Appearance {
+    /// In the order the Settings control shows them.
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Auto, Self::Light];
+
+    /// The name in `ui.json`'s `theme` field and in the `:theme` command.
+    /// Files from before `Auto` hold `dark` or `light`, so they still load.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Auto => "auto",
+            Self::Light => "light",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.id() == id)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "Dark",
+            Self::Auto => "Auto",
+            Self::Light => "Light",
+        }
+    }
+
+    /// The choice beside this one. It stops at the ends, like the control.
+    pub fn step(self, forward: bool) -> Self {
+        let ix = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        let ix = if forward {
+            (ix + 1).min(Self::ALL.len() - 1)
+        } else {
+            ix.saturating_sub(1)
+        };
+        Self::ALL[ix]
+    }
+
+    /// The choice after this one, wrapping at the end.
+    pub fn cycle(self) -> Self {
+        let ix = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
+        Self::ALL[(ix + 1) % Self::ALL.len()]
+    }
+
+    /// The mode to show while macOS shows `system`.
+    pub fn mode(self, system: WindowAppearance) -> ThemeMode {
+        match self {
+            Self::Dark => ThemeMode::Dark,
+            Self::Light => ThemeMode::Light,
+            Self::Auto => system.into(),
+        }
+    }
+}
+
+struct CurrentAppearance(Appearance);
+
+impl gpui_kit::Global for CurrentAppearance {}
+
+pub fn appearance(cx: &App) -> Appearance {
+    cx.try_global::<CurrentAppearance>().map_or_default(|a| a.0)
+}
+
+/// Picks Dark, Auto or Light, and shows the mode it gives while macOS
+/// shows `system`.
+pub fn set_appearance(choice: Appearance, system: WindowAppearance, cx: &mut App) {
+    cx.set_global(CurrentAppearance(choice));
+    set_mode(choice.mode(system), cx);
+}
+
+/// On `Auto`, matches the mode to a new macOS appearance. Returns true when
+/// the mode changed.
+pub fn follow_system(system: WindowAppearance, cx: &mut App) -> bool {
+    let mode = appearance(cx).mode(system);
+    if appearance(cx) != Appearance::Auto || cx.theme().is_dark() == mode.is_dark() {
+        return false;
+    }
+    set_mode(mode, cx);
+    true
 }
 
 /// Switches between light and dark and keeps the current theme.
@@ -655,6 +744,38 @@ mod tests {
             set_color_theme(ColorTheme::Default, cx);
             assert!(!cx.theme().is_dark(), "the theme switch keeps the mode");
         });
+    }
+
+    #[gpui_kit::test]
+    fn auto_follows_macos_and_dark_or_light_do_not(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            set_theme(ColorTheme::Catppuccin, ThemeMode::Dark, cx);
+            set_appearance(Appearance::Auto, WindowAppearance::Light, cx);
+            assert_eq!(cx.theme().theme_name().as_ref(), "Catppuccin Latte");
+
+            assert!(follow_system(WindowAppearance::VibrantDark, cx));
+            assert_eq!(cx.theme().theme_name().as_ref(), "Catppuccin Mocha");
+            assert!(!follow_system(WindowAppearance::Dark, cx), "no change");
+
+            set_appearance(Appearance::Dark, WindowAppearance::Dark, cx);
+            assert!(!follow_system(WindowAppearance::Light, cx));
+            assert!(cx.theme().is_dark(), "dark stays dark");
+            assert_eq!(color_theme(cx), ColorTheme::Catppuccin);
+        });
+    }
+
+    #[test]
+    fn appearance_ids_round_trip_and_old_files_load() {
+        for choice in Appearance::ALL {
+            assert_eq!(Appearance::from_id(choice.id()), Some(choice));
+        }
+        assert_eq!(Appearance::from_id("dark"), Some(Appearance::Dark));
+        assert_eq!(Appearance::from_id("light"), Some(Appearance::Light));
+        assert_eq!(Appearance::from_id("nope"), None);
+        assert_eq!(Appearance::Dark.step(false), Appearance::Dark);
+        assert_eq!(Appearance::Light.step(true), Appearance::Light);
+        assert_eq!(Appearance::Light.cycle(), Appearance::Dark);
     }
 
     #[test]
