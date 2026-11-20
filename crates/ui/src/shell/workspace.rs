@@ -2322,6 +2322,11 @@ impl Workspace {
         &self.sidebar
     }
 
+    #[cfg(test)]
+    pub fn filter_panel(&self) -> &Entity<crate::issues::filter_panel::FilterPanelView> {
+        &self.filter_panel
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn settings_view(&self) -> &Entity<SettingsView> {
         &self.settings_view

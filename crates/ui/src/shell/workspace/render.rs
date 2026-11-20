@@ -139,8 +139,17 @@ impl Workspace {
                     .child(cached(&self.list)),
             )
             .when(filters_open, |this| {
+                // Cached, over its background and its rows' hover fills,
+                // so a hover or a list change does not draw it (LLM-7).
+                let fills = self.filter_panel.read(cx).fill_layer.clone();
                 this.child(crate::shell::motion::slide_in(
-                    div().h_full().flex_none().child(self.filter_panel.clone()),
+                    div()
+                        .h_full()
+                        .flex_none()
+                        .w(gpui_kit::rems(crate::issues::filter_panel::PANEL_REM))
+                        .bg(cx.theme().background)
+                        .child(fills)
+                        .child(cached(&self.filter_panel)),
                     "filter-panel-slide",
                     1.5,
                     true,

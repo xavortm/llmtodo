@@ -294,3 +294,57 @@ fn a_store_change_does_not_rescan_scope_counts_when_nothing_counted_changed(
     assert_eq!(render_count::of::<Sidebar>(), 1);
     assert_eq!(scans(cx), before + 1);
 }
+
+/// LLM-7: the filter panel is drawn cached. A list change, a hover and a
+/// store change that leaves its rows the same do not draw it, and an arrow
+/// key draws it without walking the issues again.
+#[gpui_kit::test]
+fn the_filter_panel_draws_only_for_what_it_shows(cx: &mut TestAppContext) {
+    let (handle, view) = open_animated(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("filter-panel", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    hover(handle, "project-name", cx);
+    settle(handle, cx);
+    let (panel, list) = cx.read(|cx| {
+        let this = view.read(cx);
+        (this.filter_panel().clone(), this.list().clone())
+    });
+    assert!(cx.read(|cx| panel.read(cx).is_open()));
+    let builds = |cx: &TestAppContext| cx.read(|cx| panel.read(cx).builds.get());
+    type Panel = crate::issues::filter_panel::FilterPanelView;
+
+    // The list draws again: the panel does not.
+    after(handle, cx, |cx| list.update(cx, |_, cx| cx.notify()));
+    assert_eq!(render_count::of::<IssueList>(), 1);
+    assert_eq!(render_count::of::<Panel>(), 0);
+
+    // A hover and its fade draw only the fill layer.
+    render_count::reset();
+    hover(handle, "filter-row-Label-bug", cx);
+    hover(handle, "filter-row-Label-feature", cx);
+    while next_frame(handle, cx) > 0 {
+        wait(16, cx);
+    }
+    assert_eq!(render_count::of::<Panel>(), 0);
+    assert!(render_count::of::<FillLayer>() > 0);
+
+    // An arrow key moves the highlight from the memo.
+    let before = builds(cx);
+    after(handle, cx, |cx| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::issues::filter_panel::FilterPanelDown), cx)
+        })
+        .unwrap()
+    });
+    assert_eq!(render_count::of::<Panel>(), 1);
+    assert_eq!(builds(cx), before, "no walk over the issues");
+
+    // New text on a task changes no row of the panel.
+    let id = cx.read(|cx| view.read(cx).visible_issue(2, cx).id);
+    after(handle, cx, |cx| new_text(&view, id, cx));
+    assert_eq!(render_count::of::<Panel>(), 0);
+}
