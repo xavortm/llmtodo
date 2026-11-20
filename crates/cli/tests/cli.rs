@@ -998,6 +998,7 @@ async fn projects_remember_their_local_folder() {
         assert!(
             std::process::Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
                 .args(args)
                 .current_dir(&repo)
                 .status()

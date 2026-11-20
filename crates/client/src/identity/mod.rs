@@ -11,7 +11,6 @@ mod active_time;
 mod claude_code;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use llmtodo_api_types::{ActorInput, ActorKind, ClientContext, TokenUsage, VERSION};
 
@@ -85,6 +84,45 @@ impl Identity {
     }
 }
 
+/// The host name the client stores with claims and work sessions:
+/// `LLMTODO_HOST`, else this machine's short host name.
+pub fn local_host() -> Option<String> {
+    env("LLMTODO_HOST").or_else(short_hostname)
+}
+
+/// This machine's host name without its domain, as `hostname -s` prints
+/// it. It is read once per process, through `gethostname` rather than a
+/// `hostname` subprocess.
+pub fn short_hostname() -> Option<String> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(read_hostname).clone()
+}
+
+/// Cuts the domain off a host name: `mac.local` becomes `mac`.
+fn strip_domain(name: &str) -> Option<String> {
+    let short = name.trim().split('.').next().unwrap_or("").trim();
+    (!short.is_empty()).then(|| short.to_string())
+}
+
+#[cfg(unix)]
+fn read_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for `buf.len()` bytes, and gethostname
+    // writes at most that many.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    strip_domain(&String::from_utf8_lossy(&buf[..end]))
+}
+
+#[cfg(not(unix))]
+fn read_hostname() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    strip_domain(&String::from_utf8_lossy(&out.stdout))
+}
+
 fn env(k: &str) -> Option<String> {
     std::env::var(k)
         .ok()
@@ -92,8 +130,8 @@ fn env(k: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Finds who is calling from `cwd`. `root` is the git root of `cwd`, from
-/// [`crate::git::git_root`], or None outside a repo. `repo_actor` is the
+/// Finds who is calling from `cwd`. `checkout` is the git checkout of
+/// `cwd`, from [`crate::git::checkout`], or None outside a repo. `repo_actor` is the
 /// `actor` line of the repo's `.llmtodo.toml`, in the format of
 /// `LLMTODO_ACTOR`.
 ///
@@ -102,9 +140,10 @@ fn env(k: &str) -> Option<String> {
 /// agent into the owner. It may still set agent details.
 pub fn detect(
     cwd: &Path,
-    root: Option<&Path>,
+    checkout: Option<&crate::git::Checkout>,
     repo_actor: Option<&str>,
 ) -> Result<Identity, String> {
+    let root = checkout.map(|c| c.root.as_path());
     // `AI_AGENT` looks like `claude-code_2-1-322_agent`. Any harness that
     // sets it marks an agent, even one with no implementation here.
     let ai_agent = env("AI_AGENT");
@@ -169,21 +208,15 @@ pub fn detect(
         }
     }
 
-    let (worktree, branch, head) = match root {
-        Some(r) => {
-            let (branch, head) = crate::git::branch_and_head(r);
-            (Some(r.display().to_string()), branch, head)
-        }
+    let (worktree, branch, head) = match checkout {
+        Some(c) => (
+            Some(c.root.display().to_string()),
+            c.branch.clone(),
+            c.head.clone(),
+        ),
         None => (None, None, None),
     };
-    let host = env("LLMTODO_HOST").or_else(|| {
-        Command::new("hostname")
-            .arg("-s")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|h| !h.is_empty())
-    });
+    let host = local_host();
     let context = ClientContext {
         actor,
         session_id,
@@ -255,6 +288,25 @@ mod tests {
             Some("Sam")
         );
         assert!(parse_actor("robot").is_err());
+    }
+
+    #[test]
+    fn host_names_lose_their_domain() {
+        assert_eq!(strip_domain("mac.local\n").as_deref(), Some("mac"));
+        assert_eq!(strip_domain("mac").as_deref(), Some("mac"));
+        assert_eq!(strip_domain(""), None);
+        assert_eq!(strip_domain(".local"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn short_hostname_matches_hostname_s() {
+        let out = std::process::Command::new("hostname")
+            .arg("-s")
+            .output()
+            .unwrap();
+        let want = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(short_hostname().unwrap_or_default(), want);
     }
 
     #[test]

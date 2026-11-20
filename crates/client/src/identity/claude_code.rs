@@ -117,21 +117,91 @@ fn model_from_transcript(path: &Path) -> Option<String> {
     (m.starts_with("claude") && m != "<synthetic>").then(|| m.to_string())
 }
 
-/// What [`cached_transcript_usage`] keeps between calls.
+/// What [`cached_transcript_usage`] keeps between calls. Its size stays
+/// bounded: old requests and old time marks fold into running totals, so
+/// a long session does not rewrite an ever larger file on each write.
 #[derive(Debug, Default, serde::Serialize, Deserialize)]
 struct UsageCache {
     /// Bumped when the format or the parsing changes.
     format: u32,
     /// Bytes parsed so far, by file. Always the end of a whole line.
     offsets: std::collections::BTreeMap<String, u64>,
-    /// The last usage line seen for each request ID, with its model key.
-    requests: std::collections::BTreeMap<String, (String, llmtodo_api_types::TokenUsage)>,
-    /// The time marks of every line so far. See [`super::active_time`].
+    /// The usage of every request that left `recent`, by model key.
+    #[serde(default)]
+    settled: UsageMap,
+    /// The latest requests, oldest first: the request ID, the model key
+    /// and the last usage line seen for it. One request can span several
+    /// lines, and those lines may fall in two calls, so a request stays
+    /// here until [`RECENT_REQUESTS`] newer ones arrived.
+    #[serde(default)]
+    recent: Vec<(String, String, llmtodo_api_types::TokenUsage)>,
+    /// The active milliseconds between marks that left `marks`.
+    #[serde(default)]
+    settled_ms: i64,
+    /// The time marks of the recent lines, sorted by time. The first one
+    /// is the anchor of the settled part. See [`super::active_time`].
     #[serde(default)]
     marks: Vec<super::active_time::Mark>,
 }
 
-const USAGE_CACHE_FORMAT: u32 = 2;
+const USAGE_CACHE_FORMAT: u32 = 3;
+
+/// How many requests [`UsageCache::recent`] keeps by ID.
+const RECENT_REQUESTS: usize = 256;
+
+/// Marks older than this, before the newest mark, fold into
+/// [`UsageCache::settled_ms`]. A later call reads only lines written after
+/// the previous one, so no new mark lands that far back.
+const MARK_SETTLE_MS: i64 = 60 * 60 * 1000;
+
+impl UsageCache {
+    /// Records the latest usage line of one request.
+    fn record(&mut self, id: String, model: String, usage: llmtodo_api_types::TokenUsage) {
+        // A repeated ID is nearly always the latest request, so look from
+        // the end.
+        if let Some(r) = self.recent.iter_mut().rev().find(|r| r.0 == id) {
+            r.1 = model;
+            r.2 = usage;
+        } else {
+            self.recent.push((id, model, usage));
+        }
+    }
+
+    /// Folds the requests and the marks that can no longer change into the
+    /// running totals.
+    fn settle(&mut self) {
+        if self.recent.len() > RECENT_REQUESTS {
+            let old = self.recent.len() - RECENT_REQUESTS;
+            for (_, model, u) in self.recent.drain(..old) {
+                self.settled.entry(model).or_default().add(&u);
+            }
+        }
+        self.marks.sort_unstable_by_key(|m| m.0);
+        let Some(newest) = self.marks.last().map(|m| m.0) else {
+            return;
+        };
+        // Keep the last old mark as the anchor of the gap to the next one.
+        let old = self
+            .marks
+            .partition_point(|m| m.0 < newest - MARK_SETTLE_MS);
+        if old > 1 {
+            self.settled_ms += super::active_time::active_ms(&self.marks[..old]);
+            self.marks.drain(..old - 1);
+        }
+    }
+
+    fn usage(&self) -> UsageMap {
+        let mut out = self.settled.clone();
+        for (_, model, u) in &self.recent {
+            out.entry(model.clone()).or_default().add(u);
+        }
+        out
+    }
+
+    fn active_seconds(&self) -> u64 {
+        ((self.settled_ms + super::active_time::active_ms(&self.marks)) / 1000) as u64
+    }
+}
 
 /// The transcript and its subagent transcripts, which live in a folder named
 /// after the session.
@@ -147,13 +217,14 @@ fn transcript_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Parses the whole lines of `text` into `requests`. `base` is the byte
+/// Parses the whole lines of `text` and passes each usage line to
+/// `record` as its request ID, model key and usage. `base` is the byte
 /// offset of `text` in the file, used as the ID of a line without one.
 fn parse_usage_lines(
     file: &Path,
     text: &str,
     base: u64,
-    requests: &mut std::collections::BTreeMap<String, (String, llmtodo_api_types::TokenUsage)>,
+    record: &mut impl FnMut(String, String, llmtodo_api_types::TokenUsage),
 ) {
     let mut at = base;
     for line in text.split_inclusive('\n') {
@@ -195,18 +266,8 @@ fn parse_usage_lines(
             .as_str()
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}@{line_at}", file.display()));
-        requests.insert(id, (key, usage));
+        record(id, key, usage);
     }
-}
-
-fn sum_requests(
-    requests: &std::collections::BTreeMap<String, (String, llmtodo_api_types::TokenUsage)>,
-) -> UsageMap {
-    let mut out = UsageMap::new();
-    for (model, u) in requests.values() {
-        out.entry(model.clone()).or_default().add(u);
-    }
-    out
 }
 
 /// Sums token usage by model over a Claude Code transcript, plus any
@@ -218,10 +279,16 @@ fn transcript_usage(path: &Path) -> UsageMap {
     let mut requests = std::collections::BTreeMap::new();
     for f in transcript_files(path) {
         if let Ok(text) = std::fs::read_to_string(&f) {
-            parse_usage_lines(&f, &text, 0, &mut requests);
+            parse_usage_lines(&f, &text, 0, &mut |id, model, u| {
+                requests.insert(id, (model, u));
+            });
         }
     }
-    sum_requests(&requests)
+    let mut out = UsageMap::new();
+    for (model, u) in requests.values() {
+        out.entry(model.clone()).or_default().add(u);
+    }
+    out
 }
 
 /// Same result as [`transcript_usage`], but it parses only the lines added
@@ -277,12 +344,17 @@ fn cached_transcript_totals(path: &Path, cache_dir: &Path) -> (UsageMap, u64) {
             continue;
         };
         let text = String::from_utf8_lossy(&buf[..end]);
-        parse_usage_lines(f, &text, from, &mut cache.requests);
+        parse_usage_lines(f, &text, from, &mut |id, model, u| {
+            cache.record(id, model, u)
+        });
         cache
             .marks
             .extend(text.lines().filter_map(super::active_time::mark));
         cache.offsets.insert(key, from + end as u64);
         changed = true;
+    }
+    if changed {
+        cache.settle();
     }
     if changed && std::fs::create_dir_all(cache_dir).is_ok() {
         // Write to a temp file, then rename, so a parallel call never reads
@@ -295,10 +367,7 @@ fn cached_transcript_totals(path: &Path, cache_dir: &Path) -> (UsageMap, u64) {
             let _ = std::fs::remove_file(&tmp);
         }
     }
-    (
-        sum_requests(&cache.requests),
-        super::active_time::active_seconds(&cache.marks),
-    )
+    (cache.usage(), cache.active_seconds())
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
@@ -343,6 +412,42 @@ mod tests {
         assert_eq!(cached_transcript_totals(&path, &cache).1, 180);
     }
     use super::*;
+
+    /// A long session keeps a bounded cache, and its totals still match a
+    /// full parse.
+    #[test]
+    fn cache_stays_bounded_over_a_long_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let t = dir.path().join("long.jsonl");
+        let start: jiff::Timestamp = "2026-11-11T07:00:00Z".parse().unwrap();
+        let mut full_marks = Vec::new();
+        for i in 0..(RECENT_REQUESTS as i64 * 3) {
+            let at = start + jiff::SignedDuration::from_secs(i * 30);
+            let mark = format!("{{\"type\":\"assistant\",\"timestamp\":\"{at}\"}}\n");
+            full_marks.extend(super::super::active_time::mark(mark.trim_end()));
+            append(&t, &mark);
+            append(&t, &usage_line(&format!("r{i}"), "claude-opus-5-5", 10, 1));
+            if i % 50 == 0 {
+                cached_transcript_totals(&t, &cache);
+            }
+        }
+        let (usage, seconds) = cached_transcript_totals(&t, &cache);
+        assert_eq!(usage, transcript_usage(&t));
+        assert_eq!(
+            seconds,
+            super::super::active_time::active_seconds(&full_marks)
+        );
+        let state: UsageCache =
+            serde_json::from_slice(&std::fs::read(cache.join("long.json")).unwrap()).unwrap();
+        assert!(
+            state.recent.len() <= RECENT_REQUESTS,
+            "{}",
+            state.recent.len()
+        );
+        assert!(state.marks.len() < 200, "{}", state.marks.len());
+        assert!(state.settled_ms > 0);
+    }
 
     #[test]
     fn models() {

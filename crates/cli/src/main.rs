@@ -179,6 +179,36 @@ impl From<std::io::Error> for CliError {
 
 pub type CliResult<T = ()> = Result<T, CliError>;
 
+/// The file that marks `project` as having a local folder on the server of
+/// `data_dir`: `<data_dir>/local-paths/<project>`, with every character
+/// outside `[A-Za-z0-9_-]` as `_`, plus a hash of the raw name so two names
+/// never share a marker.
+fn local_path_marker(data_dir: &std::path::Path, project: &str) -> PathBuf {
+    let safe: String = project
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // FNV-1a, so the name stays the same across Rust versions.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in project.bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    data_dir
+        .join("local-paths")
+        .join(format!("{safe}-{:08x}", h as u32))
+}
+
+/// Drops every marker of [`local_path_marker`].
+pub(crate) fn forget_local_paths(data_dir: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(data_dir.join("local-paths"));
+}
+
 /// Shared state for one run of the CLI.
 pub struct App {
     pub global: Global,
@@ -211,25 +241,35 @@ impl App {
     /// whether or not that request started the server. The check costs one
     /// project read. The app shows the folder and reads gone worktrees'
     /// commits from it. A failure here never fails the command.
+    ///
+    /// Once the project has a folder, a marker file in the data folder says
+    /// so, and later calls skip the project read.
     async fn remember_local_path(&self, c: &llmtodo_client::Client) {
         let (Some(project), Some(root)) = (&self.detected.repo.project, &self.detected.repo_root)
         else {
             return;
         };
+        let marker = local_path_marker(&self.data_dir, project);
+        if marker.is_file() {
+            return;
+        }
         let Ok(p) = c.project(project).await else {
             return;
         };
-        if p.local_path.is_some() {
-            return;
+        let known = if p.local_path.is_some() {
+            true
+        } else if let Some(main) = llmtodo_client::git::main_checkout_root(root) {
+            let update = llmtodo_api_types::UpdateProject {
+                local_path: Some(main.to_string_lossy().into_owned()),
+                ..Default::default()
+            };
+            c.update_project(&p.slug, &update).await.is_ok()
+        } else {
+            false
+        };
+        if known && let Some(dir) = marker.parent() {
+            let _ = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&marker, b""));
         }
-        let Some(main) = llmtodo_client::git::main_checkout_root(root) else {
-            return;
-        };
-        let update = llmtodo_api_types::UpdateProject {
-            local_path: Some(main.to_string_lossy().into_owned()),
-            ..Default::default()
-        };
-        let _ = c.update_project(&p.slug, &update).await;
     }
 
     /// A new connection, for a caller that outlives a server restart. The
