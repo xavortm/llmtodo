@@ -348,3 +348,29 @@ fn the_filter_panel_draws_only_for_what_it_shows(cx: &mut TestAppContext) {
     after(handle, cx, |cx| new_text(&view, id, cx));
     assert_eq!(render_count::of::<Panel>(), 0);
 }
+
+/// LLM-7: each fetch of the open task sends its history again. The same
+/// text again neither draws the task view nor prepares its tabs again.
+#[gpui_kit::test]
+fn the_same_history_again_does_not_prepare_the_tabs_again(cx: &mut TestAppContext) {
+    let (handle, view) = open_sized(900., cx);
+    let task = cx.read(|cx| view.read(cx).task().clone());
+    let id = cx.read(|cx| view.read(cx).detail(cx).unwrap().issue);
+    let set = |cx: &mut TestAppContext| {
+        task.update(cx, |t, cx| {
+            t.set_history(
+                id,
+                "- created".into(),
+                "- a session".into(),
+                Default::default(),
+                cx,
+            )
+        })
+    };
+    after(handle, cx, set);
+    assert_eq!(render_count::of::<TaskView>(), 1);
+    let builds = cx.read(|cx| task.read(cx).prepared_builds.get());
+    after(handle, cx, set);
+    assert_eq!(render_count::of::<TaskView>(), 0);
+    assert_eq!(cx.read(|cx| task.read(cx).prepared_builds.get()), builds);
+}

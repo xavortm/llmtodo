@@ -234,8 +234,14 @@ impl TaskView {
     }
 
     /// Sets the open task's Activity tab.
+    /// The same text again changes nothing, so the prepared tabs stay
+    /// (LLM-7).
     pub fn set_activity(&mut self, id: IssueId, activity: String, cx: &mut Context<Self>) {
-        self.activity = Some((id, activity));
+        let activity = Some((id, activity));
+        if self.activity == activity {
+            return;
+        }
+        self.activity = activity;
         self.history_revision += 1;
         cx.notify();
     }
@@ -248,9 +254,16 @@ impl TaskView {
         costs: crate::task::history::CostBreakdown,
         cx: &mut Context<Self>,
     ) {
-        self.sessions = Some((id, sessions));
-        self.session_costs = Some((id, costs));
-        self.history_revision += 1;
+        let (sessions, costs) = (Some((id, sessions)), Some((id, costs)));
+        if self.sessions == sessions && self.session_costs == costs {
+            return;
+        }
+        if self.sessions != sessions {
+            // Only the Sessions text is in the prepared tabs.
+            self.history_revision += 1;
+        }
+        self.sessions = sessions;
+        self.session_costs = costs;
         cx.notify();
     }
 
