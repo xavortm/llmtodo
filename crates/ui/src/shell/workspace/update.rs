@@ -12,14 +12,18 @@ use gpui_kit::{
 use super::*;
 use crate::model::update::{Restart, UpdateWatch};
 
-/// How often the app reads the installed bundle's commit.
-const CHECK_EVERY: Duration = Duration::from_secs(5);
+/// How often the app reads the installed bundle's commit. A publish is
+/// rare, so a slow check costs nothing the owner would notice.
+pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(30);
 /// How long a restart waits for saves on their way, in steps of 100 ms.
 /// Saves still out after that stay as kept text.
 const SAVE_WAIT_STEPS: u32 = 50;
 /// One full turn of the button's gradient. Slow, so it draws the eye
 /// without looking busy.
 const GRADIENT_TURN: Duration = Duration::from_secs(6);
+/// How often the gradient redraws. At one turn in 6 s it moves 2 degrees a
+/// frame, which still looks smooth, and costs a quarter of a 120 Hz display.
+pub(crate) const GRADIENT_FPS: f32 = 30.;
 
 /// The button is bright yellow in both themes: the one exception to the
 /// monochrome rule. The text stays dark on it.
@@ -60,6 +64,14 @@ pub struct UpdateState {
 pub struct UpdateButton {
     commit: Option<String>,
     restarting: bool,
+    /// Where the gradient was in the last animated frame. While the window
+    /// is in the background, the button holds it still.
+    turn: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Where the running animation started. Back in front, the gradient
+    /// goes on from where it stopped.
+    turn_from: f32,
+    /// The window was in front in the last render.
+    animating: bool,
 }
 
 pub struct RestartClicked;
@@ -90,18 +102,32 @@ impl Workspace {
         cli: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                let alive = this.update(cx, |this, cx| this.check_for_update(cx));
-                if alive.is_err() {
-                    break;
+        // The file read runs off the main thread. Once a new build is
+        // found, the watch ends: the button stays until the restart.
+        let poll = cx.spawn({
+            let watch = watch.clone();
+            async move |this, cx| {
+                loop {
+                    let newer = cx.background_spawn({
+                        let watch = watch.clone();
+                        async move { watch.newer() }
+                    });
+                    let newer = newer.await;
+                    let found = newer.is_some();
+                    let alive = this.update(cx, |this, cx| this.found_update(newer, cx));
+                    if alive.is_err() || found {
+                        break;
+                    }
+                    cx.background_executor().timer(CHECK_EVERY).await;
                 }
-                cx.background_executor().timer(CHECK_EVERY).await;
             }
         });
         let button = cx.new(|_| UpdateButton {
             commit: None,
             restarting: false,
+            turn: Default::default(),
+            turn_from: 0.,
+            animating: false,
         });
         let click = cx.subscribe(&button, |this, _, _: &RestartClicked, cx| {
             this.restart_to_update(cx)
@@ -119,11 +145,10 @@ impl Workspace {
         });
     }
 
-    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+    fn found_update(&mut self, newer: Option<String>, cx: &mut Context<Self>) {
         let Some(state) = &mut self.update else {
             return;
         };
-        let newer = state.watch.newer();
         if newer != state.ready {
             state.ready = newer;
             self.sync_update_button(cx);
@@ -141,6 +166,12 @@ impl Workspace {
         state
             .button
             .update(cx, |button, cx| button.set(commit, restarting, cx));
+    }
+
+    /// Whether the update watch still reads the bundle.
+    #[cfg(test)]
+    pub fn update_watching(&self) -> bool {
+        self.update.as_ref().is_some_and(|s| !s._poll.is_ready())
     }
 
     #[cfg(test)]
@@ -251,7 +282,7 @@ impl Workspace {
 }
 
 impl Render for UpdateButton {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
         let Some(commit) = &self.commit else {
@@ -259,34 +290,59 @@ impl Render for UpdateButton {
         };
         let short: String = commit.chars().take(7).collect();
         let tip = format!("A new build is installed ({short}). Your unsaved text is kept");
-        crate::shell::tooltip::with_card(
-            "restart-update-tip",
-            Button::new("restart-update")
-                .custom(
-                    ButtonCustomVariant::new(cx)
-                        .color(yellow(0.55))
-                        .foreground(hsla(0., 0., 0.1, 1.))
-                        .hover(yellow(0.68))
-                        .active(hsla(AMBER_HUE, 0.96, 0.45, 1.)),
-                )
-                .xsmall()
-                .icon(IconName::RefreshCw)
-                .label(if self.restarting {
-                    "Restarting…"
-                } else {
-                    "Restart to update"
-                })
-                .disabled(self.restarting)
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(RestartClicked)))
-                // The animation runs only while the button renders, so it
-                // costs nothing when no update is ready. Each frame notifies
-                // this view only, and the workspace draws its cached views
-                // from their cache.
+        let button = Button::new("restart-update")
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(yellow(0.55))
+                    .foreground(hsla(0., 0., 0.1, 1.))
+                    .hover(yellow(0.68))
+                    .active(hsla(AMBER_HUE, 0.96, 0.45, 1.)),
+            )
+            .xsmall()
+            .icon(IconName::RefreshCw)
+            .label(if self.restarting {
+                "Restarting…"
+            } else {
+                "Restart to update"
+            })
+            .disabled(self.restarting)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(RestartClicked)));
+        // The animation runs only while the button renders, so it costs
+        // nothing when no update is ready. Each frame notifies this view
+        // only, and the workspace draws its cached views from their cache.
+        // It runs at `GRADIENT_FPS`, and only while the window is in front:
+        // in the background the gradient holds still and asks for no
+        // frames. A change of window activation draws the window again.
+        let active = window.is_window_active();
+        if active && !self.animating {
+            // The animation starts again from 0, as its element state went
+            // with the frames that did not draw it.
+            self.turn_from = self.turn.get();
+        }
+        self.animating = active;
+        let button = if active {
+            let (turn, from) = (self.turn.clone(), self.turn_from);
+            button
                 .with_animation(
                     "restart-update-gradient",
-                    Animation::new(GRADIENT_TURN).repeat(),
-                    |button, delta| button.bg(update_gradient(delta)),
-                ),
+                    Animation::new(GRADIENT_TURN)
+                        .repeat()
+                        .with_max_fps(GRADIENT_FPS),
+                    move |button, delta| {
+                        let at = (from + delta).fract();
+                        turn.set(at);
+                        button.bg(update_gradient(at))
+                    },
+                )
+                .into_any_element()
+        } else {
+            button
+                .bg(update_gradient(self.turn.get()))
+                .into_any_element()
+        };
+        crate::shell::tooltip::with_card(
+            "restart-update-tip",
+            button,
             crate::shell::tooltip::Card::text(tip),
         )
         .into_any_element()

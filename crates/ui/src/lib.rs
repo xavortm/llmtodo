@@ -17,11 +17,17 @@ use gpui_kit::component::ThemeMode;
 
 use shell::{app_menus, theme, workspace};
 
-/// Sets up theme and keys. The app, the tests and the benchmarks call it.
+/// Sets up theme and keys. The tests and the benchmarks call it.
 pub fn init(cx: &mut gpui_kit::App) {
+    init_without_theme(cx);
+    theme::set_mode(ThemeMode::Dark, cx);
+}
+
+/// Everything `init` does but the theme. The app sets the saved theme
+/// itself, once, with `theme::start` (LLM-6).
+pub fn init_without_theme(cx: &mut gpui_kit::App) {
     gpui_kit::init(cx);
     theme::load_fonts(cx);
-    theme::set_mode(ThemeMode::Dark, cx);
     workspace::bind_keys(cx);
     app_menus::init(cx);
 }

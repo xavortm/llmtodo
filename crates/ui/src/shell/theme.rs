@@ -304,6 +304,14 @@ pub fn set_appearance(choice: Appearance, system: WindowAppearance, cx: &mut App
     set_mode(choice.mode(system), cx);
 }
 
+/// Start-up: the saved theme in the mode the saved appearance gives while
+/// macOS shows `system`. It builds the theme once, where `set_theme` and
+/// then `set_appearance` would build it twice.
+pub fn start(name: ColorTheme, choice: Appearance, system: WindowAppearance, cx: &mut App) {
+    cx.set_global(CurrentAppearance(choice));
+    set_theme(name, choice.mode(system), cx);
+}
+
 /// On `Auto`, matches the mode to a new macOS appearance. Returns true when
 /// the mode changed.
 pub fn follow_system(system: WindowAppearance, cx: &mut App) -> bool {
@@ -606,6 +614,36 @@ mod tests {
                 .into_iter()
                 .map(move |mode| (name, mode))
         })
+    }
+
+    /// `start` gives the same theme as the three calls the app made before.
+    #[gpui_kit::test]
+    fn start_builds_the_theme_the_old_start_up_built(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let snapshot = |cx: &App| {
+            let t = cx.theme();
+            (t.mode, t.background, t.foreground, t.font_family.clone())
+        };
+        let old = cx.update(|cx| {
+            set_mode(ThemeMode::Dark, cx);
+            set_theme(ColorTheme::Catppuccin, ThemeMode::Dark, cx);
+            set_appearance(Appearance::Auto, WindowAppearance::Light, cx);
+            snapshot(cx)
+        });
+        let new = cx.update(|cx| {
+            set_theme(ColorTheme::Default, ThemeMode::Dark, cx);
+            start(
+                ColorTheme::Catppuccin,
+                Appearance::Auto,
+                WindowAppearance::Light,
+                cx,
+            );
+            assert_eq!(appearance(cx), Appearance::Auto);
+            assert_eq!(color_theme(cx), ColorTheme::Catppuccin);
+            snapshot(cx)
+        });
+        assert_eq!(new, old);
+        assert!(!new.0.is_dark());
     }
 
     #[gpui_kit::test]
