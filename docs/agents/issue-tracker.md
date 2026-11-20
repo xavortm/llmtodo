@@ -16,7 +16,7 @@ git -C "$main" merge --ff-only origin/main
 "$main/scripts/publish"
 ```
 
-- `scripts/publish` builds the release app, swaps it into `~/Applications/llmtodo.app` in one step, and installs the CLI from the same commit into `~/.cargo/bin`. It also runs `scripts/gen-agent-docs`.
+- `scripts/publish` builds the release app, swaps it into `~/Applications/llmtodo.app` in one step, and installs the CLI from the same commit into `$CARGO_HOME/bin` (`~/.cargo/bin` when `CARGO_HOME` is unset). It also runs `scripts/gen-agent-docs`.
 - It never stops a server. The owner's app sees the new build within a few seconds and shows "Restart to update" in the title bar. The owner's click stops the server and opens the new app.
 - Publish once per round, not after every commit. A release build takes minutes.
 - `llmtodo app` opens the installed app from any folder.

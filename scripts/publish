@@ -4,7 +4,7 @@
 # commit and regenerates the agent CLI reference. A running app then shows
 # "Restart to update". This script never stops a running server.
 #
-#   scripts/publish                      ~/Applications and ~/.cargo/bin
+#   scripts/publish                      ~/Applications and $CARGO_HOME/bin (default ~/.cargo/bin)
 #   scripts/publish <apps> [<cli dir>]   other folders, for tests
 #
 # LLMTODO_BUNDLE_SKIP_BUILD=1 reuses the binaries in target/release, for tests.
@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 apps=${1:-$HOME/Applications}
-cli_dir=${2:-$HOME/.cargo/bin}
+cli_dir=${2:-${CARGO_HOME:-$HOME/.cargo}/bin}
 mkdir -p "$apps" "$cli_dir"
 
 scripts/bundle-macos >/dev/null

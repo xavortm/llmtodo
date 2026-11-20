@@ -5,5 +5,5 @@ set -eu
 cd "$(dirname "$0")/.."
 cargo install --quiet --locked --path crates/cli
 llmtodo server stop >/dev/null 2>&1 || true
-scripts/gen-agent-docs "$HOME/.cargo/bin/llmtodo"
+scripts/gen-agent-docs "${CARGO_HOME:-$HOME/.cargo}/bin/llmtodo"
 llmtodo server status --fields running,health.version
