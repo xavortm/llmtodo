@@ -46,9 +46,11 @@ pub struct Detected {
 }
 
 pub fn detect(cwd: &Path) -> Result<Detected, String> {
-    let root = git_root(cwd);
+    // One git call finds the root, the branch and HEAD.
+    let checkout = llmtodo_client::git::checkout(cwd);
+    let root = checkout.as_ref().map(|c| c.root.clone());
     let (repo, _) = repo_config(cwd, root.as_deref());
-    let identity = identity::detect(cwd, root.as_deref(), repo.actor.as_deref())?;
+    let identity = identity::detect(cwd, checkout.as_ref(), repo.actor.as_deref())?;
     Ok(Detected {
         identity,
         repo,

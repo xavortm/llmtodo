@@ -683,16 +683,19 @@ async fn session(
     state.spawned_at = None;
     // A pull or push on this machine reopens the database, which drops the
     // live connection, so a reconnect is the moment the role can change.
-    primary(&client, events).await?;
-
-    match state.last_seq {
-        Some(after) if after <= hello_seq => {
-            catch_up(&client, after, &mut state.pending).await?;
+    // The role and the snapshot are read at the same time.
+    let open = state.open;
+    let load = async {
+        match state.last_seq {
+            Some(after) if after <= hello_seq => {
+                catch_up(&client, after, &mut state.pending).await?;
+            }
+            // First connect, or a new database with fewer events.
+            _ => state.pending.reload = true,
         }
-        // First connect, or a new database with fewer events.
-        _ => state.pending.reload = true,
-    }
-    flush(&client, &mut state.pending, state.open, events).await?;
+        flush(&client, &mut state.pending, open, events).await
+    };
+    tokio::try_join!(primary(&client, events), load)?;
     state.last_seq = Some(hello_seq);
 
     // Refreshes run on their own task, so the owner's writes never wait
@@ -1033,11 +1036,23 @@ async fn flush(
             history(client, key, events).await;
         }
     }
-    while let Some(key) = pending.dependents_of.first().cloned() {
-        dependents(client, &key, events).await?;
-        pending.dependents_of.remove(&key);
+    // Every key's queries run at the same time. A key leaves the set once
+    // its copies are sent.
+    let keys: Vec<String> = pending.dependents_of.iter().cloned().collect();
+    let found = futures::future::join_all(keys.iter().map(|k| dependents(client, k))).await;
+    let mut failed = None;
+    for (key, found) in keys.into_iter().zip(found) {
+        match found {
+            Ok(issues) => {
+                if !issues.is_empty() {
+                    send(events, Event::Dependents(issues));
+                }
+                pending.dependents_of.remove(&key);
+            }
+            Err(e) => failed = Some(e),
+        }
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
 /// The keys of the live sub-issues of `parent`. An unknown key has none.
@@ -1054,11 +1069,12 @@ async fn children(client: &Client, parent: &str) -> Result<Vec<String>, String> 
     }
 }
 
-/// Sends fresh copies of the tasks that wait for `key`, and of the closed
-/// tasks that `key` waits for through closed tasks. A change to `key` can
-/// move the depth of the first and the `has_open_dependents` of the second
-/// (LLM-214). An unknown key is skipped.
-async fn dependents(client: &Client, key: &str, events: &Events) -> Result<(), String> {
+/// Fresh copies of the tasks that wait for `key`, and of the closed tasks
+/// that `key` waits for through closed tasks. A change to `key` can move
+/// the depth of the first and the `has_open_dependents` of the second
+/// (LLM-214). An unknown key has none. The two queries run at the same
+/// time.
+async fn dependents(client: &Client, key: &str) -> Result<Vec<Issue>, String> {
     let down = IssueQuery {
         depends_on: Some(key.to_string()),
         ..Default::default()
@@ -1067,18 +1083,16 @@ async fn dependents(client: &Client, key: &str, events: &Events) -> Result<(), S
         closed_blockers_of: Some(key.to_string()),
         ..Default::default()
     };
+    let (down, up) = tokio::join!(client.query_all(&down), client.query_all(&up));
     let mut issues = Vec::new();
-    for query in [down, up] {
-        match client.query_all(&query).await {
+    for found in [down, up] {
+        match found {
             Ok(found) => issues.extend(found),
             Err(ClientError::Unreachable(e)) => return Err(e),
             Err(_) => {}
         }
     }
-    if !issues.is_empty() {
-        send(events, Event::Dependents(issues));
-    }
-    Ok(())
+    Ok(issues)
 }
 
 async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
@@ -1126,6 +1140,7 @@ async fn catalog_data(client: &Client) -> llmtodo_client::Result<CatalogData> {
         client.views(),
         client.documents(None, false, None),
     )?;
+    remember_folders(client, &projects);
     Ok(CatalogData {
         teams,
         labels,
@@ -1133,6 +1148,30 @@ async fn catalog_data(client: &Client) -> llmtodo_client::Result<CatalogData> {
         views,
         documents,
     })
+}
+
+/// Each project's local folder, by server URL and then project slug, from
+/// the catalog this process read last. A live event on the open task then
+/// finds the git panel's folder without a project read.
+type Folders = std::collections::HashMap<String, std::collections::HashMap<String, Option<String>>>;
+static FOLDERS: std::sync::Mutex<Option<Folders>> = std::sync::Mutex::new(None);
+
+fn remember_folders(client: &Client, projects: &[Project]) {
+    let folders = projects
+        .iter()
+        .map(|p| (p.slug.clone(), p.local_path.clone()))
+        .collect();
+    if let Ok(mut all) = FOLDERS.lock() {
+        all.get_or_insert_with(Default::default)
+            .insert(client.base_url().to_string(), folders);
+    }
+}
+
+/// The folder [`remember_folders`] holds for `slug`: `Some(None)` for a
+/// known project with no folder, `None` when the catalog does not name it.
+fn known_folder(client: &Client, slug: &str) -> Option<Option<String>> {
+    let all = FOLDERS.lock().ok()?;
+    all.as_ref()?.get(client.base_url())?.get(slug).cloned()
 }
 
 /// Sends the catalog alone. The app maps the issues it holds again.
@@ -1199,21 +1238,7 @@ fn last_copy_of_each<T, K: std::hash::Hash + Eq>(items: Vec<T>, key: impl Fn(&T)
 /// The host name the CLI stores with claims and work sessions, so the app
 /// reads commits only for sessions that ran on this machine.
 pub(crate) fn local_host() -> Option<String> {
-    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOST.get_or_init(|| {
-        std::env::var("LLMTODO_HOST")
-            .ok()
-            .filter(|h| !h.trim().is_empty())
-            .or_else(|| {
-                std::process::Command::new("hostname")
-                    .arg("-s")
-                    .output()
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .filter(|h| !h.is_empty())
-            })
-    })
-    .clone()
+    llmtodo_client::identity::local_host()
 }
 
 /// Sends the issue with its relations, reviews and git panel, as one
@@ -1243,7 +1268,11 @@ async fn project_folder(client: &Client, detail: &IssueDetail) -> Option<PathBuf
         return Some(PathBuf::from(dir));
     }
     let slug = detail.issue.project.as_deref()?;
-    let path = client.project(slug).await.ok()?.local_path?;
+    let path = match known_folder(client, slug) {
+        Some(known) => known?,
+        // A project newer than the catalog, or none read yet.
+        None => client.project(slug).await.ok()?.local_path?,
+    };
     Some(PathBuf::from(path))
 }
 

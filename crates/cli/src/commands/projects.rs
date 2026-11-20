@@ -131,6 +131,11 @@ pub async fn run(app: &App, cmd: ProjectCmd) -> CliResult {
             color,
         } => {
             let local_path = local_path.map(|p| absolute(&p)).transpose()?;
+            if local_path.is_some() {
+                // A changed folder may be a cleared one, so later calls
+                // check the project again.
+                crate::forget_local_paths(&app.data_dir);
+            }
             let u = UpdateProject {
                 name,
                 slug,

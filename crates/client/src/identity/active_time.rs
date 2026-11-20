@@ -46,17 +46,23 @@ fn is_owner_prompt(v: &Value) -> bool {
             .is_some_and(|c| c.starts_with("<command-name>"))
 }
 
-/// The active seconds of a set of marks, in any order.
+/// The active seconds of a set of marks, in any order. The tests check
+/// [`active_ms`] and the cache in `claude_code` against it.
+#[cfg(test)]
 pub fn active_seconds(marks: &[Mark]) -> u64 {
     let mut sorted = marks.to_vec();
     sorted.sort_unstable_by_key(|m| m.0);
-    let ms: i64 = sorted
+    (active_ms(&sorted) / 1000) as u64
+}
+
+/// The active milliseconds of marks already sorted by time.
+pub fn active_ms(sorted: &[Mark]) -> i64 {
+    sorted
         .windows(2)
         .filter(|w| !w[1].1)
         .map(|w| w[1].0 - w[0].0)
         .filter(|gap| *gap <= IDLE_GAP_MS)
-        .sum();
-    (ms / 1000) as u64
+        .sum()
 }
 
 #[cfg(test)]

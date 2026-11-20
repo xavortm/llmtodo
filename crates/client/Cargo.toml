@@ -20,6 +20,11 @@ tokio-tungstenite = "0.30.0"
 toml = "1.2.1"
 uuid = { version = "1.29.2", features = ["v7"] }
 
+[target.'cfg(unix)'.dependencies]
+# Already in the tree through tokio and reqwest. Reads the host name
+# without a `hostname` subprocess.
+libc = "0.2.191"
+
 [dev-dependencies]
 llmtodo-server = { version = "0.1.0", path = "../server" }
 tempfile = "3.27.0"

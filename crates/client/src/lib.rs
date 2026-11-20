@@ -844,8 +844,8 @@ pub fn version_older(a: &str, b: &str) -> bool {
 
 impl Connect {
     pub async fn connect(self) -> Result<Client> {
-        if let Some(c) = self.try_existing().await {
-            let h = c.health().await?;
+        // `find_server` already asked for the health, so reuse it.
+        if let Some((c, h)) = find_server(&self.data_dir, &self.context).await {
             if self.upgrade_old_server && self.spawn.is_some() && version_older(&h.version, VERSION)
             {
                 let _ = c.stop_server().await;
@@ -863,7 +863,7 @@ impl Connect {
         spawn_server(bin, &self.data_dir)?;
         for _ in 0..100 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            if let Some(c) = self.try_existing().await {
+            if let Some((c, _)) = find_server(&self.data_dir, &self.context).await {
                 return Ok(c);
             }
         }
@@ -872,12 +872,6 @@ impl Connect {
             "started the server, but it did not answer within 5 seconds; see {}",
             log.display()
         )))
-    }
-
-    async fn try_existing(&self) -> Option<Client> {
-        find_server(&self.data_dir, &self.context)
-            .await
-            .map(|(c, _)| c)
     }
 }
 

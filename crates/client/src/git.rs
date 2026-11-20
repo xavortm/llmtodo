@@ -63,6 +63,53 @@ pub fn session_commits(
     last: &str,
     since: i64,
 ) -> Vec<String> {
+    session_commits_with(
+        &mut RefLogs::default(),
+        repo,
+        branch,
+        own_checkout,
+        first,
+        last,
+        since,
+    )
+}
+
+/// What one ref log says, read once per [`fill_commits`] call: the time
+/// of its oldest entry, and the commits its entries made.
+struct RefLogSummary {
+    oldest: i64,
+    made: Vec<String>,
+}
+
+/// The ref logs one [`fill_commits`] call has read, by repo and ref. The
+/// sessions of one issue often share a repo and a branch.
+#[derive(Default)]
+struct RefLogs(std::collections::HashMap<(std::path::PathBuf, String), Option<RefLogSummary>>);
+
+impl RefLogs {
+    fn get(&mut self, repo: &Path, name: &str) -> Option<&RefLogSummary> {
+        self.0
+            .entry((repo.to_path_buf(), name.to_string()))
+            .or_insert_with(|| {
+                let log = ref_log(repo, name)?;
+                Some(RefLogSummary {
+                    oldest: log.iter().map(|e| e.time).min().unwrap_or(i64::MAX),
+                    made: log.iter().flat_map(|e| e.made(repo)).collect(),
+                })
+            })
+            .as_ref()
+    }
+}
+
+fn session_commits_with(
+    logs: &mut RefLogs,
+    repo: &Path,
+    branch: Option<&str>,
+    own_checkout: bool,
+    first: &str,
+    last: &str,
+    since: i64,
+) -> Vec<String> {
     let range = commits_between(repo, first, last);
     if range.is_empty() {
         return range;
@@ -77,13 +124,11 @@ pub fn session_commits(
     let mut made: Vec<String> = Vec::new();
     let mut covered = false;
     for r in &refs {
-        let Some(log) = ref_log(repo, r) else {
+        let Some(log) = logs.get(repo, r) else {
             continue;
         };
-        covered |= log.iter().any(|e| e.time <= since);
-        for e in log {
-            made.extend(e.made(repo));
-        }
+        covered |= log.oldest <= since;
+        made.extend(log.made.iter().cloned());
     }
     if !covered {
         return range;
@@ -302,6 +347,45 @@ pub fn origin_url_cached(repo: &Path) -> Option<String> {
     url
 }
 
+/// What a session's commit list depends on. A commit range never changes,
+/// so the list stays good until the session's last `HEAD` moves.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CommitsKey {
+    repo: std::path::PathBuf,
+    branch: Option<String>,
+    own_checkout: bool,
+    first: String,
+    last: String,
+    since: i64,
+}
+
+/// The most session commit lists [`cached_commits`] keeps.
+const COMMITS_CACHE: usize = 512;
+
+/// The commit list for `key`, read with `read` only the first time. An
+/// empty list is not kept: the commits may not be fetched yet.
+fn cached_commits(key: CommitsKey, read: impl FnOnce(&CommitsKey) -> Vec<String>) -> Vec<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<CommitsKey, Vec<String>>>> = Mutex::new(None);
+    if let Ok(cache) = CACHE.lock()
+        && let Some(found) = cache.as_ref().and_then(|c| c.get(&key))
+    {
+        return found.clone();
+    }
+    let commits = read(&key);
+    if !commits.is_empty()
+        && let Ok(mut cache) = CACHE.lock()
+    {
+        let cache = cache.get_or_insert_with(HashMap::new);
+        if cache.len() >= COMMITS_CACHE {
+            cache.clear();
+        }
+        cache.insert(key, commits.clone());
+    }
+    commits
+}
+
 /// Fills each work session's commits, and the issue's git commits, from
 /// local repos. Only sessions that ran on `host` count. A session reads its
 /// own worktree, or `fallback` when that folder is gone, such as after the
@@ -312,6 +396,7 @@ pub fn origin_url_cached(repo: &Path) -> Option<String> {
 pub fn fill_commits(d: &mut IssueDetail, host: Option<&str>, fallback: Option<&Path>) {
     let mut all: Vec<String> = Vec::new();
     let mut web: Option<String> = None;
+    let mut logs = RefLogs::default();
     for s in d.sessions.iter_mut().rev() {
         if s.host.is_some() && s.host.as_deref() == host {
             let (Some(first), Some(last)) = (&s.first_head, &s.last_head) else {
@@ -319,14 +404,25 @@ pub fn fill_commits(d: &mut IssueDetail, host: Option<&str>, fallback: Option<&P
             };
             let own = s.worktree.as_deref().map(Path::new).filter(|p| p.is_dir());
             if let Some(repo) = own.or(fallback) {
-                s.commits = session_commits(
-                    repo,
-                    s.branch.as_deref(),
-                    own.is_some(),
-                    first,
-                    last,
-                    s.started_at.as_second(),
-                );
+                let key = CommitsKey {
+                    repo: repo.to_path_buf(),
+                    branch: s.branch.clone(),
+                    own_checkout: own.is_some(),
+                    first: first.clone(),
+                    last: last.clone(),
+                    since: s.started_at.as_second(),
+                };
+                s.commits = cached_commits(key, |k| {
+                    session_commits_with(
+                        &mut logs,
+                        &k.repo,
+                        k.branch.as_deref(),
+                        k.own_checkout,
+                        &k.first,
+                        &k.last,
+                        k.since,
+                    )
+                });
                 if web.is_none() && !s.commits.is_empty() {
                     web = origin_url_cached(repo).as_deref().and_then(repo_web_url);
                 }
@@ -386,15 +482,52 @@ pub fn main_checkout_root(dir: &Path) -> Option<std::path::PathBuf> {
     git_root(dir)
 }
 
-/// The branch name and the commit hash of HEAD, in one git call.
-/// `--abbrev-ref` applies to every rev after it, so the plain `HEAD`
-/// must come first. A detached HEAD has no branch.
-pub fn branch_and_head(dir: &Path) -> (Option<String>, Option<String>) {
-    let out = git_out(&["rev-parse", "HEAD", "--abbrev-ref", "HEAD"], dir).unwrap_or_default();
-    let mut lines = out.lines().map(str::to_string);
-    let head = lines.next();
-    let branch = lines.next().filter(|b| b != "HEAD");
-    (branch, head)
+/// Where a folder sits in git: the repo's top folder, the branch and the
+/// commit hash of `HEAD`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checkout {
+    pub root: std::path::PathBuf,
+    /// None on a detached `HEAD`, or before the first commit.
+    pub branch: Option<String>,
+    /// None before the first commit.
+    pub head: Option<String>,
+}
+
+/// The repo top folder, the branch and `HEAD` of `dir`, in one git call.
+/// None outside a repo. `--abbrev-ref` applies to every rev after it, so
+/// the plain `HEAD` must come first. Before the first commit git fails on
+/// `HEAD` but has already printed the top folder, so stdout is read
+/// whatever the exit status.
+pub fn checkout(dir: &Path) -> Option<Checkout> {
+    let out = Command::new("git")
+        .args([
+            "rev-parse",
+            "--show-toplevel",
+            "HEAD",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .current_dir(dir)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    parse_checkout(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_checkout(out: &str) -> Option<Checkout> {
+    let mut lines = out.lines().map(str::trim);
+    let root = lines.next().filter(|r| r.starts_with('/'))?;
+    let head = lines.next().filter(|h| is_hash(h)).map(str::to_string);
+    let branch = head
+        .as_ref()
+        .and(lines.next())
+        .filter(|b| !b.is_empty() && *b != "HEAD")
+        .map(str::to_string);
+    Some(Checkout {
+        root: root.into(),
+        branch,
+        head,
+    })
 }
 
 #[cfg(test)]
@@ -402,8 +535,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn branch_and_head_reads_the_hash_and_the_branch() {
+    fn checkout_reads_the_root_the_hash_and_the_branch() {
         let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(checkout(&root), None, "outside a repo");
         let run = |args: &[&str]| {
             let ok = std::process::Command::new("git")
                 .args(args)
@@ -416,27 +551,40 @@ mod tests {
             assert!(ok, "git {args:?}");
         };
         run(&["init", "-q", "-b", "feat/x"]);
+        std::fs::create_dir(root.join("sub")).unwrap();
+        let unborn = checkout(&root.join("sub")).unwrap();
+        assert_eq!(
+            unborn,
+            Checkout {
+                root: root.clone(),
+                branch: None,
+                head: None
+            }
+        );
         run(&[
             "-c",
             "user.name=t",
             "-c",
             "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-q",
             "--allow-empty",
             "-m",
             "a",
         ]);
-        let (branch, head) = branch_and_head(dir.path());
-        assert_eq!(branch.as_deref(), Some("feat/x"));
-        let head = head.unwrap();
+        let c = checkout(&root.join("sub")).unwrap();
+        assert_eq!(c.root, root);
+        assert_eq!(c.branch.as_deref(), Some("feat/x"));
+        let head = c.head.unwrap();
         assert_eq!(head.len(), 40, "{head}");
         assert!(head.chars().all(|c| c.is_ascii_hexdigit()));
 
         run(&["checkout", "-q", "--detach"]);
-        let (branch, head) = branch_and_head(dir.path());
-        assert_eq!(branch, None);
-        assert_eq!(head.map(|h| h.len()), Some(40));
+        let c = checkout(&root).unwrap();
+        assert_eq!(c.branch, None);
+        assert_eq!(c.head.map(|h| h.len()), Some(40));
     }
 
     #[test]
@@ -555,6 +703,8 @@ mod tests {
             "user.name=t",
             "-c",
             "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-q",
             "--allow-empty",
@@ -576,6 +726,43 @@ mod tests {
         );
     }
 
+    /// A second read of the same session range comes from the cache, and
+    /// a moved last `HEAD` reads git again.
+    #[test]
+    fn session_commits_are_cached_by_range() {
+        let r = Repo::new();
+        let first = r.head(".");
+        let last = r.commit(".", "one");
+        let key = |last: &str| CommitsKey {
+            repo: r.dir("."),
+            branch: Some("main".into()),
+            own_checkout: true,
+            first: first.clone(),
+            last: last.to_string(),
+            since: 0,
+        };
+        let reads = std::cell::Cell::new(0);
+        let read = |k: &CommitsKey| {
+            reads.set(reads.get() + 1);
+            session_commits(
+                &k.repo,
+                k.branch.as_deref(),
+                k.own_checkout,
+                &k.first,
+                &k.last,
+                k.since,
+            )
+        };
+        let a = cached_commits(key(&last), read);
+        let b = cached_commits(key(&last), read);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert_eq!(reads.get(), 1);
+        let newer = r.commit(".", "two");
+        assert_eq!(cached_commits(key(&newer), read).len(), 2);
+        assert_eq!(reads.get(), 2);
+    }
+
     struct Repo(tempfile::TempDir);
 
     impl Repo {
@@ -591,6 +778,7 @@ mod tests {
         fn git(&self, sub: &str, args: &[&str]) -> String {
             let out = Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
                 .args(args)
                 .current_dir(self.dir(sub))
                 .output()
