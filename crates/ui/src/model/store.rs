@@ -48,7 +48,7 @@ pub struct IssueStore {
     tally: Tally,
     /// The git panel per issue. Only a single-issue fetch carries it, so a
     /// snapshot keeps what is here.
-    git: HashMap<IssueId, IssueGit>,
+    git: HashMap<IssueId, Arc<IssueGit>>,
     /// The relations per issue, for the dependency section. Like the git
     /// panel, only a single-issue fetch carries them.
     relations: HashMap<IssueId, Vec<Relation>>,
@@ -369,12 +369,18 @@ impl IssueStore {
 
     /// The git panel of an issue, once a fetch brought it.
     pub fn git(&self, id: IssueId) -> Option<&IssueGit> {
-        self.git.get(&id)
+        self.git.get(&id).map(|g| &**g)
+    }
+
+    /// A shared copy of the git panel of an issue. It costs one counter
+    /// bump, so a render can hold it while it takes `cx` (LLM-7).
+    pub fn git_shared(&self, id: IssueId) -> Option<Arc<IssueGit>> {
+        self.git.get(&id).cloned()
     }
 
     pub fn set_git(&mut self, id: IssueId, git: IssueGit) {
         self.note(Some(id));
-        self.git.insert(id, git);
+        self.git.insert(id, Arc::new(git));
     }
 
     /// The relations of an issue, once a fetch brought them.
@@ -414,7 +420,7 @@ impl IssueStore {
         self.note(Some(id));
         self.relations.insert(id, relations);
         self.reviews.insert(id, reviews);
-        self.git.insert(id, git);
+        self.git.insert(id, Arc::new(git));
         self.sessions.insert(id, sessions);
         self.stale_detail.remove(&id);
     }
@@ -582,6 +588,18 @@ mod tests {
         }
         assert_eq!(store.changes_since(seen), StoreChange::Everything);
         assert!(!store.changes_since(seen + 1).touches([id(2)]));
+    }
+
+    /// LLM-7: the task view holds the git panel while it renders. It
+    /// shares the store's copy instead of copying it each frame.
+    #[test]
+    fn the_git_panel_is_shared_not_copied() {
+        let mut store = IssueStore::new();
+        store.set_git(id(1), IssueGit::default());
+        let a = store.git_shared(id(1)).unwrap();
+        let b = store.git_shared(id(1)).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(store.git(id(1)), Some(&*a));
     }
 
     /// LLM-171: a list copy makes a held detail old, so the task fetches it

@@ -638,11 +638,10 @@ impl TaskView {
         let git = self
             .store
             .read(cx)
-            .git(issue.id)
-            .filter(|g| has_git(g))
-            .cloned();
+            .git_shared(issue.id)
+            .filter(|g| has_git(g));
         let claim_bar = issue.claim.clone().map(|claim| {
-            self.render_claim_bar(&claim, git.as_ref(), cx)
+            self.render_claim_bar(&claim, git.as_deref(), cx)
                 .into_any_element()
         });
         // Analyzing shows only without a claim: Locked says more.
@@ -2154,7 +2153,8 @@ impl Render for TaskView {
         let Some(detail) = self.open else {
             return div().into_any_element();
         };
-        let Some(issue) = self.store.read(cx).get(detail.issue).cloned() else {
+        // A shared copy: one counter bump, not a copy of the issue.
+        let Some(issue) = self.store.read(cx).get_shared(detail.issue) else {
             return div().into_any_element();
         };
         // The answer fields of owner questions are made here,
