@@ -128,7 +128,16 @@ impl Workspace {
         let list = h_flex()
             .size_full()
             .overflow_hidden()
-            .child(div().flex_1().min_w_0().h_full().child(cached(&self.list)))
+            .child(
+                // The rows' hover fills draw under the list, as a view of
+                // their own (LLM-7).
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(self.list.read(cx).fill_layer.clone())
+                    .child(cached(&self.list)),
+            )
             .when(filters_open, |this| {
                 this.child(crate::shell::motion::slide_in(
                     div().h_full().flex_none().child(self.filter_panel.clone()),
@@ -218,7 +227,13 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .child(div().flex_1().min_h_0().child(cached(&self.sidebar)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.sidebar.read(cx).fill_layer.clone())
+                    .child(cached(&self.sidebar)),
+            )
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
             });

@@ -107,6 +107,8 @@ pub struct Sidebar {
     /// The row the owner last picked. A project can show under several
     /// teams, so the scope alone does not say which row is active.
     cursor: usize,
+    /// The rows' hover fills, drawn under this view (LLM-7).
+    pub fill_layer: Entity<crate::shell::motion::FillLayer>,
     _store: Subscription,
 }
 
@@ -122,6 +124,7 @@ impl Sidebar {
             focus: cx.focus_handle(),
             active: Scope::All,
             cursor: 0,
+            fill_layer: gpui_kit::AppContext::new(cx, |_| Default::default()),
         }
     }
 
@@ -265,6 +268,8 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
+        self.fill_layer.update(cx, |layer, _| layer.start_frame());
+        let fill_layer = self.fill_layer.clone();
         // Borrowed for the whole render: the store does not change during it.
         let store = self.store.read(cx);
         // A copy, so a row's motion can take `cx`. The catalog is small.
@@ -322,7 +327,7 @@ impl Render for Sidebar {
                 } else {
                     "real"
                 };
-                let frame = crate::shell::motion::fill(
+                let frame = crate::shell::motion::fill_under(
                     h_flex().id(ElementId::Name(format!("sidebar-tracker-{ix}").into())),
                     ElementId::Name(format!("sidebar-tracker-fill-{ix}").into()),
                     crate::shell::motion::Fill {
@@ -330,6 +335,8 @@ impl Render for Sidebar {
                         hover: if active { active_hover } else { hover },
                         pressed,
                     },
+                    theme.radius,
+                    Some(&fill_layer),
                     window,
                     cx,
                 );
@@ -410,7 +417,7 @@ impl Render for Sidebar {
                 format!("sidebar-{setting}-{ix}")
             };
             let fill_key = ElementId::Name(format!("{id}-fill").into());
-            let row = crate::shell::motion::fill(
+            let row = crate::shell::motion::fill_under(
                 h_flex().id(ElementId::Name(id.into())),
                 fill_key,
                 crate::shell::motion::Fill {
@@ -418,6 +425,8 @@ impl Render for Sidebar {
                     hover: if active { active_hover } else { hover },
                     pressed,
                 },
+                theme.radius,
+                Some(&fill_layer),
                 window,
                 cx,
             )

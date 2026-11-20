@@ -2311,6 +2311,11 @@ impl Workspace {
         &self.list
     }
 
+    #[cfg(test)]
+    pub fn sidebar(&self) -> &Entity<Sidebar> {
+        &self.sidebar
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn settings_view(&self) -> &Entity<SettingsView> {
         &self.settings_view

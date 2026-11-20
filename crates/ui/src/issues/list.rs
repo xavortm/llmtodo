@@ -277,6 +277,8 @@ const ROW_GROUP: &str = "issue-row";
 const CHECK_GROUP: &str = "issue-row-check";
 
 pub struct IssueList {
+    /// The rows' hover fills, drawn under this view (LLM-7).
+    pub fill_layer: Entity<crate::shell::motion::FillLayer>,
     store: Entity<IssueStore>,
     events: ViewEvents,
     /// The workspace's focus, which is the list's focus.
@@ -415,6 +417,7 @@ impl IssueList {
             hide_closed_after: None,
             strike_done: true,
             motion: None,
+            fill_layer: cx.new(|_| Default::default()),
             visible_start: 0,
             hidden_closed: 0,
             visible: Vec::new(),
@@ -1653,10 +1656,12 @@ impl IssueList {
             .flatten()
             .map(|p| Icon::new(p.icon()).small().text_color(muted_fg));
         let success = theme.success;
-        let frame = crate::shell::motion::fill(
+        let frame = crate::shell::motion::fill_under(
             h_flex().id(("row", row)),
             gpui_kit::ElementId::Name(format!("group-fill-{}", self.group_key(&title)).into()),
             fill,
+            gpui_kit::px(0.),
+            self.fill_layer(cx),
             window,
             cx,
         );
@@ -1779,6 +1784,14 @@ impl IssueList {
             }
         };
         self.render_issue_row(row, id, list_focused, window, cx)
+    }
+
+    /// Where the rows draw their fills: under the list, so a hover fade
+    /// does not draw the list (LLM-7). None while a list animation runs or
+    /// a drag is on: the rows then move, fade or take the drop color, so
+    /// they draw their own fills, as the list draws each frame anyway.
+    fn fill_layer(&self, cx: &App) -> Option<&Entity<crate::shell::motion::FillLayer>> {
+        (self.motion.is_none() && !cx.has_active_drag()).then_some(&self.fill_layer)
     }
 
     /// The box that marks a task. It shows on the hovered row, and on every
@@ -1913,7 +1926,7 @@ impl IssueList {
         };
         let check = self.mark_box(row, id, marked, cx);
         let click_events = self.events.clone();
-        let frame = crate::shell::motion::fill(
+        let frame = crate::shell::motion::fill_under(
             columns::row_frame().id(("row", row)),
             widgets::issue_part("row-fill", issue.id),
             crate::shell::motion::Fill {
@@ -1921,6 +1934,8 @@ impl IssueList {
                 hover,
                 pressed,
             },
+            gpui_kit::px(0.),
+            self.fill_layer(cx),
             window,
             cx,
         );
@@ -2568,6 +2583,7 @@ impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
+        self.fill_layer.update(cx, |layer, _| layer.start_frame());
         // A list animation draws the list each frame until it ends.
         if let Some(motion) = &mut self.motion {
             let now = cx.background_executor().now();

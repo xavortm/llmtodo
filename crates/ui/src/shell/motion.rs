@@ -11,12 +11,14 @@
 //!   (LLM-169). A panel that slides in draws again for those frames, then
 //!   stays cached.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Bounds, Div, ElementId, Global, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, Pixels, Rgba, Stateful,
-    StatefulInteractiveElement as _, Styled, Window, prelude::FluentBuilder as _, px, rems,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, ContentMask, Div, ElementId, Entity,
+    Global, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels,
+    Rgba, Stateful, StatefulInteractiveElement as _, Styled, Window, prelude::FluentBuilder as _,
+    px, rems,
 };
 
 /// Whether motion is on, as a global so every view reads one value.
@@ -509,6 +511,174 @@ fn release(state: &gpui_kit::Entity<FillState>, cx: &mut App) {
             cx.notify();
         }
     });
+}
+
+/// Like [`fill`], but with animations on the fill draws in `layer`, a
+/// view of its own under the host view, and not in the row (LLM-7). So a
+/// hover, a press and each frame of a fade draw only the layer, and the
+/// host view stays cached. The row records where it is as it lays out.
+///
+/// The host calls [`FillLayer::start_frame`] as it starts to render. The
+/// workspace draws the layer just before the host, over the same
+/// background, so the fill looks as it did in the row. `radius` is the
+/// row's corner radius. With no layer, this is [`fill`]: a host passes
+/// None while it draws the row in a way the layer cannot follow, such as
+/// fading the row's opacity.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_under(
+    el: Stateful<Div>,
+    key: impl Into<ElementId>,
+    fill_colors: Fill,
+    radius: Pixels,
+    layer: Option<&Entity<FillLayer>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let Some(layer) = layer.filter(|_| on(cx)) else {
+        return fill(el, key, fill_colors, window, cx);
+    };
+    let key: ElementId = key.into();
+    let update = {
+        let layer = layer.clone();
+        let key = key.clone();
+        move |cx: &mut App, f: &dyn Fn(&mut FillState) -> bool| {
+            layer.update(cx, |layer, cx| {
+                if f(layer.states.entry(key.clone()).or_default()) {
+                    cx.notify();
+                }
+            });
+        }
+    };
+    let (hover, down, up, up_out) = (update.clone(), update.clone(), update.clone(), update);
+    let record = {
+        let layer = layer.clone();
+        gpui_kit::canvas(
+            move |bounds, window, cx| {
+                let mask = window.content_mask();
+                layer.update(cx, |layer, _| {
+                    layer.items.push(FillItem {
+                        key,
+                        bounds,
+                        mask,
+                        fill: fill_colors,
+                        radius,
+                    });
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    };
+    el.child(record)
+        .on_hover(move |hovered, _, cx| {
+            let hovered = *hovered;
+            hover(cx, &|s| {
+                s.hovered = hovered;
+                if !hovered {
+                    s.pressed = false;
+                }
+                true
+            });
+        })
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            down(cx, &|s| {
+                s.pressed = true;
+                true
+            });
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            up(cx, &|s| std::mem::take(&mut s.pressed));
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            up_out(cx, &|s| std::mem::take(&mut s.pressed));
+        })
+}
+
+/// The fills of a cached view's rows, drawn as a view of its own under
+/// that view (LLM-7). See [`fill_under`].
+#[derive(Default)]
+pub struct FillLayer {
+    /// Each row's hover, press and fade, by its key.
+    states: HashMap<ElementId, FillState>,
+    /// The rows the host drew in its last render, in window coordinates.
+    /// A cached host that does not render again keeps its rows where they
+    /// were, so they stay.
+    items: Vec<FillItem>,
+    /// How many fills the last paint drew, for tests.
+    #[cfg(test)]
+    painted: usize,
+}
+
+struct FillItem {
+    key: ElementId,
+    bounds: Bounds<Pixels>,
+    mask: ContentMask<Pixels>,
+    fill: Fill,
+    radius: Pixels,
+}
+
+impl FillLayer {
+    /// The host calls this as it starts to render. Its rows record
+    /// themselves again as they lay out.
+    pub fn start_frame(&mut self) {
+        self.items.clear();
+    }
+
+    /// How many fills the last paint drew, for tests.
+    #[cfg(test)]
+    pub fn painted(&self) -> usize {
+        self.painted
+    }
+}
+
+impl gpui_kit::Render for FillLayer {
+    fn render(&mut self, _: &mut Window, cx: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
+        let this = cx.entity();
+        // It paints after the host has laid out, so it uses this frame's
+        // rows.
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, _, window, cx| {
+                let now = cx.background_executor().now();
+                let mut running = false;
+                let quads = this.update(cx, |layer, _| {
+                    let FillLayer { states, items, .. } = layer;
+                    let quads: Vec<_> = items
+                        .iter()
+                        .filter_map(|item| {
+                            let state = states.entry(item.key.clone()).or_default();
+                            let (color, fading) = state.sample(item.fill, now);
+                            running |= fading;
+                            Some((item.bounds, item.mask, color?, item.radius))
+                        })
+                        .collect();
+                    // A row that no longer shows forgets its fade, as
+                    // keyed state does.
+                    states.retain(|key, _| items.iter().any(|item| &item.key == key));
+                    #[cfg(test)]
+                    {
+                        layer.painted = quads.len();
+                    }
+                    quads
+                });
+                for (bounds, mask, color, radius) in quads {
+                    window.with_content_mask(Some(mask), |window| {
+                        window.paint_quad(gpui_kit::fill(bounds, color).corner_radii(radius));
+                    });
+                }
+                if running {
+                    window.request_animation_frame();
+                }
+            },
+        )
+        .absolute()
+        .size_0()
+    }
 }
 
 /// Where an element's fill is, and where it goes.
