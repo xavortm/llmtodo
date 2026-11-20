@@ -3,7 +3,31 @@
 //! A `.app` bundle gets its icon from `HardHat.icns` through `Info.plist`
 //! (see `scripts/bundle-macos`). A bare binary, as from `cargo run`, has no
 //! bundle, so the Dock would show a generic icon. GPUI has no icon API, so
-//! this sets it through AppKit at startup.
+//! this sets it through AppKit at startup. Inside a bundle it does nothing:
+//! decoding the 1024 px PNG would only slow the start (LLM-6).
+
+use std::path::Path;
+
+/// The bundle icon `scripts/bundle-macos` copies next to `Info.plist`.
+const BUNDLE_ICON: &str = "HardHat.icns";
+
+/// Whether `exe` runs from a `.app` bundle that has its own icon, so the
+/// Dock already shows it.
+pub fn bundle_has_icon(exe: &Path) -> bool {
+    let Some(contents) = exe
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|n| n == "MacOS"))
+        .and_then(Path::parent)
+    else {
+        return false;
+    };
+    contents.file_name().is_some_and(|n| n == "Contents")
+        && contents
+            .parent()
+            .and_then(Path::extension)
+            .is_some_and(|ext| ext == "app")
+        && contents.join("Resources").join(BUNDLE_ICON).is_file()
+}
 
 #[cfg(target_os = "macos")]
 pub fn set_dock_icon() {
@@ -12,6 +36,10 @@ pub fn set_dock_icon() {
     use objc2_foundation::NSData;
 
     const PNG: &[u8] = include_bytes!("../../assets/icon/HardHat-1024.png");
+
+    if std::env::current_exe().is_ok_and(|exe| bundle_has_icon(&exe)) {
+        return;
+    }
 
     // GPUI calls `run`'s callback on the main thread.
     let Some(mtm) = MainThreadMarker::new() else {
@@ -90,7 +118,21 @@ pub fn bounce_dock() {}
 
 #[cfg(test)]
 mod tests {
-    use super::{badge_label, should_bounce};
+    use super::{BUNDLE_ICON, badge_label, bundle_has_icon, should_bounce};
+
+    #[test]
+    fn only_a_bundle_with_its_icon_skips_the_dock_icon() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("llmtodo.app/Contents");
+        let exe = app.join("MacOS/llmtodo-app");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(app.join("Resources")).unwrap();
+        assert!(!bundle_has_icon(&exe), "no icon in the bundle yet");
+        std::fs::write(app.join("Resources").join(BUNDLE_ICON), "").unwrap();
+        assert!(bundle_has_icon(&exe));
+        let cargo = dir.path().join("target/debug/llmtodo-app");
+        assert!(!bundle_has_icon(&cargo), "cargo run has no bundle");
+    }
 
     #[test]
     fn badge_hides_at_zero_and_shows_the_count() {

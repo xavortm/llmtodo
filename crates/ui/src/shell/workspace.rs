@@ -77,6 +77,8 @@ mod view_events;
 
 pub use keys::*;
 pub use update::UpdateButton;
+#[cfg(test)]
+pub(crate) use update::{CHECK_EVERY, GRADIENT_FPS};
 
 pub use crate::issues::list::Row;
 pub use crate::task::task_view::Detail;
@@ -576,6 +578,13 @@ impl Workspace {
                     .update(cx, |mascot, cx| mascot.set_paused(hidden, cx));
             }),
         );
+        // Nor while another app is in front: an idle window asks for no
+        // frames (LLM-6).
+        subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+            let inactive = !window.is_window_active();
+            this.mascot
+                .update(cx, |mascot, cx| mascot.set_inactive(inactive, cx));
+        }));
         // On Auto, the theme follows macOS between light and dark.
         subscriptions.push(cx.observe_window_appearance(window, |_, window, cx| {
             if crate::shell::theme::follow_system(window.appearance(), cx) {
@@ -972,7 +981,8 @@ impl Workspace {
         let open = self.task.read(cx).detail().map(|d| d.issue);
         if open != self.last_open {
             self.last_open = open;
-            self.persist(cx);
+            // j and k open a task each, so the save waits until they rest.
+            self.persist_soon(cx);
         }
     }
 
@@ -1545,6 +1555,10 @@ impl Workspace {
     /// The window moved or changed size. A drag does this every frame, so
     /// the save waits until the window rests for `SAVE_FRAME_AFTER`.
     pub fn window_moved(&mut self, frame: [f32; 4], cx: &mut Context<Self>) {
+        // GPUI reports the bounds again on every activation change.
+        if self.window_frame == Some(frame) {
+            return;
+        }
         self.window_frame = Some(frame);
         self.persist_soon(cx);
     }
@@ -1559,8 +1573,8 @@ impl Workspace {
     }
 
     /// Saves the settings when they changed. Called after every change, so
-    /// closing the app, or a crash, keeps them. Only the window frame waits;
-    /// see `window_moved`.
+    /// closing the app, or a crash, keeps them. Only the window frame and
+    /// the open task wait; see `window_moved` and `remember_open_task`.
     fn persist(&mut self, cx: &mut Context<Self>) {
         self.save_soon = None;
         let now = self.current_settings(cx);

@@ -3,7 +3,7 @@
 //! `model/backend.rs`. SPIKE.md records how the GPUI parts work.
 
 use gpui_kit::assets::AllAssets;
-use gpui_kit::component::{ThemeMode, TitleBar};
+use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
 use llmtodo_ui::model::{backend, drafts, trackers, update};
@@ -15,7 +15,7 @@ fn main() {
     // AllAssets bundles every Lucide icon, so the app can draw any project
     // icon an agent picks. It adds 0.9 MiB to the release binary (LLM-196).
     gpui_kit::application().with_assets(AllAssets).run(|cx| {
-        llmtodo_ui::init(cx);
+        llmtodo_ui::init_without_theme(cx);
         // GPUI loads remote images in the Markdown preview through this.
         match reqwest_client::ReqwestClient::user_agent("llmtodo") {
             Ok(client) => cx.set_http_client(std::sync::Arc::new(client)),
@@ -24,12 +24,12 @@ fn main() {
         app_icon::set_dock_icon();
         let store = settings::SettingsStore::default_location();
         let saved = store.load();
+        // The theme is built once, in its final mode. Auto reads macOS's
+        // appearance before the window opens, so the first frame already
+        // has the right mode.
         let color_theme = theme::ColorTheme::from_id(&saved.color_theme).unwrap_or_default();
-        theme::set_theme(color_theme, ThemeMode::Dark, cx);
-        // Auto reads macOS's appearance before the window opens, so the
-        // first frame already has the right mode.
         let appearance = theme::Appearance::from_id(&saved.theme).unwrap_or_default();
-        theme::set_appearance(appearance, cx.window_appearance(), cx);
+        theme::start(color_theme, appearance, cx.window_appearance(), cx);
         app_menus::set_menus(cx);
         // Reopen where the window was, at its last size.
         let bounds = match saved.window {

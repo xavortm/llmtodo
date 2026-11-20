@@ -51,16 +51,27 @@ fn a_new_build_shows_the_button_and_a_click_keeps_the_text(cx: &mut TestAppConte
         None
     );
 
-    // A publish installs another commit. The next check finds it.
+    // A publish installs another commit. The next check finds it, and
+    // the watch ends there (LLM-6).
+    assert!(cx.read(|cx| view.read(cx).update_watching()));
     install(&bundle, "newer");
     cx.executor()
-        .advance_clock(std::time::Duration::from_secs(6));
+        .advance_clock(crate::shell::workspace::CHECK_EVERY / 2);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| view.read(cx).update_ready().map(String::from)),
+        None,
+        "the check runs only every CHECK_EVERY"
+    );
+    cx.executor()
+        .advance_clock(crate::shell::workspace::CHECK_EVERY);
     cx.run_until_parked();
     assert_eq!(
         cx.read(|cx| view.read(cx).update_ready().map(String::from))
             .as_deref(),
         Some("newer")
     );
+    assert!(!cx.read(|cx| view.read(cx).update_watching()));
 
     // LLM-104 is free to edit. The owner types, then clicks the button.
     let key = cx

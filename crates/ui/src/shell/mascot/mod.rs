@@ -12,7 +12,8 @@
 //! Its timer runs only while the sidebar is on screen and the Settings
 //! switch is on: the workspace calls `set_shown`. With the switch off, the
 //! workspace does not draw the strip at all. The timer also rests while the
-//! window is hidden or minimized: the workspace calls `set_paused`.
+//! window is hidden or minimized, and while another app is in front: the
+//! workspace calls `set_paused` and `set_inactive`. The cat holds its frame.
 
 pub mod behaviour;
 pub mod sprites;
@@ -67,6 +68,9 @@ pub struct Mascot {
     /// The window is hidden, so no frame would show. The cat keeps its
     /// place and goes on when the window shows again.
     paused: bool,
+    /// Another window or app is in front. The cat holds its frame, so an
+    /// idle window in the background asks for no frames.
+    inactive: bool,
     /// Shows each timeline step for its time. None while hidden or paused.
     ticker: Option<Task<()>>,
     /// When the ticker started the current step, on the executor's clock.
@@ -90,6 +94,7 @@ impl Mascot {
             behaviour: Behaviour::new(active, seed),
             shown: false,
             paused: false,
+            inactive: false,
             ticker: None,
             step_began: None,
             measured: Rc::new(Cell::new(None)),
@@ -147,6 +152,16 @@ impl Mascot {
         self.restart(cx);
     }
 
+    /// The window went to the background or came back to the front. Like
+    /// `set_paused`, the cat goes on from where it was.
+    pub fn set_inactive(&mut self, inactive: bool, cx: &mut Context<Self>) {
+        if self.inactive == inactive {
+            return;
+        }
+        self.inactive = inactive;
+        self.restart(cx);
+    }
+
     fn refresh_active(&mut self, cx: &mut Context<Self>) {
         let active = agent_active(self.store.read(cx), jiff::Timestamp::now());
         if self.behaviour.set_active(active) {
@@ -178,7 +193,7 @@ impl Mascot {
     /// Draws the current step now and times the next one from now.
     fn restart(&mut self, cx: &mut Context<Self>) {
         cx.notify();
-        if !self.shown || self.paused {
+        if !self.shown || self.paused || self.inactive {
             self.ticker = None;
             return;
         }

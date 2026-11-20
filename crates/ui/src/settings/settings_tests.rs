@@ -956,3 +956,29 @@ fn the_four_theme_cards_share_one_row_at_any_width(cx: &mut TestAppContext) {
         }
     }
 }
+
+/// LLM-6: j and k open a task each. `ui.json` keeps the open task once
+/// the keys rest, not on every key.
+#[gpui_kit::test]
+fn the_open_task_saves_once_the_keys_rest(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ui.json");
+    let saved = || SettingsStore::at(path.clone()).load().last_task;
+    let (handle, view) = open_with(UiSettings::default(), SettingsStore::at(path.clone()), cx);
+    let rest = |cx: &mut TestAppContext| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+    };
+    press(handle, &["enter"], cx);
+    rest(cx);
+    let first = cx.read(|cx| view.read(cx).open_task_key(cx)).unwrap();
+    assert_eq!(saved().as_deref(), Some(&*first));
+
+    press(handle, &["j", "j", "j"], cx);
+    let last = cx.read(|cx| view.read(cx).open_task_key(cx)).unwrap();
+    assert_ne!(first, last, "j opens the next task");
+    assert_eq!(saved().as_deref(), Some(&*first), "no save on each key");
+    rest(cx);
+    assert_eq!(saved().as_deref(), Some(&*last));
+}

@@ -91,8 +91,48 @@ fn a_cat_frame_draws_neither_the_list_nor_the_task_view(cx: &mut TestAppContext)
     }
 }
 
-#[gpui_kit::test]
-fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut TestAppContext) {
+/// Brings the test window to the front, as a click on it would.
+fn activate(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    // A change of activation draws the whole window once.
+    let active = cx
+        .update_window(handle, |_, window, cx| {
+            draw(window, cx);
+            window.is_window_active()
+        })
+        .unwrap();
+    assert!(active);
+}
+
+/// Sends the test window to the background, as another app in front would.
+fn deactivate(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    gpui_kit::VisualTestContext::from_window(handle, cx).deactivate_window();
+    cx.run_until_parked();
+    let active = cx
+        .update_window(handle, |_, window, cx| {
+            draw(window, cx);
+            window.is_window_active()
+        })
+        .unwrap();
+    assert!(!active);
+}
+
+/// Lets the work a change left behind finish, such as the settings save
+/// that waits for `SAVE_FRAME_AFTER`, and draws it.
+fn settle(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| draw(window, cx))
+        .unwrap();
+}
+
+/// The window with a task open and the Restart to update button showing.
+fn open_with_update(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let bundle = dir.path().join("llmtodo.app");
     std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
@@ -111,16 +151,27 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
             .as_deref(),
         Some("newer")
     );
+    settle(handle, cx);
+    (handle, view, dir)
+}
+
+/// The time between two gradient frames, and a little more.
+fn gradient_frame() -> std::time::Duration {
+    std::time::Duration::from_secs_f32(1. / crate::shell::workspace::GRADIENT_FPS + 0.002)
+}
+
+#[gpui_kit::test]
+fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut TestAppContext) {
+    let (handle, view, _dir) = open_with_update(cx);
+    activate(handle, cx);
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     for _ in 0..3 {
+        // The gradient's timer asks for the next frame, and the platform
+        // draws it.
         render_count::reset();
-        cx.update_window(handle, |_, window, cx| {
-            // The gradient asked for this frame.
-            assert!(window.simulate_next_frame(cx) > 0);
-            draw(window, cx);
-        })
-        .unwrap();
+        cx.executor().advance_clock(gradient_frame());
+        cx.run_until_parked();
         assert_eq!(render_count::of::<UpdateButton>(), 1);
         assert_eq!(render_count::of::<IssueList>(), 0);
         assert_eq!(render_count::of::<TaskView>(), 0);
@@ -135,6 +186,135 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
     view.update(cx, |this, cx| this.restart_to_update(cx));
     assert!(cx.read(|cx| view.read(cx).update_restarting()));
     assert_eq!(frame_renders::<UpdateButton>(handle, cx), 1);
+}
+
+/// LLM-6: the gradient draws at most `GRADIENT_FPS` times a second, and
+/// not at all while the window is in the background. It asks for no
+/// frame on vsync.
+#[gpui_kit::test]
+fn the_update_gradient_is_capped_and_rests_in_the_background(cx: &mut TestAppContext) {
+    let (handle, _view, _dir) = open_with_update(cx);
+    activate(handle, cx);
+    let vsync_frames = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.simulate_next_frame(cx)
+        })
+        .unwrap()
+    };
+    assert_eq!(vsync_frames(cx), 0, "no frame on every vsync");
+
+    render_count::reset();
+    for _ in 0..100 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    // Other timers, such as a caret blink, draw the window too, so the
+    // count has room above the cap. Without the cap the gradient would ask
+    // for every vsync, as `vsync_frames` checks.
+    let second = render_count::of::<UpdateButton>();
+    let cap = crate::shell::workspace::GRADIENT_FPS as usize;
+    assert!(
+        (cap / 2..=cap * 2).contains(&second),
+        "{second} gradient frames in a second"
+    );
+
+    deactivate(handle, cx);
+    settle(handle, cx);
+    assert_eq!(vsync_frames(cx), 0);
+    render_count::reset();
+    for _ in 0..200 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    assert_eq!(render_count::of::<UpdateButton>(), 0, "it holds still");
+
+    // Back in front, it turns again.
+    activate(handle, cx);
+    render_count::reset();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(render_count::of::<UpdateButton>() > 0);
+}
+
+/// The task view's slide-in moves the cached view, so it draws again on
+/// each frame of the slide (LLM-6 keeps that look). It must end on time:
+/// after the slide, a frame draws the task view no more.
+#[gpui_kit::test]
+fn the_task_view_draws_only_while_it_slides_in(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    settle(handle, cx);
+    render_count::reset();
+    press(handle, "j enter", cx);
+    cx.run_until_parked();
+    assert!(cx.read(|cx| view.read(cx).detail(cx).is_some()));
+    let mut frames = 0;
+    for _ in 0..40 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(8));
+        cx.update_window(handle, |_, window, cx| {
+            if window.simulate_next_frame(cx) > 0 {
+                frames += 1;
+                draw(window, cx);
+            }
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    let renders = render_count::of::<TaskView>();
+    assert!(frames > 0, "the slide asks for frames");
+    // One render per slide frame, plus the open and a few from the open's
+    // follow-up work.
+    assert!(
+        renders <= frames + 4,
+        "{renders} renders in {frames} frames"
+    );
+
+    settle(handle, cx);
+    for _ in 0..5 {
+        assert_eq!(frame_renders::<TaskView>(handle, cx), 0, "the slide ended");
+    }
+}
+
+/// LLM-6: in the background the cat holds its frame and its timer stops.
+#[gpui_kit::test]
+fn the_cat_rests_while_the_window_is_in_the_background(cx: &mut TestAppContext) {
+    let (handle, view) = open_with_task(cx);
+    settle(handle, cx);
+    activate(handle, cx);
+    let mascot = cx.read(|cx| view.read(cx).mascot().clone());
+    assert!(cx.read(|cx| mascot.read(cx).ticking()));
+
+    deactivate(handle, cx);
+    assert!(!cx.read(|cx| mascot.read(cx).ticking()));
+    // The caret of a focused input may blink once more.
+    settle(handle, cx);
+    let before = cx.read(|cx| {
+        let b = mascot.read(cx).behaviour();
+        (b.anim(), b.step())
+    });
+    render_count::reset();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    let held = cx.read(|cx| {
+        let b = mascot.read(cx).behaviour();
+        (b.anim(), b.step())
+    });
+    assert_eq!(held, before);
+    assert_eq!(render_count::of::<Mascot>(), 0);
+
+    activate(handle, cx);
+    assert!(cx.read(|cx| mascot.read(cx).ticking()));
 }
 
 #[gpui_kit::test]
