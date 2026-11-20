@@ -374,3 +374,29 @@ fn the_same_history_again_does_not_prepare_the_tabs_again(cx: &mut TestAppContex
     assert_eq!(render_count::of::<TaskView>(), 0);
     assert_eq!(cx.read(|cx| task.read(cx).prepared_builds.get()), builds);
 }
+
+/// LLM-7: a redraw of the inbox that no store change caused, such as a
+/// cursor blink in an answer field, reuses its questions. A store change
+/// reads them again.
+#[gpui_kit::test]
+fn an_inbox_redraw_reads_its_questions_once_per_store_change(cx: &mut TestAppContext) {
+    let (handle, view) = open_sized(900., cx);
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_scope(crate::model::scope::Scope::Inbox, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let inbox = cx.read(|cx| view.read(cx).inbox().clone());
+    let builds = |cx: &TestAppContext| cx.read(|cx| inbox.read(cx).builds.get());
+    let before = builds(cx);
+    for _ in 0..3 {
+        after(handle, cx, |cx| inbox.update(cx, |_, cx| cx.notify()));
+        assert_eq!(render_count::of::<crate::inbox::InboxView>(), 1);
+    }
+    assert_eq!(builds(cx), before);
+    let id = cx.read(|cx| view.read(cx).issues_and_catalog(cx).0[0].id);
+    after(handle, cx, |cx| new_text(&view, id, cx));
+    assert_eq!(builds(cx), before + 1);
+}
