@@ -172,7 +172,10 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
         render_count::reset();
         cx.executor().advance_clock(gradient_frame());
         cx.run_until_parked();
-        assert_eq!(render_count::of::<UpdateButton>(), 1);
+        // Another timer, such as a cursor blink, can land in the same step
+        // and draw the button once more. The list and task view stay at 0.
+        let button = render_count::of::<UpdateButton>();
+        assert!((1..=2).contains(&button), "button drew {button} times");
         assert_eq!(render_count::of::<IssueList>(), 0);
         assert_eq!(render_count::of::<TaskView>(), 0);
     }

@@ -698,6 +698,8 @@ fn the_git_panel_reads_a_gone_worktree_from_the_projects_folder() {
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            // The owner signs commits through 1Password; a test repo must not.
+            .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .current_dir(&repo)
             .output()
