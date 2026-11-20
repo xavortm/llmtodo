@@ -275,6 +275,9 @@ impl FilterPanel {
     }
 }
 
+/// A built panel, with the filter text and store revision it came from.
+type PanelMemo = ((String, u64), std::rc::Rc<FilterPanel>);
+
 /// The panel view. It holds only view state: whether it is open and which
 /// row the keys point at. The filter is the list's `/` filter text.
 pub struct FilterPanelView {
@@ -285,6 +288,17 @@ pub struct FilterPanelView {
     open: bool,
     /// The row the keys point at, as an index into `FilterPanel::rows`.
     highlight: usize,
+    /// The rows' hover fills, drawn under this view (LLM-7).
+    pub fill_layer: Entity<crate::shell::motion::FillLayer>,
+    /// The last panel, by the filter text and the store revision it was
+    /// built from, so a render or an arrow key does not walk every issue
+    /// (LLM-7).
+    memo: std::cell::RefCell<Option<PanelMemo>>,
+    /// Whether the list's scope could save a view, as last drawn.
+    saves: bool,
+    /// How often the panel walked the issues, for tests.
+    #[cfg(test)]
+    pub builds: std::cell::Cell<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -297,11 +311,20 @@ impl FilterPanelView {
     ) -> Self {
         // A typed word, a new scope or a new label changes the panel.
         let filter = list.read(cx).filter.clone();
+        // Each draws the panel only when what it shows changed, so a cursor
+        // blink in the filter or a selection move in the list does not.
         let subscriptions = vec![
-            cx.observe(&filter, |_, _, cx| cx.notify()),
-            cx.observe(&list, |_, _, cx| cx.notify()),
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&filter, |this: &mut Self, _, cx| this.notify_if_changed(cx)),
+            cx.observe(&list, |this: &mut Self, list, cx| {
+                let saves = saves_from(&list.read(cx).scope);
+                if saves != this.saves {
+                    this.saves = saves;
+                    cx.notify();
+                }
+            }),
+            cx.observe(&store, |this: &mut Self, _, cx| this.notify_if_changed(cx)),
         ];
+        let saves = saves_from(&list.read(cx).scope);
         Self {
             store,
             list,
@@ -309,6 +332,11 @@ impl FilterPanelView {
             focus: cx.focus_handle(),
             open: false,
             highlight: 0,
+            fill_layer: gpui_kit::AppContext::new(cx, |_| Default::default()),
+            memo: Default::default(),
+            saves,
+            #[cfg(test)]
+            builds: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -325,11 +353,37 @@ impl FilterPanelView {
         }
     }
 
-    /// What the panel shows for the filter text now.
-    pub fn panel(&self, cx: &App) -> FilterPanel {
-        let text = self.list.read(cx).filter.read(cx).value().to_string();
+    /// What the panel shows for the filter text now. Built again only
+    /// when the text or the store changed.
+    pub fn panel(&self, cx: &App) -> std::rc::Rc<FilterPanel> {
         let store = self.store.read(cx);
-        FilterPanel::new(&text, &store.catalog, store.iter())
+        let filter = self.list.read(cx).filter.read(cx);
+        let text = filter.value();
+        let revision = store.revision();
+        if let Some(((t, r), panel)) = &*self.memo.borrow()
+            && *r == revision
+            && t.as_str() == text.as_ref()
+        {
+            return panel.clone();
+        }
+        #[cfg(test)]
+        self.builds.set(self.builds.get() + 1);
+        let panel = std::rc::Rc::new(FilterPanel::new(&text, &store.catalog, store.iter()));
+        *self.memo.borrow_mut() = Some(((text.to_string(), revision), panel.clone()));
+        panel
+    }
+
+    /// Draws the panel again when the filter text or the store changed
+    /// what it shows. A closed panel draws nothing, so it waits.
+    fn notify_if_changed(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        let before = self.memo.borrow().as_ref().map(|(_, p)| p.clone());
+        let now = self.panel(cx);
+        if before.is_none_or(|before| !std::rc::Rc::ptr_eq(&before, &now) && *before != *now) {
+            cx.notify();
+        }
     }
 
     /// The row the keys point at, for tests.
@@ -415,7 +469,7 @@ impl FilterPanelView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let name = format!("{section}-{}", entry.label);
-        let frame = crate::shell::motion::fill(
+        let frame = crate::shell::motion::fill_under(
             h_flex().id(ElementId::Name(format!("filter-row-{name}").into())),
             ElementId::Name(format!("filter-row-fill-{name}").into()),
             crate::shell::motion::Fill {
@@ -427,6 +481,8 @@ impl FilterPanelView {
                 },
                 pressed: crate::shell::theme::row_pressed(theme),
             },
+            theme.radius,
+            Some(&self.fill_layer),
             window,
             cx,
         );
@@ -475,6 +531,9 @@ impl FilterPanelView {
 
 impl Render for FilterPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
+        self.fill_layer.update(cx, |layer, _| layer.start_frame());
         let panel = self.panel(cx);
         let theme = cx.theme().clone();
         let focused = self.focus.contains_focused(window, cx);
@@ -598,7 +657,8 @@ impl Render for FilterPanelView {
             .w(rems(PANEL_REM))
             .h_full()
             .flex_none()
-            .bg(theme.background)
+            // The workspace draws the background, under the rows' hover
+            // fills (LLM-7).
             .border_l_1()
             .border_color(theme.border)
             .child(header)

@@ -502,6 +502,21 @@ pub struct InboxView {
     /// Where the selection was, for when its question gets an answer and
     /// leaves the list: the next one takes its place.
     selected_ix: usize,
+    /// The questions and the tickets waiting for review, by the store
+    /// revision they came from. A cursor blink in an answer field draws
+    /// the inbox, and must not sort and copy them again (LLM-7).
+    cache: std::cell::RefCell<Option<(u64, InboxData)>>,
+    /// How often the inbox read its questions from the store, for tests.
+    #[cfg(test)]
+    pub builds: std::cell::Cell<usize>,
+}
+
+/// What the inbox lists: its questions, and the tickets waiting for review
+/// as (ID, key, title).
+#[derive(Clone)]
+struct InboxData {
+    entries: std::rc::Rc<Vec<Entry>>,
+    reviews: std::rc::Rc<Vec<(IssueId, SharedString, SharedString)>>,
 }
 
 impl InboxView {
@@ -521,7 +536,35 @@ impl InboxView {
             scroll: ScrollHandle::new(),
             selected: None,
             selected_ix: 0,
+            cache: Default::default(),
+            #[cfg(test)]
+            builds: Default::default(),
         }
+    }
+
+    /// The questions and the reviews, read again only after a store change.
+    fn data(&self, cx: &App) -> InboxData {
+        let store = self.store.read(cx);
+        let revision = store.revision();
+        if let Some((rev, data)) = &*self.cache.borrow()
+            && *rev == revision
+        {
+            return data.clone();
+        }
+        #[cfg(test)]
+        self.builds.set(self.builds.get() + 1);
+        let data = InboxData {
+            entries: std::rc::Rc::new(entries(store)),
+            reviews: std::rc::Rc::new(
+                store
+                    .waiting_for_review()
+                    .into_iter()
+                    .map(|i| (i.id, i.key.clone(), i.title.clone()))
+                    .collect(),
+            ),
+        };
+        *self.cache.borrow_mut() = Some((revision, data.clone()));
+        data
     }
 
     /// The selected entry's index, after questions came or went. The first
@@ -553,13 +596,13 @@ impl InboxView {
     /// The selected question, as `(issue, number)`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn selected(&mut self, cx: &App) -> Option<(IssueId, u32)> {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         self.selection(&entries)
             .map(|ix| (entries[ix].issue, entries[ix].question.number))
     }
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let Some(at) = self.selection(&entries) else {
             return;
         };
@@ -570,7 +613,7 @@ impl InboxView {
     }
 
     fn jump(&mut self, last: bool, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         if entries.is_empty() {
             return;
         }
@@ -592,7 +635,7 @@ impl InboxView {
     }
 
     fn choose(&mut self, option: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let Some(ix) = self.selection(&entries) else {
             return;
         };
@@ -622,7 +665,7 @@ impl InboxView {
     }
 
     fn type_answer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let Some(ix) = self.selection(&entries) else {
             return;
         };
@@ -638,7 +681,7 @@ impl InboxView {
 
     /// Selects a question that just came back to the list.
     pub fn select_question(&mut self, issue: IssueId, number: u32, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let found = entries
             .iter()
             .position(|e| e.issue == issue && e.question.number == number);
@@ -654,7 +697,7 @@ impl InboxView {
     }
 
     fn open_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let Some(ix) = self.selection(&entries) else {
             return;
         };
@@ -717,15 +760,9 @@ impl Render for InboxView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
-        let entries = entries(self.store.read(cx));
+        let entries = self.data(cx).entries;
         let selected = self.selection(&entries);
-        let reviews: Vec<(IssueId, SharedString, SharedString)> = self
-            .store
-            .read(cx)
-            .waiting_for_review()
-            .into_iter()
-            .map(|i| (i.id, i.key.clone(), i.title.clone()))
-            .collect();
+        let reviews = self.data(cx).reviews;
         let header = self.render_header(entries.len(), reviews.len(), cx);
         let theme = cx.theme();
         let (muted, border, radius) = (theme.muted_foreground, theme.border, theme.radius);

@@ -12,6 +12,7 @@ impl Workspace {
         match event {
             backend::Event::Connected { url } => {
                 self.store.update(cx, |store, _| {
+                    store.touch_all();
                     store.server_url = Some(url.clone().into());
                 });
                 let url = url.trim_start_matches("http://").to_string();
@@ -162,6 +163,7 @@ impl Workspace {
     /// An answer about another tracker's teams.
     fn on_teams(&mut self, data_dir: PathBuf, teams: Option<Vec<String>>, cx: &mut Context<Self>) {
         self.store.update(cx, |store, cx| {
+            store.touch_all();
             let open = store.tracker;
             for (ix, tracker) in store.trackers.iter_mut().enumerate() {
                 // The open tracker's teams come from its snapshot.
@@ -180,6 +182,7 @@ impl Workspace {
         let name: SharedString = name.into();
         if self.list.read(cx).scope == Scope::View(name.clone()) {
             self.store.update(cx, |store, cx| {
+                store.touch_all();
                 store.view = Some(ViewMembers {
                     name,
                     ids: ids.into_iter().collect(),
@@ -199,6 +202,7 @@ impl Workspace {
         let name: SharedString = name.into();
         self.store.update(cx, |store, cx| {
             cx.notify();
+            store.touch_all();
             let views = &mut store.catalog.views;
             if !views.iter().any(|v| v.key == name) {
                 views.push(crate::model::data::Place {
@@ -218,6 +222,7 @@ impl Workspace {
         let name: SharedString = name.into();
         self.store.update(cx, |store, cx| {
             cx.notify();
+            store.touch_all();
             store.catalog.views.retain(|v| v.key != name);
         });
         self.rebuild_commands(cx);

@@ -28,6 +28,8 @@ mod live_tests;
 #[cfg(test)]
 mod perf_tests;
 #[cfg(test)]
+mod redraw_tests;
+#[cfg(test)]
 mod sidebar_tests;
 #[cfg(test)]
 pub mod tests;

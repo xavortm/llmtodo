@@ -128,10 +128,28 @@ impl Workspace {
         let list = h_flex()
             .size_full()
             .overflow_hidden()
-            .child(div().flex_1().min_w_0().h_full().child(cached(&self.list)))
+            .child(
+                // The rows' hover fills draw under the list, as a view of
+                // their own (LLM-7).
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(self.list.read(cx).fill_layer.clone())
+                    .child(cached(&self.list)),
+            )
             .when(filters_open, |this| {
+                // Cached, over its background and its rows' hover fills,
+                // so a hover or a list change does not draw it (LLM-7).
+                let fills = self.filter_panel.read(cx).fill_layer.clone();
                 this.child(crate::shell::motion::slide_in(
-                    div().h_full().flex_none().child(self.filter_panel.clone()),
+                    div()
+                        .h_full()
+                        .flex_none()
+                        .w(gpui_kit::rems(crate::issues::filter_panel::PANEL_REM))
+                        .bg(cx.theme().background)
+                        .child(fills)
+                        .child(cached(&self.filter_panel)),
                     "filter-panel-slide",
                     1.5,
                     true,
@@ -218,7 +236,13 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .child(div().flex_1().min_h_0().child(cached(&self.sidebar)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.sidebar.read(cx).fill_layer.clone())
+                    .child(cached(&self.sidebar)),
+            )
             .when(self.mascot_on, |this| {
                 this.child(div().flex_none().pb_1().child(self.mascot.clone()))
             });

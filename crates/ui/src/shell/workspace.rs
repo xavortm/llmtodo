@@ -767,6 +767,7 @@ impl Workspace {
     pub fn set_trackers(&mut self, list: Vec<Tracker>, starter: Starter, cx: &mut Context<Self>) {
         self.starter = Some(starter);
         self.store.update(cx, |store, cx| {
+            store.touch_all();
             store.trackers = list;
             store.tracker = 0;
             cx.notify();
@@ -862,6 +863,7 @@ impl Workspace {
         self.task.update(cx, |task, cx| task.close(cx));
         self.store.update(cx, |store, cx| {
             cx.notify();
+            store.touch_all();
             store.tracker = ix;
             store.view = None;
             store.server_url = None;
@@ -919,6 +921,7 @@ impl Workspace {
                 .iter()
                 .map(|t| t.key.clone())
                 .collect();
+            store.touch_all();
             let open = store.tracker;
             if let Some(tracker) = store.trackers.get_mut(open) {
                 tracker.teams = Some(teams);
@@ -1004,6 +1007,7 @@ impl Workspace {
 
     fn set_connection(&mut self, connection: Connection, cx: &mut Context<Self>) {
         self.store.update(cx, |store, cx| {
+            store.touch_all();
             store.connection = connection;
             cx.notify();
         });
@@ -1104,6 +1108,7 @@ impl Workspace {
             }
         }
         self.store.update(cx, |store, cx| {
+            store.touch_all();
             store.catalog = catalog;
             store.replace_all(issues);
             // A snapshot holds the Trash too, but an issue can go to the
@@ -1242,13 +1247,13 @@ impl Workspace {
         if deleted && task.detail().is_some_and(|d| d.issue == id) && !task.editing() {
             self.task.update(cx, |task, cx| task.close(cx));
         }
-        self.list_do(cx, |list, cx| {
-            if refilter {
-                list.refilter(cx);
-            } else {
-                cx.notify();
-            }
-        });
+        // Without a refilter, the list draws again only when it shows the
+        // issue: it watches the store for that (LLM-7).
+        if refilter {
+            self.list_do(cx, |list, cx| list.refilter(cx));
+        } else {
+            self.fetch_open_details(cx);
+        }
     }
 
     /// A claimed task is read-only, so a claim closes the editor open on it
@@ -2149,6 +2154,7 @@ impl Workspace {
             if self.store.read(cx).view.as_ref().is_some_and(|v| v.name == *n));
         if !keep {
             self.store.update(cx, |store, cx| {
+                store.touch_all();
                 store.view = None;
                 cx.notify();
             });
@@ -2323,6 +2329,16 @@ impl Workspace {
 
     pub fn list(&self) -> &Entity<IssueList> {
         &self.list
+    }
+
+    #[cfg(test)]
+    pub fn sidebar(&self) -> &Entity<Sidebar> {
+        &self.sidebar
+    }
+
+    #[cfg(test)]
+    pub fn filter_panel(&self) -> &Entity<crate::issues::filter_panel::FilterPanelView> {
+        &self.filter_panel
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

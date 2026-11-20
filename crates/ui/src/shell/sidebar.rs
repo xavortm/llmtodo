@@ -107,14 +107,63 @@ pub struct Sidebar {
     /// The row the owner last picked. A project can show under several
     /// teams, so the scope alone does not say which row is active.
     cursor: usize,
+    /// The rows' hover fills, drawn under this view (LLM-7).
+    pub fill_layer: Entity<crate::shell::motion::FillLayer>,
+    /// What the rows show, from the store, until a change to what they
+    /// count. None draws it again from the store (LLM-7).
+    data: Option<std::rc::Rc<SidebarData>>,
+    /// What each issue adds to the counts, as of the last scan, and the
+    /// store revision the sidebar last looked at.
+    counted: HashMap<llmtodo_core::IssueId, Counted>,
+    store_seen: u64,
+    /// How often the rows counted every issue, for tests.
+    #[cfg(test)]
+    pub scans: usize,
     _store: Subscription,
+}
+
+/// What the sidebar draws from the store: a copy of the catalog, its
+/// rows, and each row's count and lock.
+struct SidebarData {
+    catalog: Catalog,
+    rows: Vec<Row>,
+    tallies: Vec<(usize, bool)>,
+    trackers: Vec<crate::model::trackers::Tracker>,
+    open_tracker: usize,
+}
+
+/// The fields of one issue that [`ScopeCounts`] reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Counted {
+    deleted: bool,
+    closed: bool,
+    team: SharedString,
+    project: Option<SharedString>,
+    claimed: bool,
+}
+
+impl Counted {
+    fn of(issue: &crate::model::data::Issue) -> Self {
+        Self {
+            deleted: issue.deleted,
+            closed: issue.status.is_closed(),
+            team: issue.team.clone(),
+            project: issue.project.clone(),
+            claimed: issue.claim.is_some(),
+        }
+    }
 }
 
 impl Sidebar {
     pub fn new(store: Entity<IssueStore>, events: ViewEvents, cx: &mut Context<Self>) -> Self {
         // The workspace draws the sidebar as a cached view, so it redraws
         // only when it is notified. Everything it shows comes from the store.
-        let subscription = cx.observe(&store, |_, _, cx| cx.notify());
+        let subscription = cx.observe(&store, |this: &mut Self, store, cx| {
+            if this.store_changed(&store, cx) {
+                this.data = None;
+                cx.notify();
+            }
+        });
         Self {
             _store: subscription,
             store,
@@ -122,7 +171,69 @@ impl Sidebar {
             focus: cx.focus_handle(),
             active: Scope::All,
             cursor: 0,
+            fill_layer: gpui_kit::AppContext::new(cx, |_| Default::default()),
+            data: None,
+            counted: HashMap::new(),
+            store_seen: 0,
+            #[cfg(test)]
+            scans: 0,
         }
+    }
+
+    /// Whether a store change may change a row: anything but a change to
+    /// issues whose counted fields stayed the same.
+    fn store_changed(&mut self, store: &Entity<IssueStore>, cx: &App) -> bool {
+        let store = store.read(cx);
+        let change = store.changes_since(self.store_seen);
+        self.store_seen = store.revision();
+        let crate::model::store::StoreChange::Issues(ids) = change else {
+            return true;
+        };
+        if self.data.is_none() {
+            return true;
+        }
+        let questions = crate::inbox::open_count(store);
+        let counted_questions = self.data.as_ref().and_then(|d| {
+            d.rows
+                .iter()
+                .position(|r| r.scope == Scope::Inbox)
+                .map(|ix| d.tallies[ix].0)
+        });
+        if counted_questions.is_some_and(|n| n != questions) {
+            return true;
+        }
+        ids.into_iter()
+            .any(|id| self.counted.get(&id) != store.get(id).map(Counted::of).as_ref())
+    }
+
+    /// What the rows show, counted again only after a change to it.
+    fn data(&mut self, cx: &App) -> std::rc::Rc<SidebarData> {
+        if let Some(data) = &self.data {
+            return data.clone();
+        }
+        #[cfg(test)]
+        {
+            self.scans += 1;
+        }
+        let store = self.store.read(cx);
+        let catalog = store.catalog.clone();
+        let rows = scopes(&catalog);
+        let counts = ScopeCounts::of(store);
+        let tallies = rows
+            .iter()
+            .map(|row| (counts.get(&row.scope), counts.locked(&row.scope)))
+            .collect();
+        self.counted = store.iter().map(|i| (i.id, Counted::of(i))).collect();
+        self.store_seen = store.revision();
+        let data = std::rc::Rc::new(SidebarData {
+            catalog,
+            rows,
+            tallies,
+            trackers: store.trackers.clone(),
+            open_tracker: store.tracker,
+        });
+        self.data = Some(data.clone());
+        data
     }
 
     /// The active row: the picked row while it still shows the active
@@ -265,19 +376,14 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
-        // Borrowed for the whole render: the store does not change during it.
-        let store = self.store.read(cx);
-        // A copy, so a row's motion can take `cx`. The catalog is small.
-        let catalog = &store.catalog.clone();
-        let rows = scopes(catalog);
-        let counts = ScopeCounts::of(store);
-        // Each row's count and lock, read now, so the store's borrow ends
-        // before a row's motion takes `cx`.
-        let tallies: Vec<(usize, bool)> = rows
-            .iter()
-            .map(|row| (counts.get(&row.scope), counts.locked(&row.scope)))
-            .collect();
-        drop(counts);
+        self.fill_layer.update(cx, |layer, _| layer.start_frame());
+        let fill_layer = self.fill_layer.clone();
+        // Kept apart from the store, so a row's motion can take `cx`, and
+        // counted again only after a change to what it counts (LLM-7).
+        let data = self.data(cx);
+        let catalog = &data.catalog;
+        let rows = data.rows.clone();
+        let tallies = data.tallies.clone();
         let active_row = self.active_row(&rows);
         let sidebar = cx.entity().downgrade();
         let focused = self.focus.is_focused(window);
@@ -303,7 +409,7 @@ impl Render for Sidebar {
             .text_color(theme.sidebar_foreground);
         // The trackers, when the app knows more than one. A click opens
         // one. They are not scopes, so j / k never switch the data.
-        let (trackers, open) = (store.trackers.clone(), store.tracker);
+        let (trackers, open) = (data.trackers.clone(), data.open_tracker);
         if trackers.len() > 1 {
             column = column.child(
                 div()
@@ -322,7 +428,7 @@ impl Render for Sidebar {
                 } else {
                     "real"
                 };
-                let frame = crate::shell::motion::fill(
+                let frame = crate::shell::motion::fill_under(
                     h_flex().id(ElementId::Name(format!("sidebar-tracker-{ix}").into())),
                     ElementId::Name(format!("sidebar-tracker-fill-{ix}").into()),
                     crate::shell::motion::Fill {
@@ -330,6 +436,8 @@ impl Render for Sidebar {
                         hover: if active { active_hover } else { hover },
                         pressed,
                     },
+                    theme.radius,
+                    Some(&fill_layer),
                     window,
                     cx,
                 );
@@ -410,7 +518,7 @@ impl Render for Sidebar {
                 format!("sidebar-{setting}-{ix}")
             };
             let fill_key = ElementId::Name(format!("{id}-fill").into());
-            let row = crate::shell::motion::fill(
+            let row = crate::shell::motion::fill_under(
                 h_flex().id(ElementId::Name(id.into())),
                 fill_key,
                 crate::shell::motion::Fill {
@@ -418,6 +526,8 @@ impl Render for Sidebar {
                     hover: if active { active_hover } else { hover },
                     pressed,
                 },
+                theme.radius,
+                Some(&fill_layer),
                 window,
                 cx,
             )
