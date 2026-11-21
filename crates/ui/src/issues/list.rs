@@ -277,11 +277,11 @@ const ROW_GROUP: &str = "issue-row";
 const CHECK_GROUP: &str = "issue-row-check";
 
 pub struct IssueList {
-    /// The rows' hover fills, drawn under this view (LLM-7).
+    /// The rows' hover fills, drawn under this view (LLM-345).
     pub fill_layer: Entity<crate::shell::motion::FillLayer>,
     /// The store revision this list last looked at, and the issues its
     /// last render drew. A store change to none of them does not draw the
-    /// list: a change that moves rows refilters, which draws it (LLM-7).
+    /// list: a change that moves rows refilters, which draws it (LLM-345).
     store_seen: u64,
     drawn: std::cell::RefCell<HashSet<IssueId>>,
     store: Entity<IssueStore>,
@@ -1808,7 +1808,7 @@ impl IssueList {
     }
 
     /// Where the rows draw their fills: under the list, so a hover fade
-    /// does not draw the list (LLM-7). None while a list animation runs or
+    /// does not draw the list (LLM-345). None while a list animation runs or
     /// a drag is on: the rows then move, fade or take the drop color, so
     /// they draw their own fills, as the list draws each frame anyway.
     fn fill_layer(&self, cx: &App) -> Option<&Entity<crate::shell::motion::FillLayer>> {

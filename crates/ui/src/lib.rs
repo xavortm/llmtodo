@@ -24,7 +24,7 @@ pub fn init(cx: &mut gpui_kit::App) {
 }
 
 /// Everything `init` does but the theme. The app sets the saved theme
-/// itself, once, with `theme::start` (LLM-6).
+/// itself, once, with `theme::start` (LLM-344).
 pub fn init_without_theme(cx: &mut gpui_kit::App) {
     gpui_kit::init(cx);
     theme::load_fonts(cx);

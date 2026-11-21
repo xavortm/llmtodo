@@ -1,4 +1,4 @@
-//! LLM-7: a hover, a live update or a keystroke draws only the views that
+//! LLM-345: a hover, a live update or a keystroke draws only the views that
 //! show the change. Each test counts renders in the style of
 //! `cache_tests.rs`.
 
@@ -295,7 +295,7 @@ fn a_store_change_does_not_rescan_scope_counts_when_nothing_counted_changed(
     assert_eq!(scans(cx), before + 1);
 }
 
-/// LLM-7: the filter panel is drawn cached. A list change, a hover and a
+/// LLM-345: the filter panel is drawn cached. A list change, a hover and a
 /// store change that leaves its rows the same do not draw it, and an arrow
 /// key draws it without walking the issues again.
 #[gpui_kit::test]
@@ -349,7 +349,7 @@ fn the_filter_panel_draws_only_for_what_it_shows(cx: &mut TestAppContext) {
     assert_eq!(render_count::of::<Panel>(), 0);
 }
 
-/// LLM-7: each fetch of the open task sends its history again. The same
+/// LLM-345: each fetch of the open task sends its history again. The same
 /// text again neither draws the task view nor prepares its tabs again.
 #[gpui_kit::test]
 fn the_same_history_again_does_not_prepare_the_tabs_again(cx: &mut TestAppContext) {
@@ -375,7 +375,7 @@ fn the_same_history_again_does_not_prepare_the_tabs_again(cx: &mut TestAppContex
     assert_eq!(cx.read(|cx| task.read(cx).prepared_builds.get()), builds);
 }
 
-/// LLM-7: a redraw of the inbox that no store change caused, such as a
+/// LLM-345: a redraw of the inbox that no store change caused, such as a
 /// cursor blink in an answer field, reuses its questions. A store change
 /// reads them again.
 #[gpui_kit::test]

@@ -107,10 +107,10 @@ pub struct Sidebar {
     /// The row the owner last picked. A project can show under several
     /// teams, so the scope alone does not say which row is active.
     cursor: usize,
-    /// The rows' hover fills, drawn under this view (LLM-7).
+    /// The rows' hover fills, drawn under this view (LLM-345).
     pub fill_layer: Entity<crate::shell::motion::FillLayer>,
     /// What the rows show, from the store, until a change to what they
-    /// count. None draws it again from the store (LLM-7).
+    /// count. None draws it again from the store (LLM-345).
     data: Option<std::rc::Rc<SidebarData>>,
     /// What each issue adds to the counts, as of the last scan, and the
     /// store revision the sidebar last looked at.
@@ -379,7 +379,7 @@ impl Render for Sidebar {
         self.fill_layer.update(cx, |layer, _| layer.start_frame());
         let fill_layer = self.fill_layer.clone();
         // Kept apart from the store, so a row's motion can take `cx`, and
-        // counted again only after a change to what it counts (LLM-7).
+        // counted again only after a change to what it counts (LLM-345).
         let data = self.data(cx);
         let catalog = &data.catalog;
         let rows = data.rows.clone();

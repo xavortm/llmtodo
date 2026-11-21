@@ -4076,7 +4076,7 @@ async fn fts_count(db: &mut sqlx::SqliteConnection, sql: &'static str) -> i64 {
 }
 
 /// Every FTS row has its key in `search_rows`, and the tables hold one row
-/// per issue, live comment and document (LLM-4).
+/// per issue, live comment and document (LLM-342).
 async fn assert_search_rows_consistent(db: &mut sqlx::SqliteConnection) {
     let issues = fts_count(db, "SELECT count(*) FROM issues").await;
     let entities = fts_count(db, "SELECT (SELECT count(*) FROM issues) + (SELECT count(*) FROM comments) + (SELECT count(*) FROM documents)").await;
@@ -4112,7 +4112,7 @@ async fn assert_search_rows_consistent(db: &mut sqlx::SqliteConnection) {
     assert_eq!(orphans, 0, "trigram rows without their key");
 }
 
-/// LLM-4: the search triggers find their rows by rowid. Each kind of write
+/// LLM-342: the search triggers find their rows by rowid. Each kind of write
 /// still adds, replaces and removes the right FTS rows.
 #[tokio::test]
 async fn search_rows_follow_every_write() {
@@ -4299,7 +4299,7 @@ async fn search_rows_follow_every_write() {
     t.stop().await;
 }
 
-/// LLM-4: migration 0018 rebuilds the FTS tables with the same rows, so
+/// LLM-342: migration 0018 rebuilds the FTS tables with the same rows, so
 /// ranked results stay the same.
 #[tokio::test]
 async fn fts_rowid_migration_keeps_search_results() {

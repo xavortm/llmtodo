@@ -95,7 +95,7 @@ pub struct TaskView {
     /// The store's revision and keys revision this view last looked at,
     /// and the other issues its last render showed, such as a parent or a
     /// dependency. A store change to none of them, nor to the open task,
-    /// does not draw this view (LLM-7).
+    /// does not draw this view (LLM-345).
     store_seen: (u64, u64),
     shown: std::cell::RefCell<std::collections::HashSet<IssueId>>,
     /// Focus for the task view while it shows the preview.
@@ -235,7 +235,7 @@ impl TaskView {
 
     /// Sets the open task's Activity tab.
     /// The same text again changes nothing, so the prepared tabs stay
-    /// (LLM-7).
+    /// (LLM-345).
     pub fn set_activity(&mut self, id: IssueId, activity: String, cx: &mut Context<Self>) {
         let activity = Some((id, activity));
         if self.activity == activity {

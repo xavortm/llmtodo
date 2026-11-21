@@ -957,7 +957,7 @@ fn the_four_theme_cards_share_one_row_at_any_width(cx: &mut TestAppContext) {
     }
 }
 
-/// LLM-6: j and k open a task each. `ui.json` keeps the open task once
+/// LLM-344: j and k open a task each. `ui.json` keeps the open task once
 /// the keys rest, not on every key.
 #[gpui_kit::test]
 fn the_open_task_saves_once_the_keys_rest(cx: &mut TestAppContext) {

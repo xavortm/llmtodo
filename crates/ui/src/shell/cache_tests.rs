@@ -191,7 +191,7 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
     assert_eq!(frame_renders::<UpdateButton>(handle, cx), 1);
 }
 
-/// LLM-6: the gradient draws at most `GRADIENT_FPS` times a second, and
+/// LLM-344: the gradient draws at most `GRADIENT_FPS` times a second, and
 /// not at all while the window is in the background. It asks for no
 /// frame on vsync.
 #[gpui_kit::test]
@@ -247,7 +247,7 @@ fn the_update_gradient_is_capped_and_rests_in_the_background(cx: &mut TestAppCon
 }
 
 /// The task view's slide-in moves the cached view, so it draws again on
-/// each frame of the slide (LLM-6 keeps that look). It must end on time:
+/// each frame of the slide (LLM-344 keeps that look). It must end on time:
 /// after the slide, a frame draws the task view no more.
 #[gpui_kit::test]
 fn the_task_view_draws_only_while_it_slides_in(cx: &mut TestAppContext) {
@@ -288,7 +288,7 @@ fn the_task_view_draws_only_while_it_slides_in(cx: &mut TestAppContext) {
     }
 }
 
-/// LLM-6: in the background the cat holds its frame and its timer stops.
+/// LLM-344: in the background the cat holds its frame and its timer stops.
 #[gpui_kit::test]
 fn the_cat_rests_while_the_window_is_in_the_background(cx: &mut TestAppContext) {
     let (handle, view) = open_with_task(cx);

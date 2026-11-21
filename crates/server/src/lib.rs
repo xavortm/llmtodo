@@ -219,7 +219,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
 }
 
 /// How long after start the first daily backup waits. `VACUUM INTO` copies
-/// the whole database, so it waits out the app's first load (LLM-4).
+/// the whole database, so it waits out the app's first load (LLM-342).
 const FIRST_BACKUP_DELAY: Duration = Duration::from_secs(60);
 
 /// The wait before the next daily backup. One that is due at start still

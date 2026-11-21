@@ -4,7 +4,7 @@
 //! (see `scripts/bundle-macos`). A bare binary, as from `cargo run`, has no
 //! bundle, so the Dock would show a generic icon. GPUI has no icon API, so
 //! this sets it through AppKit at startup. Inside a bundle it does nothing:
-//! decoding the 1024 px PNG would only slow the start (LLM-6).
+//! decoding the 1024 px PNG would only slow the start (LLM-344).
 
 use std::path::Path;
 

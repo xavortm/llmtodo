@@ -130,7 +130,7 @@ impl Workspace {
             .overflow_hidden()
             .child(
                 // The rows' hover fills draw under the list, as a view of
-                // their own (LLM-7).
+                // their own (LLM-345).
                 div()
                     .flex_1()
                     .min_w_0()
@@ -140,7 +140,7 @@ impl Workspace {
             )
             .when(filters_open, |this| {
                 // Cached, over its background and its rows' hover fills,
-                // so a hover or a list change does not draw it (LLM-7).
+                // so a hover or a list change does not draw it (LLM-345).
                 let fills = self.filter_panel.read(cx).fill_layer.clone();
                 this.child(crate::shell::motion::slide_in(
                     div()

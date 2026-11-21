@@ -53,7 +53,7 @@ fn options(path: &Path) -> SqliteConnectOptions {
         .foreign_keys(true)
         .busy_timeout(Duration::from_secs(15))
         // 32 MB page cache per connection and 256 MB of memory-mapped reads,
-        // so repeated list and search reads skip the read syscalls (LLM-4).
+        // so repeated list and search reads skip the read syscalls (LLM-342).
         .pragma("cache_size", "-32000")
         .pragma("mmap_size", "268435456")
 }

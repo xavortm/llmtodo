@@ -52,7 +52,7 @@ fn a_new_build_shows_the_button_and_a_click_keeps_the_text(cx: &mut TestAppConte
     );
 
     // A publish installs another commit. The next check finds it, and
-    // the watch ends there (LLM-6).
+    // the watch ends there (LLM-344).
     assert!(cx.read(|cx| view.read(cx).update_watching()));
     install(&bundle, "newer");
     cx.executor()

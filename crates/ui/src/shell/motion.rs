@@ -514,7 +514,7 @@ fn release(state: &gpui_kit::Entity<FillState>, cx: &mut App) {
 }
 
 /// Like [`fill`], but with animations on the fill draws in `layer`, a
-/// view of its own under the host view, and not in the row (LLM-7). So a
+/// view of its own under the host view, and not in the row (LLM-345). So a
 /// hover, a press and each frame of a fade draw only the layer, and the
 /// host view stays cached. The row records where it is as it lays out.
 ///
@@ -598,7 +598,7 @@ pub fn fill_under(
 }
 
 /// The fills of a cached view's rows, drawn as a view of its own under
-/// that view (LLM-7). See [`fill_under`].
+/// that view (LLM-345). See [`fill_under`].
 #[derive(Default)]
 pub struct FillLayer {
     /// Each row's hover, press and fade, by its key.

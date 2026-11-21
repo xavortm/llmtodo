@@ -579,7 +579,7 @@ impl Workspace {
             }),
         );
         // Nor while another app is in front: an idle window asks for no
-        // frames (LLM-6).
+        // frames (LLM-344).
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             let inactive = !window.is_window_active();
             this.mascot
@@ -1248,7 +1248,7 @@ impl Workspace {
             self.task.update(cx, |task, cx| task.close(cx));
         }
         // Without a refilter, the list draws again only when it shows the
-        // issue: it watches the store for that (LLM-7).
+        // issue: it watches the store for that (LLM-345).
         if refilter {
             self.list_do(cx, |list, cx| list.refilter(cx));
         } else {

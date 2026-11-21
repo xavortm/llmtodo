@@ -78,7 +78,7 @@ pub struct IssueStore {
     /// switches between them.
     pub trackers: Vec<Tracker>,
     pub tracker: usize,
-    /// Counts up on every recorded change (LLM-7).
+    /// Counts up on every recorded change (LLM-345).
     revision: u64,
     /// The latest changes, oldest first: the revision each one made, and
     /// the issue it touched, or None for a change to everything.
@@ -89,7 +89,7 @@ pub struct IssueStore {
 /// redraws in full.
 const CHANGES_KEPT: usize = 256;
 
-/// What changed in the store since a view last looked (LLM-7). A view
+/// What changed in the store since a view last looked (LLM-345). A view
 /// that shows only some issues redraws only when one of them changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreChange {
@@ -373,7 +373,7 @@ impl IssueStore {
     }
 
     /// A shared copy of the git panel of an issue. It costs one counter
-    /// bump, so a render can hold it while it takes `cx` (LLM-7).
+    /// bump, so a render can hold it while it takes `cx` (LLM-345).
     pub fn git_shared(&self, id: IssueId) -> Option<Arc<IssueGit>> {
         self.git.get(&id).cloned()
     }
@@ -566,7 +566,7 @@ mod tests {
         IssueId::from_u128(n)
     }
 
-    /// LLM-7: the store says which issues changed since a revision, and
+    /// LLM-345: the store says which issues changed since a revision, and
     /// anything else counts as a change to everything.
     #[test]
     fn the_store_records_which_issues_changed() {
@@ -590,7 +590,7 @@ mod tests {
         assert!(!store.changes_since(seen + 1).touches([id(2)]));
     }
 
-    /// LLM-7: the task view holds the git panel while it renders. It
+    /// LLM-345: the task view holds the git panel while it renders. It
     /// shares the store's copy instead of copying it each frame.
     #[test]
     fn the_git_panel_is_shared_not_copied() {

@@ -504,7 +504,7 @@ pub struct InboxView {
     selected_ix: usize,
     /// The questions and the tickets waiting for review, by the store
     /// revision they came from. A cursor blink in an answer field draws
-    /// the inbox, and must not sort and copy them again (LLM-7).
+    /// the inbox, and must not sort and copy them again (LLM-345).
     cache: std::cell::RefCell<Option<(u64, InboxData)>>,
     /// How often the inbox read its questions from the store, for tests.
     #[cfg(test)]

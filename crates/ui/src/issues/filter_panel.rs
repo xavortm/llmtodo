@@ -288,11 +288,11 @@ pub struct FilterPanelView {
     open: bool,
     /// The row the keys point at, as an index into `FilterPanel::rows`.
     highlight: usize,
-    /// The rows' hover fills, drawn under this view (LLM-7).
+    /// The rows' hover fills, drawn under this view (LLM-345).
     pub fill_layer: Entity<crate::shell::motion::FillLayer>,
     /// The last panel, by the filter text and the store revision it was
     /// built from, so a render or an arrow key does not walk every issue
-    /// (LLM-7).
+    /// (LLM-345).
     memo: std::cell::RefCell<Option<PanelMemo>>,
     /// Whether the list's scope could save a view, as last drawn.
     saves: bool,
@@ -658,7 +658,7 @@ impl Render for FilterPanelView {
             .h_full()
             .flex_none()
             // The workspace draws the background, under the rows' hover
-            // fills (LLM-7).
+            // fills (LLM-345).
             .border_l_1()
             .border_color(theme.border)
             .child(header)
