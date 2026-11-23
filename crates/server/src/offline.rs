@@ -378,10 +378,10 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
     store::backend::query("PRAGMA foreign_keys = OFF")
         .execute(&mut m)
         .await?;
-    store::backend::query("BEGIN IMMEDIATE")
-        .execute(&mut m)
-        .await?;
     let copied = async {
+        store::backend::query("BEGIN IMMEDIATE")
+            .execute(&mut m)
+            .await?;
         store::transfer::refresh_issues(&mut p, &mut m, &issues).await?;
         if catalog {
             store::transfer::refresh_catalog(&mut p, &mut m).await?;
@@ -391,10 +391,17 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
     }
     .await;
     let end = if copied.is_ok() { "COMMIT" } else { "ROLLBACK" };
-    store::backend::query(end).execute(&mut m).await?;
-    store::backend::query("PRAGMA foreign_keys = ON")
+    let ended = store::backend::query(end).execute(&mut m).await;
+    // Back on before the connection serves anything else.
+    let on = store::backend::query("PRAGMA foreign_keys = ON")
         .execute(&mut m)
-        .await?;
+        .await;
+    if let Err(e) = on {
+        tracing::error!(error = %e, "foreign keys stayed off on the offline copy");
+    }
+    if copied.is_ok() {
+        ended?;
+    }
     copied.map_err(|e| anyhow::anyhow!("refresh the offline copy: {}", e.message))?;
     Ok(())
 }
@@ -1071,6 +1078,8 @@ async fn offline_request(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let method = parts.method.as_str().to_string();
+    // The body may have grown when a key became an ID.
+    parts.headers.remove(header::CONTENT_LENGTH);
     let res = next
         .run(Request::from_parts(parts, Body::from(sent.clone())))
         .await;
