@@ -32,10 +32,11 @@ pub enum Connection {
 
 pub struct IssueStore {
     /// In the order the server sent them. The list sorts its own copy of
-    /// the IDs, so this order only breaks ties. Each issue is shared, so
-    /// `snapshot` is cheap and a background task can read the copy it took
-    /// while the store changes.
-    issues: Vec<Arc<Issue>>,
+    /// the IDs, so this order only breaks ties. The list and each issue are
+    /// shared, so `snapshot` costs one counter bump and a background task
+    /// can read the copy it took while the store changes. The first write
+    /// while a snapshot is alive copies the list (LLM-350).
+    issues: Arc<Vec<Arc<Issue>>>,
     index: HashMap<IssueId, usize>,
     /// Each issue's ID by its key, so `by_key` is one lookup. The preview
     /// asks it once for each issue key in the text.
@@ -161,7 +162,7 @@ impl IssueStore {
 
     pub fn new() -> Self {
         Self {
-            issues: Vec::new(),
+            issues: Arc::default(),
             index: HashMap::new(),
             keys: HashMap::new(),
             keys_revision: 0,
@@ -247,7 +248,7 @@ impl IssueStore {
         let before = self.issues[ix].description.clone();
         let key_before = self.issues[ix].key.clone();
         self.tally.remove(Tally::of(&self.issues[ix]));
-        let issue = Arc::make_mut(&mut self.issues[ix]);
+        let issue = Arc::make_mut(&mut Arc::make_mut(&mut self.issues)[ix]);
         let out = f(issue);
         if issue.description != before {
             issue.description_loaded = true;
@@ -346,7 +347,7 @@ impl IssueStore {
         }
         if let Some(&ix) = self.index.get(&id) {
             self.tally.remove(Tally::of(&self.issues[ix]));
-            let issue = Arc::make_mut(&mut self.issues[ix]);
+            let issue = Arc::make_mut(&mut Arc::make_mut(&mut self.issues)[ix]);
             issue.open_questions = issue.open_questions.saturating_sub(1);
             self.tally.add(Tally::of(&self.issues[ix]));
         }
@@ -358,7 +359,7 @@ impl IssueStore {
     pub fn remap(&mut self, catalog: Catalog) -> Renames {
         self.touch_all();
         let renames = catalog.renames_from(&self.catalog);
-        for issue in &mut self.issues {
+        for issue in Arc::make_mut(&mut self.issues) {
             self.tally.remove(Tally::of(issue));
             Arc::make_mut(issue).remap(&catalog, &renames);
             self.tally.add(Tally::of(issue));
@@ -469,8 +470,8 @@ impl IssueStore {
     }
 
     /// A shared copy of every issue, in store order. It costs one counter
-    /// bump per issue, and later writes to the store leave it alone.
-    pub fn snapshot(&self) -> Vec<Arc<Issue>> {
+    /// bump, and later writes to the store leave it alone.
+    pub fn snapshot(&self) -> Arc<Vec<Arc<Issue>>> {
         self.issues.clone()
     }
 
@@ -540,7 +541,8 @@ impl IssueStore {
         self.tally.add(Tally::of(&issue));
         match self.index.get(&issue.id) {
             Some(&ix) => {
-                let old = std::mem::replace(&mut self.issues[ix], Arc::new(issue));
+                let issues = Arc::make_mut(&mut self.issues);
+                let old = std::mem::replace(&mut issues[ix], Arc::new(issue));
                 self.tally.remove(Tally::of(&old));
                 if old.key != self.issues[ix].key {
                     let (key, id) = (self.issues[ix].key.clone(), old.id);
@@ -551,7 +553,7 @@ impl IssueStore {
             None => {
                 self.index.insert(issue.id, self.issues.len());
                 self.rekey(&SharedString::default(), issue.key.clone(), issue.id);
-                self.issues.push(Arc::new(issue));
+                Arc::make_mut(&mut self.issues).push(Arc::new(issue));
                 None
             }
         }
@@ -654,5 +656,37 @@ mod tests {
         assert!(store.sessions(gone).is_none());
         assert!(!store.reviews.contains_key(&gone));
         assert!(!store.take_stale_detail(gone));
+    }
+
+    /// LLM-350: a snapshot shares the store's list, and keeps what it saw
+    /// while the store changes after it.
+    #[test]
+    fn a_snapshot_keeps_its_copy_while_the_store_changes() {
+        let mut store = IssueStore::new();
+        let demo = crate::model::demo::issues(&crate::model::demo::catalog());
+        store.replace_all(demo.clone());
+        let names = |issues: &mut dyn Iterator<Item = &Issue>| -> Vec<(IssueId, String)> {
+            issues
+                .map(|i| (i.id, format!("{} {}", i.key, i.title)))
+                .collect()
+        };
+        let before = names(&mut store.iter());
+        let snapshot = store.snapshot();
+        assert!(Arc::ptr_eq(&snapshot, &store.snapshot()), "no copy yet");
+
+        let first = demo[0].id;
+        store.modify(first, |i| i.title = "Renamed".into());
+        let mut copy = demo[1].clone();
+        copy.title = "Upserted".into();
+        store.upsert(copy);
+        let mut new = demo[2].clone();
+        new.id = id(999_999);
+        new.key = "NEW-1".into();
+        store.upsert(new);
+        store.remap(store.catalog.clone());
+
+        assert_eq!(names(&mut snapshot.iter().map(|i| &**i)), before);
+        assert_eq!(store.get(first).unwrap().title.as_ref(), "Renamed");
+        assert_eq!(store.len(), before.len() + 1);
     }
 }

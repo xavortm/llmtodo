@@ -3575,7 +3575,7 @@ fn narrow_list_hides_columns_by_priority(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let width = window.find("column-header").bounds().size.width;
         let open = shown(window);
-        let demand = view.read(cx).list().read(cx).demand(cx);
+        let demand = view.read(cx).list().read(cx).demand();
         assert_eq!(
             open,
             columns::visible(Some(width), window.rem_size(), &[Column::Order], &demand)

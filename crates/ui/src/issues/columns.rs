@@ -245,15 +245,20 @@ pub struct Demand {
 
 impl Demand {
     /// Measures `rows`: the title length of each row, in characters, and
-    /// the length of each of its label names.
-    pub fn measure<'a>(rows: impl IntoIterator<Item = (usize, &'a [usize])>) -> Demand {
-        let mut titles = Vec::new();
+    /// the length of each of its label names. The row build calls it for
+    /// every shown issue, so it allocates only its two lists.
+    pub fn measure<R, N>(rows: R) -> Demand
+    where
+        R: IntoIterator<Item = (usize, N)>,
+        N: IntoIterator,
+        N::Item: std::borrow::Borrow<usize>,
+    {
+        let rows = rows.into_iter();
+        let mut titles = Vec::with_capacity(rows.size_hint().0);
         let mut labels = Vec::new();
         for (title, names) in rows {
             titles.push(title);
-            if !names.is_empty() {
-                labels.push(labels_rem(names));
-            }
+            labels.extend(labels_rem(names));
         }
         let labels_max = labels.iter().copied().fold(0., f32::max);
         Demand {
@@ -508,10 +513,21 @@ fn tag_rem(chars: usize) -> f32 {
     chars as f32 * TAG_CHAR + TAG_PADDING
 }
 
-/// The width, in rem, that every label of a row needs side by side.
-fn labels_rem(name_chars: &[usize]) -> f32 {
-    let tags: f32 = name_chars.iter().map(|c| tag_rem(*c)).sum();
-    tags + TAG_GAP * name_chars.len().saturating_sub(1) as f32
+/// The width, in rem, that every label of a row needs side by side, or
+/// None for a row without labels. It allocates nothing, so the build can
+/// call it for every row.
+fn labels_rem<I>(name_chars: I) -> Option<f32>
+where
+    I: IntoIterator,
+    I::Item: std::borrow::Borrow<usize>,
+{
+    use std::borrow::Borrow as _;
+    let (mut tags, mut count) = (0., 0usize);
+    for chars in name_chars {
+        tags += tag_rem(*chars.borrow());
+        count += 1;
+    }
+    (count > 0).then(|| tags + TAG_GAP * (count - 1) as f32)
 }
 
 /// How many of the labels, with names `name_chars` characters long, fit in
