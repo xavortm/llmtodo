@@ -536,6 +536,8 @@ pub async fn apply(
         actor,
     };
     let mut w = Write::begin(st, &ctx).await?;
+    // The import adds actors, teams and statuses as it goes.
+    w.catalog_changed();
     let mut m: HashMap<String, String> = HashMap::new();
 
     import_actors(&mut w, snap, &mut m, report).await?;
@@ -628,6 +630,7 @@ async fn import_actor(
                 name
             };
             store::import::insert_actor(w.c(), &id, &name, lid).await?;
+            w.catalog_changed();
             count(report, "actors", Change::Created);
             id
         }
@@ -652,11 +655,13 @@ async fn import_team(
     let team_id = match existing {
         Some(id) => {
             store::import::update_team(w.c(), &lid, &name, &id).await?;
+            w.catalog_changed();
             count(report, "teams", Change::Unchanged);
             id
         }
         None => {
             let id = crate::store::teams::create(w.c(), &key, &name, Some(&lid)).await?;
+            w.catalog_changed();
             count(report, "teams", Change::Created);
             id
         }
@@ -695,6 +700,7 @@ async fn import_status(
             }
             store::import::update_status(w.c(), &sid, &sname, hex_color(&state["color"]), &id)
                 .await?;
+            w.catalog_changed();
             count(
                 report,
                 "statuses",
@@ -719,6 +725,7 @@ async fn import_status(
                 &sid,
             )
             .await?;
+            w.catalog_changed();
             count(report, "statuses", Change::Created);
             id
         }
@@ -1102,6 +1109,8 @@ async fn import_relation(
 /// log tells.
 async fn changed_here(w: &mut Write<'_>, ctx: &Ctx, issue_id: &str) -> ApiResult<bool> {
     let actor = ctx.actor_id();
+    // The activity table must hold this write's events too.
+    w.flush_events().await?;
     let hit: Option<i64> = store::import::changed_here(w.c(), issue_id, &actor).await?;
     Ok(hit.is_some())
 }

@@ -770,6 +770,54 @@ async fn the_dependency_graph_follows_every_write() {
     t.stop().await;
 }
 
+/// LLM-469: the graph token moves when an issue opens, closes, moves team
+/// or goes to the trash, and stays when it moves between open statuses, so
+/// a claim does not make every server rebuild the graph.
+#[tokio::test]
+async fn the_graph_token_moves_only_when_the_graph_can_change() {
+    let t = T::new().await;
+    t.ok(
+        &owner(),
+        "POST",
+        "/v1/teams",
+        json!({ "key": "WEB", "name": "Web" }),
+    )
+    .await;
+    let a = t.issue("A", json!({ "team": "ALX" })).await;
+    let pool = t.running.as_ref().unwrap().state.pool();
+    let token = async || -> Vec<u8> {
+        llmtodo_server::store::backend::query_scalar("SELECT token FROM dep_graph_token")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let patch = async |body: Value| {
+        t.ok(&owner(), "PATCH", &format!("/v1/issues/{a}"), body)
+            .await
+    };
+    let before = token().await;
+    patch(json!({ "status": "In Progress" })).await;
+    assert_eq!(token().await, before, "open to open keeps the graph");
+    patch(json!({ "title": "A again" })).await;
+    assert_eq!(token().await, before);
+    patch(json!({ "status": "Done" })).await;
+    let closed = token().await;
+    assert_ne!(closed, before, "closing changes the graph");
+    patch(json!({ "status": "Canceled" })).await;
+    assert_eq!(token().await, closed, "closed to closed keeps the graph");
+    patch(json!({ "status": "Todo" })).await;
+    let open = token().await;
+    assert_ne!(open, closed, "opening changes the graph");
+    let moved = patch(json!({ "team": "WEB" })).await;
+    let key = moved["key"].as_str().unwrap().to_string();
+    assert_ne!(token().await, open, "a team move changes the sort keys");
+    let moved = token().await;
+    t.ok(&owner(), "DELETE", &format!("/v1/issues/{key}"), json!({}))
+        .await;
+    assert_ne!(token().await, moved, "the trash changes the graph");
+    t.stop().await;
+}
+
 /// LLM-214: a closed issue that an open issue still waits for, directly or
 /// through other closed issues, has `has_open_dependents`.
 #[tokio::test]

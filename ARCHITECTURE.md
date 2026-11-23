@@ -78,6 +78,8 @@ The server runs on SQLite or on a shared Postgres database (decision 50 in `SPEC
 - SQL is written once. Where the backends differ, the query picks its form by `conn.backend()` in the same `store` module, so both forms sit side by side. Search and the dependency graph's string aggregate are the main cases.
 - Each backend has its own migration folder, and a test checks that both schemas have the same tables and columns.
 - `Write` stays the one write path on both backends. On Postgres it also takes the shared advisory lock and sends the `NOTIFY` for live events.
+- A write costs few round trips on Postgres (LLM-469). Writes run on a pool of one connection, so their statements stay prepared. `Write` loads statuses, actors and teams once, as its `Catalog`, and the response reuses them. Activity rows, `updated_at`, the work log and the `NOTIFY` go in one statement at commit. A step that reads the activity table inside a write calls `Write::flush_events` first, and a step that changes statuses, teams or settings calls `Write::catalog_changed`.
+- A pooled Postgres connection may read beside itself on other connections only with a permit, and half the pool has permits. So connections that wait for others can never hold the whole pool.
 - Copying a whole workspace between backends lives in `store/transfer.rs`. Postgres backups and `llmtodo db migrate` use it.
 - Outside the backend layer, code branches on the backend only for features that exist on one side: laptop sync, the file folder and the parallel reads on SQLite's side, and the listener, the job lock and the idle pause on Postgres's side.
 

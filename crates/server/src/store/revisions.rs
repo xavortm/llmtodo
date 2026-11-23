@@ -50,6 +50,37 @@ fn rebuild(mut rows: Vec<Stored>) -> ApiResult<BTreeMap<i64, String>> {
     Ok(texts)
 }
 
+/// The insert of version 1 of a new record. There is no older row to lean
+/// on, so it needs no read first (LLM-469).
+pub fn first_revision_query(
+    entity_type: &str,
+    entity_id: &str,
+    body: &str,
+    actor_id: &str,
+    session: Option<&str>,
+) -> backend::Query {
+    insert_revision_query(entity_type, entity_id, 1, body, actor_id, session)
+}
+
+fn insert_revision_query(
+    entity_type: &str,
+    entity_id: &str,
+    version: i64,
+    body: &str,
+    actor_id: &str,
+    session: Option<&str>,
+) -> backend::Query {
+    backend::query("INSERT INTO revisions (id, entity_type, entity_id, version, body, actor_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(new_id())
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(version)
+        .bind(body)
+        .bind(actor_id)
+        .bind(session)
+        .bind(now())
+}
+
 pub async fn add_revision(
     conn: &mut Conn,
     entity_type: &str,
@@ -66,15 +97,7 @@ pub async fn add_revision(
     .bind(entity_id)
     .fetch_optional(&mut *conn)
     .await?;
-    backend::query("INSERT INTO revisions (id, entity_type, entity_id, version, body, actor_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(new_id())
-        .bind(entity_type)
-        .bind(entity_id)
-        .bind(version)
-        .bind(body)
-        .bind(actor_id)
-        .bind(session)
-        .bind(now())
+    insert_revision_query(entity_type, entity_id, version, body, actor_id, session)
         .execute(&mut *conn)
         .await?;
     // The row that was newest now has a newer row to lean on.

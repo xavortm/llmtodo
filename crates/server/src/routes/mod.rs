@@ -39,8 +39,21 @@ use crate::store;
 
 /// The response most issue writes return.
 async fn issue_detail(st: &AppState, id: &str) -> ApiResult<axum::Json<IssueDetail>> {
+    issue_detail_with(st, id, None).await
+}
+
+/// [`issue_detail`] after a write, with the statuses and actors the write
+/// loaded, which saves a round trip on a shared database (LLM-469).
+async fn issue_detail_with(
+    st: &AppState,
+    id: &str,
+    catalog: Option<std::sync::Arc<crate::state::Catalog>>,
+) -> ApiResult<axum::Json<IssueDetail>> {
     let mut c = st.pool().acquire().await?;
-    Ok(axum::Json(store::issue_detail::load(&mut c, id).await?))
+    let lookup = catalog.as_ref().map(|c| &c.lookup);
+    Ok(axum::Json(
+        store::issue_detail::load_with(&mut c, id, lookup).await?,
+    ))
 }
 
 /// Every handler, keyed by its endpoint type.

@@ -1,7 +1,7 @@
 use crate::store::backend::{Conn, Pool};
 use llmtodo_api_types::{ActivityEvent, ActivityField, EntityType};
 
-use crate::db::{new_id, now, parse_ts, parse_uuid};
+use crate::db::{parse_ts, parse_uuid};
 use crate::error::ApiResult;
 use crate::store::actors;
 use crate::store::backend;
@@ -148,34 +148,113 @@ pub async fn later_write(
     .await?)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn insert(
+/// One activity event a write recorded, waiting for the insert at commit.
+pub struct NewEvent {
+    pub id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub issue_id: Option<String>,
+    pub field: String,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub actor_id: String,
+    pub session_id: Option<String>,
+    pub created_at: String,
+}
+
+/// Events per insert statement. Ten values each keeps a statement well
+/// under the bound value limits of both backends.
+pub const INSERT_BATCH: usize = 500;
+
+/// One statement that inserts up to [`INSERT_BATCH`] events and returns
+/// their seqs (LLM-469).
+pub fn insert_query(events: &[NewEvent]) -> backend::Query {
+    let mut b = backend::QueryBuilder::new(
+        "INSERT INTO activity (id, entity_type, entity_id, issue_id, field, old, new, actor_id, session_id, created_at) VALUES ",
+    );
+    for (i, e) in events.iter().enumerate() {
+        if i > 0 {
+            b.push(", ");
+        }
+        b.push("(")
+            .push_bind(e.id.as_str())
+            .push(", ")
+            .push_bind(e.entity_type.as_str())
+            .push(", ")
+            .push_bind(e.entity_id.as_str())
+            .push(", ")
+            .push_bind(e.issue_id.as_deref())
+            .push(", ")
+            .push_bind(e.field.as_str())
+            .push(", ")
+            .push_bind(e.old.as_deref())
+            .push(", ")
+            .push_bind(e.new.as_deref())
+            .push(", ")
+            .push_bind(e.actor_id.as_str())
+            .push(", ")
+            .push_bind(e.session_id.as_deref())
+            .push(", ")
+            .push_bind(e.created_at.as_str())
+            .push(")");
+    }
+    b.push(" RETURNING seq");
+    b.build()
+}
+
+/// Inserts events in batches. Returns the highest seq, or None when there
+/// were none.
+pub async fn insert_many(c: &mut Conn, events: &[NewEvent]) -> ApiResult<Option<i64>> {
+    let mut max = None;
+    for chunk in events.chunks(INSERT_BATCH) {
+        let rows = insert_query(chunk).fetch_all(&mut *c).await?;
+        for r in rows {
+            max = max.max(Some(r.try_get::<i64>("seq")?));
+        }
+    }
+    Ok(max)
+}
+
+/// Postgres only: runs `parts`, inserts `events` and sends the notice of
+/// [`notify`], all in one statement, so the end of a write costs one round
+/// trip (LLM-469). Each part is a statement that returns nothing, and runs
+/// as its own `WITH` entry: Postgres runs every one exactly once. Returns
+/// the highest seq inserted.
+pub async fn finish_pg(
     c: &mut Conn,
-    entity_type: &str,
-    entity_id: &str,
-    issue_id: Option<&str>,
-    field: &str,
-    old: Option<String>,
-    new: Option<String>,
-    actor: String,
-    session: Option<String>,
-) -> ApiResult<i64> {
-    Ok(backend::query_scalar(
-            "INSERT INTO activity (id, entity_type, entity_id, issue_id, field, old, new, actor_id, session_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
-        )
-        .bind(new_id())
-        .bind(entity_type)
-        .bind(entity_id)
-        .bind(issue_id)
-        .bind(field)
-        .bind(old)
-        .bind(new)
-        .bind(actor)
-        .bind(session)
-        .bind(now())
-        .fetch_one(&mut *c)
-        .await?)
+    parts: Vec<backend::Query>,
+    events: &[NewEvent],
+) -> ApiResult<Option<i64>> {
+    debug_assert!(c.is_postgres() && events.len() <= INSERT_BATCH);
+    if parts.is_empty() && events.is_empty() {
+        return Ok(None);
+    }
+    let mut b = backend::QueryBuilder::new("WITH ");
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            b.push(", ");
+        }
+        b.push(format_args!("part{i} AS ("))
+            .push_query(part)
+            .push(")");
+    }
+    if events.is_empty() {
+        b.push(" SELECT 1");
+        b.build().execute(&mut *c).await?;
+        return Ok(None);
+    }
+    if b.sql() != "WITH " {
+        b.push(", ");
+    }
+    // The notice carries the highest seq. A function call in the select
+    // list runs once for the one row.
+    b.push("ins AS (")
+        .push_query(insert_query(events))
+        .push(") SELECT x.m, CAST(pg_notify(")
+        .push_bind(CHANNEL)
+        .push(", CAST(x.m AS TEXT)) AS TEXT) FROM (SELECT max(seq) AS m FROM ins) x");
+    let (max, _): (i64, String) = b.build_query_as().fetch_one(&mut *c).await?;
+    Ok(Some(max))
 }
 
 /// The channel that tells servers on a shared Postgres database of new

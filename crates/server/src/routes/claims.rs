@@ -17,16 +17,12 @@ pub async fn claim(
 ) -> ApiResult<Json<ClaimResponse>> {
     let mut w = Write::begin(&st, &ctx).await?;
     let claimed = ops::claims::claim(&mut w, &r, req).await?;
+    let catalog = w.catalog_for_response().await;
     w.commit().await?;
-    let mut c = st.pool().acquire().await?;
-    let issue = issues::load_one(&mut c, &claimed.id, false).await?;
-    Ok(Json(ClaimResponse {
-        issue,
-        changed: claimed.changed,
-        open_blockers: claimed.open_blockers,
-        warnings: claimed.warnings,
-        stolen_from: claimed.stolen_from,
-    }))
+    let lookup = catalog.as_ref().map(|c| &c.lookup);
+    Ok(Json(
+        ops::claims::response(&st.pool(), claimed, lookup).await?,
+    ))
 }
 
 pub async fn release(

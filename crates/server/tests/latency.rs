@@ -308,33 +308,38 @@ async fn requests_on_a_remote_database() {
         .await
     })
     .await;
-    timed(&mut out, "issue create", async {
-        call(
-            post.clone(),
-            "/v1/issues".into(),
-            json!({ "title": "New", "estimate_minutes": 5, "estimate_cost_usd": 1.0 }),
-        )
-        .await
-    })
-    .await;
-    timed(&mut out, "issue update: status", async {
-        call(
-            reqwest::Method::PATCH,
-            format!("/v1/issues/LLM-{mid}"),
-            json!({ "status": "In Progress" }),
-        )
-        .await
-    })
-    .await;
-    timed(&mut out, "issue claim", async {
-        call(
-            post.clone(),
-            format!("/v1/issues/LLM-{}/claim", mid + 1),
-            json!({}),
-        )
-        .await
-    })
-    .await;
+    // Each write runs twice. The first run prepares its statements on the
+    // connections it gets, which costs a round trip each. A server that
+    // has run a while has them prepared, as in the second run (LLM-469).
+    for (round, issue) in [("", mid), (", warm", mid + 8)] {
+        timed(&mut out, &format!("issue create{round}"), async {
+            call(
+                post.clone(),
+                "/v1/issues".into(),
+                json!({ "title": "New", "estimate_minutes": 5, "estimate_cost_usd": 1.0 }),
+            )
+            .await
+        })
+        .await;
+        timed(&mut out, &format!("issue update: status{round}"), async {
+            call(
+                reqwest::Method::PATCH,
+                format!("/v1/issues/LLM-{issue}"),
+                json!({ "status": "In Progress" }),
+            )
+            .await
+        })
+        .await;
+        timed(&mut out, &format!("issue claim{round}"), async {
+            call(
+                post.clone(),
+                format!("/v1/issues/LLM-{}/claim", issue + 1),
+                json!({}),
+            )
+            .await
+        })
+        .await;
+    }
 
     eprintln!("\nround trip {:?}, {issues} issues", rtt);
     eprintln!(

@@ -35,10 +35,23 @@ pub async fn resolve_id(conn: &mut Conn, r: &str) -> ApiResult<String> {
     id.ok_or_else(|| ApiError::not_found("issue", r))
 }
 
-/// Like [`resolve_id`], but a trashed issue counts as not found.
+/// Like [`resolve_id`], but a trashed issue counts as not found. One
+/// statement finds the key and reads the row (LLM-469).
 pub async fn resolve_live(conn: &mut Conn, r: &str) -> ApiResult<IssueRow> {
-    let id = resolve_id(conn, r).await?;
-    let row = row(conn, &id).await?;
+    let trimmed = r.trim();
+    let row = match trimmed.parse::<IssueKey>() {
+        Ok(key) => backend::query_as::<IssueRow>(crate::sql!(
+            "{SELECT} WHERE i.id = (SELECT issue_id FROM issue_keys WHERE key = ?)"
+        ))
+        .bind(true)
+        .bind(key.to_string()),
+        Err(_) => backend::query_as::<IssueRow>(crate::sql!("{SELECT} WHERE i.id = ?"))
+            .bind(true)
+            .bind(trimmed),
+    }
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| ApiError::not_found("issue", trimmed))?;
     if row.deleted_at.is_some() {
         return Err(ApiError::not_found("issue", r)
             .with_details(serde_json::json!({ "ref": r, "trashed": true })));
@@ -222,7 +235,7 @@ pub struct Lookup {
 
 impl Lookup {
     pub async fn load(conn: &mut Conn) -> ApiResult<Self> {
-        if let Some(pool) = conn.read_pool().cloned() {
+        if let Some(pool) = conn.read_pool() {
             let (statuses, actors) = tokio::try_join!(
                 async { teams::status_map(&mut pool.acquire().await?).await },
                 async { actors::all(&mut pool.acquire().await?).await },
@@ -265,7 +278,7 @@ pub async fn load_with(
     // they run at once on their own connections, so a page costs about
     // one round trip instead of eight (LLM-465).
     let (rows, claims, analyzing, blockers, mut costs, open_questions, mut times, label_rows) =
-        match conn.read_pool().cloned() {
+        match conn.read_pool() {
             Some(pool) => {
                 let c = || async { pool.acquire().await.map_err(ApiError::from) };
                 tokio::try_join!(
@@ -292,6 +305,18 @@ pub async fn load_with(
                 label_rows(conn, ids).await?,
             ),
         };
+    // A lookup loaded earlier, such as by the write that just committed,
+    // may miss a status or an actor added since. Load it again then.
+    let missing = rows.iter().any(|r| {
+        !statuses.contains_key(&r.status_id)
+            || [&r.assignee_id, &r.created_by]
+                .into_iter()
+                .flatten()
+                .any(|a| !actors.contains_key(a))
+    });
+    if missing {
+        return Box::pin(load(conn, ids, with_description)).await;
+    }
     let mut labels_by: HashMap<String, Vec<String>> = HashMap::new();
     for (issue, name, group) in label_rows {
         labels_by.entry(issue).or_default().push(match group {
@@ -1033,6 +1058,16 @@ pub async fn touch_updated(c: &mut Conn, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// One statement that moves `updated_at` of every issue in `ids` to `t`.
+/// A write runs it at commit (LLM-469).
+pub fn touch_updated_query(t: &str, ids: &[String]) -> ApiResult<backend::Query> {
+    Ok(backend::query(
+        "UPDATE issues SET updated_at = ? WHERE id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(t)
+    .bind(serde_json::to_string(ids)?))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
     c: &mut Conn,
@@ -1048,10 +1083,11 @@ pub async fn insert(
     t: &str,
     completed: Option<String>,
     executor: String,
+    estimates: (Option<u32>, Option<f64>),
 ) -> ApiResult<()> {
     backend::query(
-        "INSERT INTO issues (id, team_id, number, key, title, description, status_id, priority, created_by, created_at, updated_at, completed_at, wanted_executor)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO issues (id, team_id, number, key, title, description, status_id, priority, created_by, created_at, updated_at, completed_at, wanted_executor, estimate_minutes, estimate_cost_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
         .bind(id)
         .bind(team_id)
@@ -1066,18 +1102,23 @@ pub async fn insert(
         .bind(t)
         .bind(completed)
         .bind(executor)
+        .bind(estimates.0.map(i64::from))
+        .bind(estimates.1)
         .execute(&mut *c)
         .await?;
     Ok(())
 }
 
 pub async fn add_key(c: &mut Conn, key: &str, id: &str) -> ApiResult<()> {
+    add_key_query(key, id).execute(&mut *c).await?;
+    Ok(())
+}
+
+/// The statement of [`add_key`].
+pub fn add_key_query(key: &str, id: &str) -> backend::Query {
     backend::query("INSERT INTO issue_keys (key, issue_id) VALUES (?, ?)")
         .bind(key)
         .bind(id)
-        .execute(&mut *c)
-        .await?;
-    Ok(())
 }
 
 pub async fn git_fields(
@@ -1223,6 +1264,30 @@ pub async fn set_assignee(c: &mut Conn, assignee_id: Option<&str>, id: &str) -> 
         .bind(id)
         .execute(&mut *c)
         .await?;
+    Ok(())
+}
+
+/// Sets the assignee, the status, or both, in one statement, for a claim
+/// (LLM-469). A status given is an open one, so `completed_at` clears.
+pub async fn set_assignee_and_status(
+    c: &mut Conn,
+    assignee_id: Option<&str>,
+    status_id: Option<&str>,
+    id: &str,
+) -> ApiResult<()> {
+    backend::query(
+        "UPDATE issues SET assignee_id = CASE WHEN ? = 1 THEN ? ELSE assignee_id END,
+         status_id = coalesce(?, status_id),
+         completed_at = CASE WHEN ? = 1 THEN NULL ELSE completed_at END
+         WHERE id = ?",
+    )
+    .bind(assignee_id.is_some())
+    .bind(assignee_id)
+    .bind(status_id)
+    .bind(status_id.is_some())
+    .bind(id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 
@@ -1403,21 +1468,22 @@ pub async fn count_all(c: &mut Conn) -> ApiResult<i64> {
         .await?)
 }
 
-pub async fn set_estimate_minutes(c: &mut Conn, minutes: u32, id: &str) -> ApiResult<()> {
-    backend::query("UPDATE issues SET estimate_minutes = ? WHERE id = ?")
-        .bind(i64::from(minutes))
-        .bind(id)
-        .execute(&mut *c)
-        .await?;
-    Ok(())
-}
-
-pub async fn set_estimate_cost(c: &mut Conn, usd: f64, id: &str) -> ApiResult<()> {
-    backend::query("UPDATE issues SET estimate_cost_usd = ? WHERE id = ?")
-        .bind(usd)
-        .bind(id)
-        .execute(&mut *c)
-        .await?;
+/// Sets the estimates given, and keeps the others, in one statement.
+pub async fn set_estimates(
+    c: &mut Conn,
+    minutes: Option<u32>,
+    usd: Option<f64>,
+    id: &str,
+) -> ApiResult<()> {
+    backend::query(
+        "UPDATE issues SET estimate_minutes = coalesce(?, estimate_minutes),
+         estimate_cost_usd = coalesce(?, estimate_cost_usd) WHERE id = ?",
+    )
+    .bind(minutes.map(i64::from))
+    .bind(usd)
+    .bind(id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 

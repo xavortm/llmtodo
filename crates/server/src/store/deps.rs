@@ -243,6 +243,27 @@ impl Graph {
     }
 }
 
+/// The keys along the longest chain of open blockers of one issue, as
+/// [`Blockers::longest_chain`] gives them, with no blocker links loaded.
+/// An issue with no open blockers costs no query but the graph's.
+pub async fn longest_chain_of(
+    conn: &mut Conn,
+    id: &str,
+    statuses: &HashMap<String, teams::StatusRow>,
+) -> ApiResult<Vec<IssueKey>> {
+    let graph = Graph::current(conn).await?;
+    let has = graph.of(id).is_some_and(|i| !graph.blockers[i].is_empty());
+    if !has {
+        return Ok(Vec::new());
+    }
+    Blockers {
+        graph,
+        links: HashMap::new(),
+    }
+    .longest_chain(conn, id, statuses)
+    .await
+}
+
 /// The open blockers of a set of issues, with the whole graph behind them.
 pub struct Blockers {
     graph: Arc<Graph>,

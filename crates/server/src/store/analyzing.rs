@@ -47,13 +47,14 @@ pub async fn upsert(
     Ok(())
 }
 
-pub async fn refresh(
-    c: &mut Conn,
+/// Keeps the session's live Analyzing marks on `touched` issues alive.
+/// A write runs it at commit, with others (LLM-469).
+pub fn refresh_query(
     seen_at: &str,
     session: &str,
     cutoff: String,
     touched: String,
-) -> ApiResult<()> {
+) -> backend::Query {
     backend::query(
         "UPDATE analyzing SET seen_at = ? WHERE session_id = ? AND seen_at >= ?
                  AND issue_id IN (SELECT value FROM json_each(?))",
@@ -62,7 +63,4 @@ pub async fn refresh(
     .bind(session)
     .bind(cutoff)
     .bind(touched)
-    .execute(&mut *c)
-    .await?;
-    Ok(())
 }

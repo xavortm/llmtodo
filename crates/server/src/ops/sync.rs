@@ -365,7 +365,7 @@ async fn swap_in(st: &AppState, staging: &Path) -> ApiResult<PathBuf> {
     };
     match opened {
         Ok(pool) => {
-            *st.pool_slot.write().expect("pool lock") = pool;
+            st.set_pool(pool);
             Ok(backup)
         }
         Err(e) => {
@@ -375,7 +375,7 @@ async fn swap_in(st: &AppState, staging: &Path) -> ApiResult<PathBuf> {
             let pool = db::open(&st.data_dir)
                 .await
                 .map_err(|r| ApiError::internal(format!("{}; reopen backup: {r:#}", e.message)))?;
-            *st.pool_slot.write().expect("pool lock") = pool;
+            st.set_pool(pool);
             tracing::warn!(error = %e.message, "sync pull swap failed; restored the backup");
             Err(e)
         }

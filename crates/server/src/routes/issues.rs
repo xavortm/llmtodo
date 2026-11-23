@@ -6,6 +6,7 @@ use axum::extract::{Path, Query, State};
 use llmtodo_api_types::*;
 
 use super::issue_detail;
+use super::issue_detail_with;
 use crate::error::{ApiError, ApiResult};
 use crate::ops;
 use crate::state::{AppState, Ctx, Write};
@@ -70,8 +71,9 @@ pub async fn create(
 ) -> ApiResult<Json<IssueDetail>> {
     let mut w = Write::begin(&st, &ctx).await?;
     let id = ops::issues::create(&mut w, req, None).await?;
+    let catalog = w.catalog_for_response().await;
     w.commit().await?;
-    issue_detail(&st, &id).await
+    issue_detail_with(&st, &id, catalog).await
 }
 
 pub async fn update(
@@ -88,8 +90,9 @@ pub async fn update(
     })?;
     let mut w = Write::begin(&st, &ctx).await?;
     let id = ops::issues::update(&mut w, &r, req).await?;
+    let catalog = w.catalog_for_response().await;
     w.commit().await?;
-    issue_detail(&st, &id).await
+    issue_detail_with(&st, &id, catalog).await
 }
 
 pub async fn delete(
