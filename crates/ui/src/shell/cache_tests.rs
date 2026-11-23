@@ -16,7 +16,7 @@ use crate::render_count;
 use crate::settings::view::SettingsView;
 use crate::shell::mascot::Mascot;
 use crate::shell::sidebar::Sidebar;
-use crate::shell::workspace::{UpdateButton, Workspace};
+use crate::shell::workspace::{StatusBarView, TitleBarView, UpdateButton, Workspace};
 use crate::task::task_view::TaskView;
 
 fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
@@ -185,10 +185,14 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
         this.set_update_launcher(|_| Err(std::io::Error::other("test")));
         cx.notify();
     });
+    // The test platform draws it as the click's update ends. The button
+    // sits in the cached title bar (LLM-348), so the workspace's own
+    // follow-up frame does not draw it a second time.
     render_count::reset();
     view.update(cx, |this, cx| this.restart_to_update(cx));
     assert!(cx.read(|cx| view.read(cx).update_restarting()));
-    assert_eq!(frame_renders::<UpdateButton>(handle, cx), 1);
+    assert_eq!(render_count::of::<UpdateButton>(), 1);
+    assert_eq!(frame_renders::<UpdateButton>(handle, cx), 0);
 }
 
 /// LLM-344: the gradient draws at most `GRADIENT_FPS` times a second, and
@@ -475,6 +479,142 @@ fn assert_fills(handle: AnyWindowHandle, id: &'static str, cx: &mut TestAppConte
     cx.update_window(handle, |_, window, _| {
         let width = window.find(id).bounds().size.width;
         assert!(width > px(1100.), "{id} is only {width:?} wide");
+    })
+    .unwrap();
+}
+
+/// LLM-348: the title bar and the status bar are cached views. A cat frame
+/// draws the workspace, but neither bar.
+#[gpui_kit::test]
+fn a_cat_frame_draws_neither_bar(cx: &mut TestAppContext) {
+    let (handle, view) = open_with_task(cx);
+    let mascot = cx.read(|cx| view.read(cx).mascot().clone());
+    for _ in 0..3 {
+        render_count::reset();
+        cx.update_window(handle, |_, window, cx| {
+            mascot.update(cx, |mascot, cx| mascot.tick(cx));
+            draw(window, cx);
+        })
+        .unwrap();
+        assert_eq!(render_count::of::<Mascot>(), 1);
+        assert_eq!(render_count::of::<Workspace>(), 1);
+        assert_eq!(render_count::of::<TitleBarView>(), 0);
+        assert_eq!(render_count::of::<StatusBarView>(), 0);
+    }
+}
+
+/// LLM-348: the caret blinking in the filter draws neither bar.
+#[gpui_kit::test]
+fn a_cursor_blink_draws_neither_bar(cx: &mut TestAppContext) {
+    let (handle, view) = open_with_task(cx);
+    press(handle, "escape /", cx);
+    settle(handle, cx);
+    assert_eq!(
+        cx.update_window(handle, |_, window, cx| view.read(cx).vim_mode(window, cx))
+            .unwrap(),
+        "insert",
+        "the filter has focus"
+    );
+    render_count::reset();
+    for _ in 0..4 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+    }
+    assert!(
+        render_count::of::<Workspace>() > 0,
+        "the caret blinked and drew the window"
+    );
+    assert_eq!(render_count::of::<TitleBarView>(), 0);
+    assert_eq!(render_count::of::<StatusBarView>(), 0);
+}
+
+/// LLM-348: each bar still draws again for what it shows, and keeps the
+/// height it had before it was cached.
+#[gpui_kit::test]
+fn the_bars_draw_again_for_what_they_show(cx: &mut TestAppContext) {
+    let (handle, view) = open_with_task(cx);
+    settle(handle, cx);
+    let heights = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, _| {
+            (
+                window.find("title-bar").bounds().size.height,
+                window.find("status-count").bounds().size.height,
+            )
+        })
+        .unwrap()
+    };
+    let (title, _) = heights(cx);
+    assert_eq!(title, gpui_kit::component::TITLE_BAR_HEIGHT);
+    assert_eq!(frame_renders::<TitleBarView>(handle, cx), 0);
+    assert_eq!(frame_renders::<StatusBarView>(handle, cx), 0);
+
+    // A message: only the status bar shows it.
+    after(handle, cx, |cx| {
+        view.update(cx, |this, cx| this.show_message("Hello".into(), cx))
+    });
+    assert_eq!(render_count::of::<StatusBarView>(), 1);
+    assert_eq!(render_count::of::<TitleBarView>(), 0);
+    cx.update_window(handle, |_, window, _| {
+        window.find("status-message");
+    })
+    .unwrap();
+
+    // A mark changes the count.
+    after(handle, cx, |cx| press(handle, "escape x", cx));
+    assert!(render_count::of::<StatusBarView>() > 0);
+
+    // The sidebar button shows whether the sidebar is open.
+    after(handle, cx, |cx| press(handle, "cmd-b", cx));
+    assert!(render_count::of::<TitleBarView>() > 0);
+    assert!(!cx.read(|cx| view.read(cx).sidebar_shown()));
+
+    // A new scope changes the project name and the count.
+    after(handle, cx, |cx| {
+        view.update(cx, |this, cx| {
+            this.set_scope(crate::model::scope::Scope::Project("app".into()), cx)
+        })
+    });
+    assert!(render_count::of::<TitleBarView>() > 0);
+    assert!(render_count::of::<StatusBarView>() > 0);
+
+    // A live claim changes the claim count.
+    after(handle, cx, |cx| touch_store(&view, cx));
+    assert_eq!(render_count::of::<TitleBarView>(), 0);
+
+    // The focus moves into the filter: the mode says insert.
+    after(handle, cx, |cx| press(handle, "/", cx));
+    assert!(render_count::of::<StatusBarView>() > 0);
+}
+
+/// LLM-348: the status bar keeps its height when cached: 28.5 px at 100%
+/// zoom, as it measured inside the workspace, and 29 px with the answer's
+/// Undo button.
+#[gpui_kit::test]
+fn the_status_bar_keeps_its_height(cx: &mut TestAppContext) {
+    let (handle, view) = open_with_task(cx);
+    settle(handle, cx);
+    let bar = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, _| {
+            let bar = window.find("status-bar").bounds();
+            assert_eq!(bar.bottom(), window.viewport_size().height, "{bar:?}");
+            f32::from(bar.size.height)
+        })
+        .unwrap()
+    };
+    let height = bar(cx);
+    assert!((height - 28.5).abs() <= 0.5, "the status bar is {height}");
+
+    view.update(cx, |this, cx| this.offer_test_answer_undo(cx));
+    settle(handle, cx);
+    let height = bar(cx);
+    assert!(
+        (height - 29.).abs() <= 0.5,
+        "the status bar with Undo is {height}"
+    );
+    cx.update_window(handle, |_, window, _| {
+        let undo = window.find("answer-undo-button").bounds();
+        assert!(undo.bottom() <= window.viewport_size().height, "{undo:?}");
     })
     .unwrap();
 }

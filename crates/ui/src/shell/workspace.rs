@@ -67,6 +67,7 @@ use crate::task::sections;
 use crate::task::task_view::{DetailMode, TaskView};
 use crate::task::vim_editor::{self, VimMode};
 
+mod bars;
 mod commands;
 mod events;
 mod keys;
@@ -75,6 +76,7 @@ mod review_batch;
 mod update;
 mod view_events;
 
+pub use bars::{StatusBarView, TitleBarView};
 pub use keys::*;
 pub use update::UpdateButton;
 #[cfg(test)]
@@ -271,6 +273,10 @@ pub struct Workspace {
     task: Entity<TaskView>,
     palette: Entity<Palette>,
     create: Entity<CreateForm>,
+    /// The bars, each a cached view that draws only when what it shows
+    /// changes (LLM-348).
+    title_bar: Entity<TitleBarView>,
+    status_bar: Entity<StatusBarView>,
     doc_view: Entity<DocView>,
     inbox: Entity<InboxView>,
     settings_view: Entity<SettingsView>,
@@ -464,6 +470,19 @@ impl Workspace {
         let mascot = cx.new(|cx| Mascot::new(issues.clone(), cx));
         let palette = cx.new(|cx| Palette::new(focus.clone(), window, cx));
         let create = cx.new(|cx| CreateForm::new(focus.clone(), window, cx));
+        let (title_bar, status_bar) = {
+            let workspace = cx.entity();
+            let watched = || bars::Watched {
+                workspace: &workspace,
+                store: &issues,
+                list: &list,
+                task: &task,
+            };
+            (
+                cx.new(|cx| TitleBarView::new(watched(), window, cx)),
+                cx.new(|cx| StatusBarView::new(watched(), window, cx)),
+            )
+        };
         let doc_view = cx.new(|cx| DocView::new(issues.clone(), events.clone(), window, cx));
         let inbox =
             cx.new(|cx| InboxView::new(issues.clone(), events.clone(), answers.clone(), cx));
@@ -627,6 +646,8 @@ impl Workspace {
             task,
             palette,
             create,
+            title_bar,
+            status_bar,
             doc_view,
             inbox,
             settings_view,
@@ -2980,6 +3001,14 @@ impl Workspace {
             message: message.into(),
             _expire: expire,
         });
+    }
+
+    /// Shows the answer's Undo button, as an answer does.
+    #[cfg(test)]
+    pub fn offer_test_answer_undo(&mut self, cx: &mut Context<Self>) {
+        let id = self.store.read(cx).iter().next().expect("an issue").id;
+        self.offer_answer_undo(id, 1, "Answered Q1".into(), cx);
+        cx.notify();
     }
 
     /// Asks the server to reopen the question of the newest answer. The
