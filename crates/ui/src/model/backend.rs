@@ -847,6 +847,17 @@ async fn session(
                     state.pending.add(&event);
                 }
                 live::Signal::Reload => state.pending.reload = true,
+                // The server dropped some events for this socket. Read them
+                // from the activity log, which costs far less than a full
+                // snapshot. Later events on the socket may repeat some of
+                // them, and `pending` holds each issue once.
+                live::Signal::Lagged => match state.last_seq {
+                    Some(after) => {
+                        let last = catch_up(&client, after, &mut state.pending).await?;
+                        state.last_seq = Some(last.max(after));
+                    }
+                    None => state.pending.reload = true,
+                },
             },
             _ = settle, if due.is_some() && flushing.is_none() => {
                 due = None;
@@ -972,9 +983,10 @@ impl Pending {
     }
 }
 
-/// Reads the events missed while offline into `pending`. Asks for a full
-/// reload when the gap is too old.
-async fn catch_up(client: &Client, after: i64, pending: &mut Pending) -> Result<(), String> {
+/// Reads the events missed while offline, or dropped while the socket lagged,
+/// into `pending`. Asks for a full reload when the gap is too old. Returns
+/// the seq of the last event read, or `after` when there was none.
+async fn catch_up(client: &Client, after: i64, pending: &mut Pending) -> Result<i64, String> {
     let mut q = ActivityQuery {
         after_seq: Some(after),
         issue: None,
@@ -991,7 +1003,7 @@ async fn catch_up(client: &Client, after: i64, pending: &mut Pending) -> Result<
         }
     })
     .await
-    .map(|_stopped| ())
+    .map(|_stopped| q.after_seq.unwrap_or(after))
     .map_err(|e| e.to_string())
 }
 

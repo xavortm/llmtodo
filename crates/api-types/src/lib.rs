@@ -1255,6 +1255,9 @@ pub enum WsMessage {
     },
     /// The database was swapped, such as by `sync pull`. Reload everything.
     Reload,
+    /// This socket fell behind and the server dropped some events for it.
+    /// The database is the same, so catch up from the last seq seen.
+    Lagged,
 }
 
 // ---------------------------------------------------------------- views

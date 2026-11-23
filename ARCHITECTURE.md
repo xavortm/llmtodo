@@ -34,7 +34,7 @@ Cargo enforces the table above, because a crate cannot import a dependency it do
 - The client sends every request through one generic `call` that takes an endpoint type. It spells no paths, and the route table tells it which requests write and carry usage.
 - A CLI test runs the command named for each route and checks that the command calls that route. The Linear import route is exempt, because it needs a Linear key.
 - `ErrorCode` in `api-types` is the one list of error codes and exit codes.
-- `client::live` holds the one copy of the live protocol: the hello, the catch-up, the ping and the reload. The app's API thread, `activity --follow` and `review wait` use it.
+- `client::live` holds the one copy of the live protocol: the hello, the catch-up, the ping, the reload and the lag notice. The app's API thread, `activity --follow` and `review wait` use it.
 - `client::data_dir::resolve` is the one place that picks a data folder, and the CLI and the app both call it. The folder is an input everywhere after that, so one process can open several. `core` names the standard folder's path, so the server and the app's tracker list can mark it.
 - `client::identity` finds the actor, the session, git details and the agent's usage. Each harness, such as Claude Code, implements the `Harness` trait. The CLI adds only the repo's `.llmtodo.toml`.
 - An update field that can be cleared is a `Change<T>`: Keep, Clear or Set. On the wire, a missing field or `null` keeps the value and an empty string clears it.

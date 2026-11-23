@@ -45,8 +45,10 @@ async fn ws_loop(st: AppState, mut socket: WebSocket) {
             msg = rx.recv() => {
                 let msg = match msg {
                     Ok(m) => m,
-                    // The client fell behind; tell it to catch up from its last seq.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => WsMessage::Reload,
+                    // The client fell behind; tell it to catch up from its
+                    // last seq. Closing the socket instead would make the
+                    // app show itself offline.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => WsMessage::Lagged,
                     Err(_) => return,
                 };
                 let text = serde_json::to_string(&msg).unwrap_or_default();

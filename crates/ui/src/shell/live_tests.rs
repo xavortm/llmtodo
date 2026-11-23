@@ -452,6 +452,49 @@ fn backend_catches_up_after_a_reconnect() {
     assert_eq!(claim.session_id, "agent-2");
 }
 
+/// LLM-351: the server drops events for a socket that lags and says
+/// `lagged`. The thread reads the missed events from the activity log and
+/// refreshes only the issues they touch, not a full snapshot.
+#[test]
+fn backend_catches_up_when_the_socket_lags() {
+    let live = Live::new();
+    let (_backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+
+    // While the test holds the lock that sends live events, a write
+    // commits but its event stays off the socket, as if it were dropped.
+    let state = live.server.as_ref().unwrap().state.clone();
+    let sending = live.rt.block_on(state.sent_seq.lock());
+    let agent = live.client(Some("agent-lag"));
+    let claim = live.rt.spawn({
+        let agent = agent.clone();
+        async move { agent.claim("LLM-1", &ClaimRequest::default()).await }
+    });
+    let owner = live.client(None);
+    live.rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while owner.issue("LLM-1").await.unwrap().issue.claim.is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the claim commits")
+    });
+    let _ = state.events.send(llmtodo_client::types::WsMessage::Lagged);
+
+    let next = live.wait(&mut events, "catch-up", |e| match e {
+        Event::Snapshot(_) => Some(Err(())),
+        e => issue_event(e).and_then(|i| i.claim).map(Ok),
+    });
+    let claim_seen = next.expect("caught up from the activity log, not a full reload");
+    assert_eq!(claim_seen.session_id, "agent-lag");
+
+    drop(sending);
+    live.rt.block_on(claim).unwrap().unwrap();
+}
+
 /// A TCP proxy in front of the server. While frozen, it holds every
 /// connection open but passes no bytes, like a server stuck on a lock.
 /// While HTTP is down, it refuses new connections and closes every one but

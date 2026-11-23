@@ -1,7 +1,7 @@
 //! The live event stream. Every client that follows changes uses it: the
 //! app's API thread, `activity --follow` and `review wait`.
 //!
-//! The protocol has four parts:
+//! The protocol has five parts:
 //!
 //! - **Hello.** The server subscribes the socket, then sends `hello` with
 //!   its newest activity seq. No event after the hello is lost.
@@ -11,6 +11,9 @@
 //!   back for two pings counts as gone, even when the socket stays open.
 //! - **Reload.** The server sends `reload` when its database is swapped,
 //!   such as by `sync pull`.
+//! - **Lagged.** The server sends `lagged` when this socket fell behind and
+//!   some events were dropped for it. The caller catches up from its last
+//!   seq, as after a reconnect.
 //!
 //! [`Connection`] is one socket, and [`catch_up`] reads the gap. Callers
 //! with their own reconnect loop, such as the app, use these two.
@@ -41,6 +44,9 @@ pub enum Signal {
     Event(Box<ActivityEvent>),
     /// The database was swapped. Everything the caller holds may be stale.
     Reload,
+    /// The server dropped some events for this socket. The database is the
+    /// same, so the caller catches up from its last seq.
+    Lagged,
 }
 
 /// One live socket, after the hello.
@@ -126,6 +132,7 @@ impl Connection {
                     match serde_json::from_str::<WsMessage>(&text) {
                         Ok(WsMessage::Event { event }) => return Ok(Signal::Event(event)),
                         Ok(WsMessage::Reload) => return Ok(Signal::Reload),
+                        Ok(WsMessage::Lagged) => return Ok(Signal::Lagged),
                         _ => {}
                     }
                 }
@@ -376,7 +383,7 @@ where
     loop {
         let behind = match conn.next().await.map_err(Ended::Lost)? {
             Signal::Event(e) => Some(e.seq) > q.after_seq,
-            Signal::Reload => true,
+            Signal::Reload | Signal::Lagged => true,
         };
         if behind && read_gap(q).await? {
             return Ok(());
