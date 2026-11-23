@@ -20,6 +20,15 @@ A repo uses llmtodo when its git root has a `.llmtodo.toml` file. The file names
 
 On a terminal, `llmtodo init` with no flags asks for each value. `llmtodo init` also installs this skill in `~/.claude/skills/llmtodo`. `llmtodo skill install` does only that step.
 
+## Choose the database
+
+llmtodo keeps its data in a local SQLite file by default. The owner can instead share one Postgres database, such as Neon, between laptops. Set this up only when the owner asks, or when `llmtodo db status` shows a choice to finish. Read "Choose the database" in the guide first, and ask the owner before each step:
+
+1. Ask: local SQLite, or a shared Postgres database?
+2. For Postgres, the owner stores the connection string. Never ask for it in chat, and never put it in a file or a command line. The owner runs `! pbpaste | llmtodo db set-url`, or `! op read op://<vault>/<item>/<field> | llmtodo db set-url`.
+3. Ask: move this laptop's data to the shared database (`llmtodo db migrate --to postgres`), or join a database that already holds it (`llmtodo db use postgres`)?
+4. Run only the command the owner chose, then `llmtodo db status`.
+
 ## The short version
 
 1. `export LLMTODO_SESSION=$CLAUDE_CODE_SESSION_ID`. Give each subagent its own value, such as `$CLAUDE_CODE_SESSION_ID-<name>`.
