@@ -44,6 +44,8 @@ pub(super) struct StatusShown {
     offer: Option<SharedString>,
     message: Option<SharedString>,
     connection: Connection,
+    /// A wait that lasted past its show-after delay (LLM-470).
+    wait: Option<crate::model::activity::Wait>,
     claimed: usize,
 }
 
@@ -130,8 +132,15 @@ impl Workspace {
             offer,
             message,
             connection: store.connection.clone(),
+            wait: self.activity.shown(cx.background_executor().now()),
             claimed: store.claim_count(),
         }
+    }
+
+    /// The wait the status bar shows now, for tests.
+    #[cfg(test)]
+    pub(crate) fn wait_shown(&self, cx: &App) -> Option<crate::model::activity::Wait> {
+        self.activity.shown(cx.background_executor().now())
     }
 
     /// The status bar's height, which its cached view must be given. It is
@@ -499,6 +508,7 @@ impl Render for StatusBarView {
             offer,
             message,
             connection,
+            wait,
             claimed,
         } = shown;
         let theme = cx.theme();
@@ -581,8 +591,35 @@ impl Render for StatusBarView {
                     .gap_3()
                     .text_xs()
                     .text_color(theme.muted_foreground)
+                    // A wait shows beside the connection, quietly. Waking
+                    // stands in for Connecting, since it says more.
+                    .when_some(wait, |this, wait| {
+                        use crate::model::activity::{Wait, loading_text};
+                        let text = match wait {
+                            Wait::Waking => "Waking the shared database…".to_string(),
+                            Wait::Loading { loaded, total } => loading_text(loaded, total),
+                            Wait::Saving => "Saving…".to_string(),
+                        };
+                        this.child(
+                            h_flex()
+                                .id("status-wait")
+                                .test_support()
+                                .gap_1()
+                                .child(
+                                    gpui_kit::component::spinner::Spinner::new()
+                                        .xsmall()
+                                        .color(theme.muted_foreground),
+                                )
+                                .child(text),
+                        )
+                    })
                     .map(|this| match &connection {
                         Connection::Local => this,
+                        Connection::Connecting
+                            if wait == Some(crate::model::activity::Wait::Waking) =>
+                        {
+                            this
+                        }
                         Connection::Connecting => this.child("Connecting…"),
                         Connection::Online(url) => this.child(
                             h_flex()
@@ -598,6 +635,25 @@ impl Render for StatusBarView {
                                 .text_color(theme.foreground)
                                 .child(Icon::new(IconName::Unplug).xsmall())
                                 .child("Offline, retrying"),
+                        ),
+                        // Distinct from Offline: the server runs, and the
+                        // owner checks the network or the database URL.
+                        Connection::DatabaseDown { host, .. } => this.child(
+                            h_flex()
+                                .id("status-database-down")
+                                .test_support()
+                                .gap_1()
+                                .text_color(theme.foreground)
+                                .child(Icon::new(IconName::DatabaseZap).xsmall())
+                                .child("Shared database unreachable, retrying")
+                                .when_some(host.clone(), |this, host| {
+                                    this.tooltip(
+                                        crate::shell::tooltip::Card::text(format!(
+                                            "The server cannot reach {host}"
+                                        ))
+                                        .builder(),
+                                    )
+                                }),
                         ),
                     })
                     .when(claimed > 0, |this| {

@@ -1,5 +1,6 @@
 //! The app's state and its link to the API server.
 
+pub mod activity;
 pub mod backend;
 pub mod data;
 #[cfg(any(test, feature = "bench-support"))]
@@ -20,6 +21,7 @@ mod boundary {
     #[test]
     fn the_model_imports_no_gpui_and_nothing_outside_the_model() {
         let sources = [
+            ("activity.rs", include_str!("activity.rs")),
             ("backend.rs", include_str!("backend.rs")),
             ("data.rs", include_str!("data.rs")),
             ("drafts.rs", include_str!("drafts.rs")),

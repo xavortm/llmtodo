@@ -1258,7 +1258,7 @@ impl IssueList {
     }
 
     /// What the list says when it shows no rows.
-    fn empty_text(&self, cx: &App) -> Option<SharedString> {
+    pub(crate) fn empty_text(&self, cx: &App) -> Option<SharedString> {
         if !self.rows.is_empty() {
             return None;
         }
@@ -1267,6 +1267,15 @@ impl IssueList {
             (Connection::Connecting, _) if store.is_empty() => "Loading issues…".into(),
             (Connection::Offline(reason), _) if store.is_empty() => {
                 format!("Cannot reach the llmtodo server: {reason}").into()
+            }
+            (Connection::DatabaseDown { host, .. }, _) if store.is_empty() => match host {
+                Some(host) => format!("Shared database unreachable at {host}. Retrying").into(),
+                None => "Shared database unreachable. Retrying".into(),
+            },
+            // The first load fills the list in pages (LLM-470).
+            (_, _) if store.is_empty() && store.loading.is_some() => {
+                let (loaded, total) = store.loading.unwrap_or_default();
+                crate::model::activity::loading_text(loaded, total).into()
             }
             (_, Scope::Trash) if self.query.is_empty() => "The Trash is empty".into(),
             (_, Scope::View(name)) if store.view.as_ref().is_none_or(|v| v.name != *name) => {
@@ -1892,6 +1901,7 @@ impl IssueList {
             return div().id(("row", row)).h_7().into_any_element();
         };
         let selected = row == self.selected;
+        let saving = self.store.read(cx).is_saving(id);
         let closed = issue.status.is_closed();
         let struck = self.strike_done && issue.status.is_done();
         let layout = self.layout.clone();
@@ -1987,10 +1997,8 @@ impl IssueList {
             .when(self.shows(Column::Key), |this| {
                 this.child(cell_with(Column::Key, &layout, key))
             })
-            .child(cell_with(
-                Column::Title,
-                &layout,
-                div()
+            .child(cell_with(Column::Title, &layout, {
+                let title = div()
                     .id(if struck { "title-struck" } else { "title" })
                     .test_support()
                     .w_full()
@@ -2003,8 +2011,28 @@ impl IssueList {
                         });
                         this
                     })
-                    .child(issue.title.clone()),
-            ))
+                    .child(issue.title.clone());
+                // A write that waits past its delay marks its row, quietly
+                // (LLM-470). The status bar says "Saving…" beside it.
+                if saving {
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_1()
+                        .child(title.w_auto().min_w_0())
+                        .child(
+                            div()
+                                .id("row-saving")
+                                .test_support()
+                                .flex_none()
+                                .text_color(muted)
+                                .child(Icon::new(IconName::CloudUpload).xsmall()),
+                        )
+                        .into_any_element()
+                } else {
+                    title.into_any_element()
+                }
+            }))
             // As many tags as fit, then "+N" for the rest. The last tag
             // shown is cut off if it must be.
             .when(self.shows(Column::Labels), |this| {

@@ -49,6 +49,9 @@ fn main() {
         let update = update::UpdateWatch::from_env(&target.data_dir);
         let update_dir = target.data_dir.clone();
         let update_cli = target.spawn.clone();
+        let shared_dir = target
+            .uses_shared_database()
+            .then(|| target.data_dir.clone());
         let (backend, events) = backend::Backend::start(target.clone());
         // Another tracker gets its own API thread, which starts its server
         // with the same binary when none answers. A read-only tracker never
@@ -65,6 +68,7 @@ fn main() {
                 let mut workspace = Workspace::with_settings(saved, store, window, cx);
                 workspace.set_trackers(trackers, starter, cx);
                 workspace.set_drafts(drafts);
+                workspace.set_shared_dir(shared_dir, cx);
                 workspace.connect(backend, events, cx);
                 if let Some(watch) = update {
                     workspace.watch_for_updates(watch, update_dir, update_cli, cx);

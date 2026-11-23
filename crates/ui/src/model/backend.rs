@@ -228,6 +228,19 @@ pub enum Event {
     Offline {
         reason: String,
     },
+    /// The server runs, or tried to start, but cannot reach its shared
+    /// database (LLM-470). `host` names it when known. The thread keeps
+    /// retrying.
+    DatabaseDown {
+        host: Option<String>,
+        reason: String,
+    },
+    /// The first load runs: `loaded` issues have come so far, of `total`
+    /// once the server counted them. [`Event::SnapshotRest`] ends it.
+    Loading {
+        loaded: u64,
+        total: Option<u64>,
+    },
     /// Everything, or only the open issues when `partial` is set.
     Snapshot(Box<Loaded>),
     /// The closed and trashed issues of the partial snapshot just before.
@@ -379,6 +392,17 @@ impl Target {
     }
 }
 
+impl Target {
+    /// Whether `config.toml` sends this folder to the shared database. The
+    /// app knows it before any server answers, so the first connect can say
+    /// the database is waking (LLM-470).
+    pub fn uses_shared_database(&self) -> bool {
+        llmtodo_client::database::configured_backend()
+            == llmtodo_client::database::Backend::Postgres
+            && llmtodo_client::database::applies_to(&self.data_dir)
+    }
+}
+
 /// The app's handle on the API thread. Cloning it is cheap.
 #[derive(Clone)]
 pub struct Backend {
@@ -440,6 +464,91 @@ type Events = fmpsc::UnboundedSender<Event>;
 
 fn send(events: &Events, event: Event) {
     let _ = events.unbounded_send(event);
+}
+
+/// Why a session ended.
+#[derive(Debug, Clone, PartialEq)]
+enum Lost {
+    /// The server is gone, with the reason.
+    Server(String),
+    /// The server answers, but cannot reach its shared database.
+    Database {
+        host: Option<String>,
+        reason: String,
+    },
+}
+
+impl From<String> for Lost {
+    fn from(reason: String) -> Self {
+        Lost::Server(reason)
+    }
+}
+
+impl Lost {
+    /// The session-ending reason for `health`, when its database is away.
+    fn from_health(health: &llmtodo_api_types::Health) -> Option<Lost> {
+        let db = &health.database;
+        let reason = db.unreachable.clone()?;
+        (db.backend == llmtodo_api_types::DatabaseBackend::Postgres).then(|| Lost::Database {
+            host: db.host.clone(),
+            reason,
+        })
+    }
+
+    /// The session-ending reason for an error from the server.
+    fn from_error(e: &ClientError) -> Lost {
+        match e.lost_database() {
+            Some(host) => Lost::Database {
+                host,
+                reason: match e {
+                    ClientError::Api { detail, .. } => detail.details["reason"]
+                        .as_str()
+                        .map_or_else(|| detail.message.clone(), str::to_string),
+                    e => e.to_string(),
+                },
+            },
+            None => Lost::Server(lost_reason(e)),
+        }
+    }
+
+    fn event(&self) -> Event {
+        match self.clone() {
+            Lost::Server(reason) => Event::Offline { reason },
+            Lost::Database { host, reason } => Event::DatabaseDown { host, reason },
+        }
+    }
+
+    /// What a write that waits says when it cannot go out.
+    fn nothing_saved(&self) -> &'static str {
+        match self {
+            Lost::Server(_) => "the server is offline, so nothing was saved",
+            Lost::Database { .. } => "the shared database is unreachable, so nothing was saved",
+        }
+    }
+}
+
+/// How every lost-database message starts, from the server or the client.
+const DATABASE_UNREACHABLE: &str = "Shared database unreachable";
+
+/// How long the thread waits for the health check after a lost database.
+const RECHECK_WAIT: Duration = Duration::from_secs(5);
+
+/// True for an error that ends the session: the server is gone, or its
+/// shared database (LLM-470). Other errors fail one request.
+fn fatal(e: &ClientError) -> bool {
+    matches!(e, ClientError::Unreachable(_)) || e.lost_database().is_some()
+}
+
+/// The reason a fatal error gives.
+fn lost(e: ClientError) -> String {
+    lost_reason(&e)
+}
+
+fn lost_reason(e: &ClientError) -> String {
+    match e {
+        ClientError::Unreachable(m) => m.clone(),
+        e => e.to_string(),
+    }
 }
 
 /// How long to wait for more events before fetching the issues they touch.
@@ -524,6 +633,30 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                 if events.is_closed() {
                     return;
                 }
+                // A request that failed because the server lost its shared
+                // database: the health check names the host, and says
+                // whether the database is still away.
+                let reason = match reason {
+                    Lost::Server(m) if m.starts_with(DATABASE_UNREACHABLE) => {
+                        let found = tokio::time::timeout(
+                            RECHECK_WAIT,
+                            llmtodo_client::find_server(
+                                &target.data_dir,
+                                &ClientContext::default(),
+                            ),
+                        )
+                        .await
+                        .ok()
+                        .flatten();
+                        match found {
+                            Some((_, health)) => {
+                                Lost::from_health(&health).unwrap_or(Lost::Server(m))
+                            }
+                            None => Lost::Server(m),
+                        }
+                    }
+                    reason => reason,
+                };
                 if let Some(event) = state.offline(reason) {
                     send(&events, event);
                 }
@@ -544,7 +677,7 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                         send(&events, Event::WriteFailed {
                             key: key.clone(),
                             kind,
-                            message: "the server is offline, so nothing was saved".into(),
+                            message: state.nothing_saved().into(),
                             stale: false,
                             summary: None,
                         });
@@ -565,7 +698,7 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                     Some(Request::SaveDocument { id, .. }) => {
                         send(&events, Event::DocumentFailed {
                             id,
-                            message: "the server is offline, so nothing was saved".into(),
+                            message: state.nothing_saved().into(),
                             stale: false,
                         });
                     }
@@ -578,13 +711,13 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                     Some(Request::CreateView(c)) => {
                         send(&events, Event::ViewFailed {
                             name: c.name,
-                            message: "the server is offline, so nothing was saved".into(),
+                            message: state.nothing_saved().into(),
                         });
                     }
                     Some(Request::SetProjectColor { slug, .. }) => {
                         send(&events, Event::ProjectFailed {
                             slug,
-                            message: "the server is offline, so nothing was saved".into(),
+                            message: state.nothing_saved().into(),
                         });
                     }
                     Some(Request::Reload) => break,
@@ -611,7 +744,7 @@ struct State {
     open: Option<IssueId>,
     /// The reason the app was last told the server is offline, until a
     /// session connects.
-    offline_reason: Option<String>,
+    offline_reason: Option<Lost>,
     /// A copy of the work the running flush took from `pending`, until it
     /// finishes.
     flushing: Option<Pending>,
@@ -629,15 +762,24 @@ impl Drop for FlushTask {
 impl State {
     /// The offline event for a failed try, or none when the app already
     /// shows this reason. Each event makes the app redraw.
-    fn offline(&mut self, reason: String) -> Option<Event> {
+    fn offline(&mut self, reason: Lost) -> Option<Event> {
         if self.connected {
             self.offline_reason = None;
         }
         if self.offline_reason.as_ref() == Some(&reason) {
             return None;
         }
-        self.offline_reason = Some(reason.clone());
-        Some(Event::Offline { reason })
+        let event = reason.event();
+        self.offline_reason = Some(reason);
+        Some(event)
+    }
+
+    /// What a write says while the thread waits to connect again.
+    fn nothing_saved(&self) -> &'static str {
+        self.offline_reason.as_ref().map_or(
+            "the server is offline, so nothing was saved",
+            Lost::nothing_saved,
+        )
     }
 
     /// The binary to start a server with on this try. The thread starts at
@@ -666,7 +808,7 @@ async fn session(
     requests: &mut tmpsc::UnboundedReceiver<Request>,
     events: &Events,
     state: &mut State,
-) -> Result<(), String> {
+) -> Result<(), Lost> {
     let client = Connect {
         data_dir: target.data_dir.clone(),
         // The default context is the human owner.
@@ -680,19 +822,25 @@ async fn session(
     }
     .connect()
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| Lost::from_error(&e))?;
     let client = if target.read_only {
         client.read_only()
     } else {
         client
     };
 
+    // A server that lost its shared database answers its health check, and
+    // says so. The thread waits for the database like for a server.
+    let health = client.health().await.ok();
+    if let Some(lost) = health.as_ref().and_then(Lost::from_health) {
+        return Err(lost);
+    }
     let mut live = live::Connection::open(&client, PING_EVERY).await?;
     // The server subscribes before it says hello, so no event between the
     // hello and the snapshot below is lost.
     let hello_seq = live.hello_seq;
 
-    let database = client.health().await.ok().map(|h| h.database);
+    let database = health.map(|h| h.database);
     send(
         events,
         Event::Connected {
@@ -717,7 +865,7 @@ async fn session(
         }
         flush(&client, &mut state.pending, open, events).await
     };
-    tokio::try_join!(primary(&client, events), load)?;
+    tokio::try_join!(primary(&client, events), load).map_err(Lost::from)?;
     state.last_seq = Some(hello_seq);
 
     // Refreshes run on their own task, so the owner's writes never wait
@@ -742,7 +890,7 @@ async fn session(
                 Some(Request::Fetch { key }) => {
                     if let Err(e) = refresh(&client, &key, events).await {
                         state.pending.keys.insert(key);
-                        return Err(e);
+                        return Err(e.into());
                     }
                 }
                 Some(Request::Open { id }) => state.open = id,
@@ -750,7 +898,7 @@ async fn session(
                     let open = state.open;
                     if let Err(e) = apply_write(&client, &key, write, kind, open, events).await {
                         state.pending.keys.insert(key);
-                        return Err(e);
+                        return Err(e.into());
                     }
                 }
                 Some(Request::ViewIssues { name }) => view_issues(&client, name, events).await?,
@@ -758,7 +906,7 @@ async fn session(
                 Some(Request::SyncStatus) => primary(&client, events).await?,
                 Some(Request::Document { id }) => match client.document(&id.to_string()).await {
                     Ok(doc) => send(events, Event::Document(Box::new(doc))),
-                    Err(ClientError::Unreachable(e)) => return Err(e),
+                    Err(e) if fatal(&e) => return Err(lost(e).into()),
                     Err(e) => send(events, Event::DocumentFailed {
                         id,
                         message: e.to_string(),
@@ -777,13 +925,14 @@ async fn session(
                     };
                     match client.update_document(&id.to_string(), &update).await {
                         Ok(doc) => send(events, Event::DocumentSaved(Box::new(doc))),
-                        Err(ClientError::Unreachable(e)) => {
+                        Err(e) if fatal(&e) => {
+                            let e = lost(e);
                             send(events, Event::DocumentFailed {
                                 id,
                                 message: "the server is offline, so nothing was saved".into(),
                                 stale: false,
                             });
-                            return Err(e);
+                            return Err(e.into());
                         }
                         Err(e) => send(events, Event::DocumentFailed {
                             id,
@@ -804,12 +953,13 @@ async fn session(
                         send_detail(&client, detail, events).await;
                         send(events, Event::Created { id, key });
                     }
-                    Err(ClientError::Unreachable(e)) => {
+                    Err(e) if fatal(&e) => {
+                            let e = lost(e);
                         send(events, Event::CreateFailed {
                             title: c.title.clone(),
                             message: "the server is offline, so nothing was created".into(),
                         });
-                        return Err(e);
+                        return Err(e.into());
                     }
                     Err(e) => {
                         let not_primary = e.code() == ErrorCode::NotPrimary;
@@ -826,7 +976,7 @@ async fn session(
                     let name = c.name.clone();
                     let event = match client.create_view(&c).await {
                         Ok(_) => Event::ViewSaved { name },
-                        Err(ClientError::Unreachable(e)) => return Err(e),
+                        Err(e) if fatal(&e) => return Err(lost(e).into()),
                         Err(e) => Event::ViewFailed { name, message: e.to_string() },
                     };
                     send(events, event);
@@ -834,7 +984,7 @@ async fn session(
                 Some(Request::DeleteView { name }) => {
                     let event = match client.delete_view(&name).await {
                         Ok(_) => Event::ViewDeleted { name },
-                        Err(ClientError::Unreachable(e)) => return Err(e),
+                        Err(e) if fatal(&e) => return Err(lost(e).into()),
                         Err(e) => Event::ViewFailed { name, message: e.to_string() },
                     };
                     send(events, event);
@@ -846,7 +996,7 @@ async fn session(
                     };
                     match client.update_project(&slug, &update).await {
                         Ok(_) => {}
-                        Err(ClientError::Unreachable(e)) => return Err(e),
+                        Err(e) if fatal(&e) => return Err(lost(e).into()),
                         Err(e) => send(events, Event::ProjectFailed { slug, message: e.to_string() }),
                     }
                 }
@@ -859,8 +1009,8 @@ async fn session(
                     // A failed flush leaves its work in `state.flushing`,
                     // and the next connect does it.
                     Ok(Ok(())) => state.flushing = None,
-                    Ok(Err(e)) => return Err(e),
-                    Err(e) => return Err(format!("refresh task: {e}")),
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(e) => return Err(format!("refresh task: {e}").into()),
                 }
             }
             signal = live.next() => match signal? {
@@ -1098,7 +1248,7 @@ async fn children(client: &Client, parent: &str) -> Result<Vec<String>, String> 
     };
     match client.query_all(&query).await {
         Ok(issues) => Ok(issues.into_iter().map(|i| i.key.to_string()).collect()),
-        Err(ClientError::Unreachable(e)) => Err(e),
+        Err(e) if fatal(&e) => Err(lost(e)),
         Err(_) => Ok(Vec::new()),
     }
 }
@@ -1122,7 +1272,7 @@ async fn dependents(client: &Client, key: &str) -> Result<Vec<Issue>, String> {
     for found in [down, up] {
         match found {
             Ok(found) => issues.extend(found),
-            Err(ClientError::Unreachable(e)) => return Err(e),
+            Err(e) if fatal(&e) => return Err(lost(e)),
             Err(_) => {}
         }
     }
@@ -1162,10 +1312,13 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
         ..by_id
     };
     let open_questions = QuestionQuery::default();
+    // The app shows how far the load got (LLM-470).
+    let progress = Progress::default();
+    progress.report(events);
     let first = async {
         let (catalog, issues, questions) = tokio::try_join!(
             catalog_data(client),
-            client.query_all(&open),
+            query_counted(client, &open, 0, &progress, events),
             client.questions(&open_questions)
         )?;
         let mut loaded = Snapshot {
@@ -1180,8 +1333,10 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
         Ok(catalog)
     };
     let rest = async {
-        let (mut issues, trashed) =
-            tokio::try_join!(client.query_all(&closed), client.query_all(&trash))?;
+        let (mut issues, trashed) = tokio::try_join!(
+            query_counted(client, &closed, 1, &progress, events),
+            query_counted(client, &trash, 2, &progress, events)
+        )?;
         issues.extend(trashed);
         Ok(last_copy_of_each(issues, |i| i.key.to_string()))
     };
@@ -1199,6 +1354,70 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
         })),
     );
     Ok(())
+}
+
+/// How many issues the first load has read, of how many. The open, the
+/// closed and the trashed issues load at once, and each query counts its
+/// own total on its first page.
+#[derive(Default)]
+struct Progress {
+    loaded: std::sync::atomic::AtomicU64,
+    totals: std::sync::Mutex<[Option<u64>; 3]>,
+}
+
+impl Progress {
+    fn add(&self, slot: usize, items: usize, total: Option<u64>) {
+        self.loaded
+            .fetch_add(items as u64, std::sync::atomic::Ordering::Relaxed);
+        if let Some(total) = total
+            && let Ok(mut totals) = self.totals.lock()
+        {
+            totals[slot] = Some(total);
+        }
+    }
+
+    /// Tells the app. The total is known once every query counted.
+    fn report(&self, events: &Events) {
+        let total = self
+            .totals
+            .lock()
+            .ok()
+            .and_then(|t| t.iter().copied().sum::<Option<u64>>());
+        send(
+            events,
+            Event::Loading {
+                loaded: self.loaded.load(std::sync::atomic::Ordering::Relaxed),
+                total,
+            },
+        );
+    }
+}
+
+/// Every page of `q`, like `query_all`, telling the app after each page.
+async fn query_counted(
+    client: &Client,
+    q: &IssueQuery,
+    slot: usize,
+    progress: &Progress,
+    events: &Events,
+) -> llmtodo_client::Result<Vec<Issue>> {
+    let mut q = IssueQuery {
+        with_total: true,
+        limit: Some(llmtodo_client::types::MAX_ISSUE_PAGE),
+        cursor: None,
+        ..q.clone()
+    };
+    let mut out = Vec::new();
+    loop {
+        let page = client.query(&q).await?;
+        progress.add(slot, page.items.len(), page.total);
+        progress.report(events);
+        out.extend(page.items);
+        match page.next_cursor {
+            Some(cursor) => q.cursor = Some(cursor),
+            None => return Ok(out),
+        }
+    }
 }
 
 async fn catalog_data(client: &Client) -> llmtodo_client::Result<CatalogData> {
@@ -1262,7 +1481,7 @@ async fn primary(client: &Client, events: &Events) -> Result<(), String> {
                 .and_then(|m| m.owner_host)
                 .filter(|h| *h != status.host),
         },
-        Err(ClientError::Unreachable(e)) => return Err(e),
+        Err(e) if fatal(&e) => return Err(lost(e)),
         Err(_) => Event::Primary {
             primary: true,
             holder: None,
@@ -1282,7 +1501,7 @@ async fn view_issues(client: &Client, name: String, events: &Events) -> Result<(
     };
     let event = match client.query_ids(&query).await {
         Ok(ids) => Event::ViewIssues { name, ids },
-        Err(ClientError::Unreachable(e)) => return Err(e),
+        Err(e) if fatal(&e) => return Err(lost(e)),
         Err(e) => Event::ViewFailed {
             name,
             message: e.to_string(),
@@ -1371,7 +1590,7 @@ async fn refresh(client: &Client, key: &str, events: &Events) -> Result<(), Stri
             send_detail(client, detail, events).await;
             Ok(())
         }
-        Err(ClientError::Unreachable(e)) => Err(e),
+        Err(e) if fatal(&e) => Err(lost(e)),
         Err(_) => Ok(()),
     }
 }
@@ -1399,7 +1618,7 @@ async fn refresh_rows(
     let (mut rows, trashed) =
         match tokio::try_join!(client.query_all(&live), client.query_all(&trash)) {
             Ok(found) => found,
-            Err(ClientError::Unreachable(e)) => return Err(e),
+            Err(e) if fatal(&e) => return Err(lost(e)),
             Err(_) => return Ok(None),
         };
     rows.extend(trashed);
@@ -1530,7 +1749,7 @@ async fn apply_write(
             Ok(())
         }
         Err(err) => {
-            let unreachable = matches!(err, ClientError::Unreachable(_));
+            let unreachable = fatal(&err);
             send(
                 events,
                 Event::WriteFailed {
@@ -1582,17 +1801,91 @@ mod tests {
         assert_eq!(b.next(true, true), FIRST_DELAY);
     }
 
+    fn server(reason: &str) -> Lost {
+        Lost::Server(reason.into())
+    }
+
     #[test]
     fn the_app_hears_an_offline_reason_once() {
         let mut state = State::default();
-        assert!(state.offline("refused".into()).is_some());
-        assert!(state.offline("refused".into()).is_none());
-        assert!(state.offline("timed out".into()).is_some());
+        assert!(state.offline(server("refused")).is_some());
+        assert!(state.offline(server("refused")).is_none());
+        assert!(state.offline(server("timed out")).is_some());
         // After a connect, the same reason counts as news again.
         state.connected = true;
-        assert!(state.offline("timed out".into()).is_some());
+        assert!(state.offline(server("timed out")).is_some());
         state.connected = false;
-        assert!(state.offline("timed out".into()).is_none());
+        assert!(state.offline(server("timed out")).is_none());
+    }
+
+    #[test]
+    fn a_lost_database_is_not_an_offline_server() {
+        let mut state = State::default();
+        let lost = Lost::Database {
+            host: Some("ep-calm.neon.tech/neondb".into()),
+            reason: "timed out".into(),
+        };
+        match state.offline(lost.clone()) {
+            Some(Event::DatabaseDown { host, reason }) => {
+                assert_eq!(host.as_deref(), Some("ep-calm.neon.tech/neondb"));
+                assert_eq!(reason, "timed out");
+            }
+            other => panic!("expected DatabaseDown, got {other:?}"),
+        }
+        assert!(state.offline(lost).is_none(), "once");
+        assert_eq!(
+            state.nothing_saved(),
+            "the shared database is unreachable, so nothing was saved"
+        );
+        // The server going away is news.
+        assert!(matches!(
+            state.offline(server("refused")),
+            Some(Event::Offline { .. })
+        ));
+        assert_eq!(
+            state.nothing_saved(),
+            "the server is offline, so nothing was saved"
+        );
+    }
+
+    #[test]
+    fn a_health_check_on_a_lost_shared_database_ends_the_session() {
+        use llmtodo_api_types::{DatabaseBackend, DatabaseInfo, Health};
+        let mut health = Health {
+            version: "0".into(),
+            pid: 1,
+            data_dir: "/x".into(),
+            schema_version: 1,
+            is_primary: true,
+            started_at: jiff::Timestamp::UNIX_EPOCH,
+            database: DatabaseInfo {
+                backend: DatabaseBackend::Postgres,
+                host: Some("db.example.com/llmtodo".into()),
+                round_trip_ms: 1.0,
+                unreachable: None,
+            },
+        };
+        assert_eq!(Lost::from_health(&health), None);
+        health.database.unreachable = Some("refused".into());
+        assert_eq!(
+            Lost::from_health(&health),
+            Some(Lost::Database {
+                host: Some("db.example.com/llmtodo".into()),
+                reason: "refused".into()
+            })
+        );
+        // The local file has no network to lose.
+        health.database.backend = DatabaseBackend::Sqlite;
+        assert_eq!(Lost::from_health(&health), None);
+        let e = ClientError::database_unreachable(Some("db.example.com/llmtodo"), "refused");
+        assert!(fatal(&e));
+        assert_eq!(
+            Lost::from_error(&e),
+            Lost::Database {
+                host: Some("db.example.com/llmtodo".into()),
+                reason: "refused".into()
+            }
+        );
     }
 
     #[test]

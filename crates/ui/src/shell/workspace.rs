@@ -315,6 +315,13 @@ pub struct Workspace {
     backend: Option<Backend>,
     /// Which writes are on their way, and the owner's unsaved text.
     pipeline: WritePipeline,
+    /// What the app waits for, and when to show it (LLM-470).
+    activity: crate::model::activity::Activity,
+    /// Draws again when a wait reaches its show-after delay.
+    activity_timer: Option<gpui_kit::Task<()>>,
+    /// The data folder whose tracker uses the shared database, from the
+    /// config at start, before any server says so.
+    shared_dir: Option<std::path::PathBuf>,
     /// A claim closed the editor. The next frame moves its focus to the
     /// preview, because a server event has no window to do it with.
     refocus_after_lock: bool,
@@ -676,6 +683,9 @@ impl Workspace {
             claims,
             backend: None,
             pipeline: WritePipeline::default(),
+            activity: Default::default(),
+            activity_timer: None,
+            shared_dir: None,
             refocus_after_lock: false,
             external: ExternalEdits::from_env(),
             _external_poll: None,
@@ -762,6 +772,7 @@ impl Workspace {
         self.backend = Some(backend);
         self.set_connection(Connection::Connecting, cx);
         self.message = events::CONNECTING_MESSAGE.into();
+        self.start_activity(cx);
         // The thread starts with no open task.
         self.request(backend::Request::Open {
             id: self.history_for,
@@ -1296,6 +1307,9 @@ impl Workspace {
         if let Some(issue) = self.pipeline.write_returned(key, self.store.read(cx)) {
             self.upsert_issue(issue, cx);
         }
+        let pipeline = &self.pipeline;
+        self.activity.retain_writes(|id| pipeline.has_writes(id));
+        self.sync_activity(cx);
     }
 
     /// Drops saved tabs for tasks the data no longer holds, so the saved
@@ -1496,18 +1510,28 @@ impl Workspace {
 
     /// Sends a write to the server. Without a server, as in tests, the
     /// app's own change is all there is.
-    fn send(&mut self, id: IssueId, write: Write, kind: WriteKind, cx: &App) {
+    fn send(&mut self, id: IssueId, write: Write, kind: WriteKind, cx: &mut Context<Self>) {
         if let Some(key) = self.store.read(cx).get(id).map(|i| i.key.clone()) {
-            self.send_to(id, key, write, kind);
+            self.send_to(id, key, write, kind, cx);
         }
     }
 
     /// Sends a write for the issue `id` under `key`, also when the store
     /// does not hold the issue.
-    fn send_to(&mut self, id: IssueId, key: SharedString, write: Write, kind: WriteKind) {
+    fn send_to(
+        &mut self,
+        id: IssueId,
+        key: SharedString,
+        write: Write,
+        kind: WriteKind,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(backend) = &self.backend {
             backend.write(&key, write, kind);
             self.pipeline.note_sent(id, key);
+            let now = cx.background_executor().now();
+            self.activity.write_sent(id, now);
+            self.sync_activity(cx);
         }
     }
 
@@ -4602,7 +4626,7 @@ impl Workspace {
             issue.key.clone()
         });
         let key = held.clone().unwrap_or(key);
-        self.send_to(id, key.clone(), Write::Restore, WriteKind::Restore);
+        self.send_to(id, key.clone(), Write::Restore, WriteKind::Restore, cx);
         self.message = if held.is_some() || self.backend.is_none() {
             format!("Restored {key}")
         } else {
