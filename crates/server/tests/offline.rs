@@ -150,6 +150,16 @@ impl Server {
             .to_string()
     }
 
+    /// A fresh database has no team, and issues need one.
+    async fn team(&self) {
+        self.ok(
+            "POST",
+            "/v1/teams",
+            json!({ "key": "LLM", "name": "llmtodo" }),
+        )
+        .await;
+    }
+
     async fn health(&self) -> Value {
         self.ok("GET", "/v1/health", json!({})).await
     }
@@ -239,6 +249,7 @@ async fn offline_reads_work_writes_queue_and_replay_lands_them() {
     let (proxied, _) = through(&db, proxy.port);
     let a = Server::start(&proxied, "laptop-a", true).await;
     let b = Server::start(&db, "laptop-b", false).await;
+    a.team().await;
 
     let x = a.issue("Before the cut", "Line one\n").await;
     a.wait_for_copy(&[&x], &["Before the cut"]).await;
@@ -288,9 +299,9 @@ async fn offline_reads_work_writes_queue_and_replay_lands_them() {
     )
     .await;
     let h = a.health().await;
-    assert_eq!(h["database"]["waiting"], 4, "{h}");
+    assert_eq!(h["database"]["waiting"], 5, "{h}");
     let outbox = a.ok("GET", "/v1/outbox", json!({})).await;
-    assert_eq!(outbox["entries"].as_array().unwrap().len(), 4, "{outbox}");
+    assert_eq!(outbox["entries"].as_array().unwrap().len(), 5, "{outbox}");
 
     // A claim needs the shared database.
     let (status, body) = a
@@ -362,6 +373,7 @@ async fn each_conflict_rule_holds_on_replay() {
     let (proxied, _) = through(&db, proxy.port);
     let a = Server::start(&proxied, "laptop-a", true).await;
     let b = Server::start(&db, "laptop-b", false).await;
+    a.team().await;
     let started = status_of(&b, "started").await;
     let done = status_of(&b, "completed").await;
 
@@ -582,6 +594,7 @@ async fn a_server_with_a_copy_starts_offline_and_replays_later() {
         running,
         dir,
     };
+    a.team().await;
     let x = a.issue("Kept", "").await;
     a.wait_for_copy(&[&x], &["Kept"]).await;
     let dir = a.dir;

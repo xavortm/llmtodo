@@ -288,3 +288,14 @@ pub async fn changed_after(
             .await?,
     )
 }
+
+/// One past the highest issue number of a team in this copy, for an issue
+/// created offline.
+pub async fn next_free_number(c: &mut Conn, team_id: &str) -> ApiResult<i64> {
+    Ok(
+        backend::query_scalar("SELECT coalesce(max(number), 0) + 1 FROM issues WHERE team_id = ?")
+            .bind(team_id)
+            .fetch_one(&mut *c)
+            .await?,
+    )
+}

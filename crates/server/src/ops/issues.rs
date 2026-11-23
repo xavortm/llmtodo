@@ -141,6 +141,9 @@ pub async fn create(
             store::teams::reserve_number(w.c(), n, &team.id).await?;
             n
         }
+        // Offline, the copy's counter may lag the shared one, and the
+        // number never shows: the key is provisional (LLM-471).
+        None if w.offline() => store::outbox::next_free_number(w.c(), &team.id).await?,
         None => store::teams::allocate_number(w.c(), &team.id).await?,
     };
     // Offline, the shared database gives the real key on replay. Until

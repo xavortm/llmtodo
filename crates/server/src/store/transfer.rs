@@ -481,6 +481,13 @@ pub async fn refresh_issues(from: &mut Conn, to: &mut Conn, issue_ids: &[String]
     Ok(())
 }
 
+/// Copies the teams whole. A new issue or a team move advances its team's
+/// number counter, which an issue's own rows do not carry.
+pub async fn refresh_teams(from: &mut Conn, to: &mut Conn) -> ApiResult<()> {
+    replace_where(from, to, "teams", "1 = 1", &[]).await?;
+    Ok(())
+}
+
 /// Copies the catalog tables whole, and the revisions of documents.
 pub async fn refresh_catalog(from: &mut Conn, to: &mut Conn) -> ApiResult<()> {
     for table in CATALOG_ROWS {

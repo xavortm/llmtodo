@@ -385,6 +385,10 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
         store::transfer::refresh_issues(&mut p, &mut m, &issues).await?;
         if catalog {
             store::transfer::refresh_catalog(&mut p, &mut m).await?;
+        } else if !issues.is_empty() {
+            // Issue numbers come from the team's counter, so an offline
+            // create must see the newest one.
+            store::transfer::refresh_teams(&mut p, &mut m).await?;
         }
         store::transfer::refresh_activity(&mut p, &mut m, seq, upto).await?;
         ApiResult::Ok(())
@@ -990,6 +994,8 @@ pub async fn layer(state: AppState, req: Request, next: axum::middleware::Next) 
         .uri(parts.uri.clone())
         .version(parts.version);
     let headers = parts.headers.clone();
+    // The router's path parameters live in the extensions.
+    let extensions = parts.extensions.clone();
     let res = next
         .clone()
         .run(Request::from_parts(parts, Body::from(bytes.clone())))
@@ -1005,6 +1011,7 @@ pub async fn layer(state: AppState, req: Request, next: axum::middleware::Next) 
         Err(_) => return res,
     };
     *again.headers_mut() = headers;
+    *again.extensions_mut() = extensions;
     offline_request(&state, &shared, route, again, next).await
 }
 
