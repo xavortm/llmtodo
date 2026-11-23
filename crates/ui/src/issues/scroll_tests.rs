@@ -347,3 +347,70 @@ fn done_on_marked_review_tickets_with_a_panel_opens_the_next_one(cx: &mut TestAp
     assert_eq!(selected(&view, cx), Some(next));
     assert_eq!(open_task(&view, cx), Some(next));
 }
+
+/// Renders `frames` frames.
+fn frames(handle: AnyWindowHandle, n: usize, cx: &mut TestAppContext) {
+    for _ in 0..n {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+}
+
+fn to_top_shows(handle: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
+    cx.update_window(handle, |_, window, _| {
+        window.try_find("list-to-top").is_some()
+    })
+    .unwrap()
+}
+
+/// LLM-474: the Scroll to top button shows once the list scrolls down, and
+/// a click jumps back to the first row with animations off.
+#[gpui_kit::test]
+fn scroll_to_top_jumps_with_animations_off(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    frames(handle, 1, cx);
+    assert!(!to_top_shows(handle, cx), "no button at the top");
+
+    scroll_to_review(handle, &view, cx);
+    frames(handle, 1, cx);
+    assert!(to_top_shows(handle, cx), "the button shows once scrolled");
+    let chosen = selected(&view, cx);
+
+    cx.update_window(handle, |_, window, cx| window.click("list-to-top", cx))
+        .unwrap();
+    frames(handle, 2, cx);
+    assert_eq!(offset(&view, cx), px(0.), "back at the top");
+    assert!(!to_top_shows(handle, cx), "the button left");
+    assert_eq!(selected(&view, cx), chosen, "the click selected no row");
+}
+
+/// LLM-474: with animations on, the click eases the list back to the top
+/// over a few frames.
+#[gpui_kit::test]
+fn scroll_to_top_eases_with_animations_on(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    scroll_to_review(handle, &view, cx);
+    // Let the button slide all the way in.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames(handle, 2, cx);
+    let start = offset(&view, cx);
+    assert!(to_top_shows(handle, cx));
+
+    cx.update_window(handle, |_, window, cx| window.click("list-to-top", cx))
+        .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(100));
+    frames(handle, 1, cx);
+    let mid = offset(&view, cx);
+    assert!(
+        start < mid && mid < px(0.),
+        "part way: {start:?} < {mid:?} < 0"
+    );
+
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    frames(handle, 2, cx);
+    assert_eq!(offset(&view, cx), px(0.), "back at the top");
+}

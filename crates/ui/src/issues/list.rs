@@ -304,6 +304,11 @@ pub struct IssueList {
     /// The first row the list drew in the last frame, where a sort's wave
     /// starts.
     visible_start: usize,
+    /// Whether the list is scrolled down past its first row, so the Scroll
+    /// to top button shows (LLM-474).
+    away_from_top: bool,
+    /// The eased scroll back to the top that runs now, with animations on.
+    to_top: Option<ToTop>,
     /// How many tasks the scope and filter would show but that setting hides.
     hidden_closed: usize,
     /// The issues that pass the filter, in sort order.
@@ -434,6 +439,8 @@ impl IssueList {
             store_seen: 0,
             drawn: Default::default(),
             visible_start: 0,
+            away_from_top: false,
+            to_top: None,
             hidden_closed: 0,
             visible: Vec::new(),
             rows: Vec::new(),
@@ -2615,6 +2622,106 @@ fn order_cell(mark: Option<rows::OrderMark>, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// The scroll back to the top: where it started, and the offset it set in
+/// the last frame. A wheel scroll that moves the list away from that
+/// offset ends it, so the owner's own scroll always wins.
+struct ToTop {
+    start: Option<std::time::Instant>,
+    from: Pixels,
+    last: Pixels,
+}
+
+/// How long the scroll back to the top takes, from any distance.
+const TO_TOP: std::time::Duration = std::time::Duration::from_millis(320);
+
+impl IssueList {
+    /// Scrolls the list to its first row. With animations on, it eases
+    /// there. Off, it jumps.
+    pub fn scroll_to_top(&mut self, cx: &mut Context<Self>) {
+        let handle = &self.scroll.0.borrow().base_handle;
+        let from = handle.offset().y;
+        if crate::shell::motion::on(cx) && from < gpui_kit::px(0.) {
+            self.to_top = Some(ToTop {
+                start: None,
+                from,
+                last: from,
+            });
+        } else {
+            self.to_top = None;
+            handle.set_offset(gpui_kit::point(handle.offset().x, gpui_kit::px(0.)));
+        }
+        cx.notify();
+    }
+
+    /// Moves the scroll back to the top one frame further.
+    fn step_to_top(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(to_top) = &mut self.to_top else {
+            return;
+        };
+        let handle = self.scroll.0.borrow().base_handle.clone();
+        let offset = handle.offset();
+        if offset.y != to_top.last {
+            // The owner scrolled meanwhile.
+            self.to_top = None;
+            return;
+        }
+        let now = cx.background_executor().now();
+        let start = *to_top.start.get_or_insert(now);
+        let t = (now.saturating_duration_since(start).as_secs_f32() / TO_TOP.as_secs_f32()).min(1.);
+        // Ease-out cubic, as the other animations.
+        let eased = 1. - (1. - t).powi(3);
+        let y = to_top.from * (1. - eased);
+        handle.set_offset(gpui_kit::point(offset.x, y));
+        to_top.last = y;
+        if t >= 1. {
+            self.to_top = None;
+        } else {
+            window.request_animation_frame();
+        }
+    }
+
+    /// The Scroll to top button. It slides down from the list's top edge
+    /// once the list scrolls past its first row, and back up when it
+    /// returns.
+    fn render_to_top(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown =
+            crate::shell::motion::panel_open("list-to-top-motion", self.away_from_top, window, cx);
+        if shown <= 0. {
+            return None;
+        }
+        let rem = window.rem_size();
+        let button = Button::new("list-to-top")
+            .small()
+            .icon(IconName::ArrowUp)
+            .on_click(cx.listener(|this, _, _, cx| this.scroll_to_top(cx)));
+        Some(
+            h_flex()
+                .absolute()
+                .left_0()
+                .right_0()
+                // From just above the edge to a little below it.
+                .top(rem * (0.5 - 2.5 * (1. - shown)))
+                .opacity(shown)
+                .justify_center()
+                .child(
+                    div()
+                        .id("list-to-top-frame")
+                        // A click must not reach the row under the button,
+                        // which would select it and scroll to it.
+                        .occlude()
+                        .rounded(cx.theme().radius)
+                        .shadow_md()
+                        .child(with_card(
+                            "list-to-top-tip",
+                            button,
+                            Card::text("Scroll to top"),
+                        )),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for IssueList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
@@ -2639,6 +2746,7 @@ impl Render for IssueList {
                 window.request_animation_frame();
             }
         }
+        self.step_to_top(window, cx);
         let rem_size = window.rem_size();
         let demand = self.demand;
         let mut layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
@@ -2683,6 +2791,11 @@ impl Render for IssueList {
                             cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                                 let list_focused = this.focus.is_focused(window);
                                 this.visible_start = range.start;
+                                let away = range.start > 0;
+                                if away != this.away_from_top {
+                                    this.away_from_top = away;
+                                    cx.notify();
+                                }
                                 range
                                     .map(|row| this.render_row(row, list_focused, window, cx))
                                     .collect::<Vec<_>>()
@@ -2691,6 +2804,7 @@ impl Render for IssueList {
                         .track_scroll(&self.scroll)
                         .flex_1(),
                     )
+                    .children(self.render_to_top(window, cx))
                     .children(fold),
             )
     }
