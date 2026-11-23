@@ -290,6 +290,9 @@ pub struct Workspace {
     open_last_view: bool,
     /// The saved task to reopen once the first snapshot arrives.
     restore_task: Option<String>,
+    /// LLM-347: the open issues of a partial snapshot, as the server sent
+    /// them, until its closed and trashed issues arrive.
+    partial_snapshot: Option<Vec<Issue>>,
     /// The task open at the last save, so a save happens only on a change.
     last_open: Option<IssueId>,
     /// The answer fields of owner questions, shared by the inbox
@@ -657,6 +660,7 @@ impl Workspace {
             hide_closed_days: 14,
             open_last_view: true,
             restore_task: None,
+            partial_snapshot: None,
             last_open: None,
             answers,
             review_batch: None,
@@ -932,8 +936,10 @@ impl Workspace {
     }
 
     /// After a snapshot: note the open tracker's teams, and open the key
-    /// that sent the app here.
+    /// that sent the app here. While the closed and trashed issues are on
+    /// their way, a key the store lacks waits for them (LLM-347).
     fn loaded_tracker(&mut self, cx: &mut Context<Self>) {
+        let partial = self.partial_snapshot.is_some();
         self.store.update(cx, |store, cx| {
             cx.notify();
             let teams = store
@@ -948,10 +954,20 @@ impl Workspace {
                 tracker.teams = Some(teams);
             }
         });
+        let store = self.store.clone();
+        let held = |key: &str, cx: &App| {
+            !partial || store.read(cx).by_key(key).is_some_and(|i| !i.deleted)
+        };
         if let Some(key) = self.open_after_load.take() {
-            self.open_key(&key, cx);
+            if held(&key, cx) {
+                self.open_key(&key, cx);
+            } else {
+                self.open_after_load = Some(key);
+            }
         }
-        self.restore_last_task(cx);
+        if self.restore_task.as_deref().is_none_or(|key| held(key, cx)) {
+            self.restore_last_task(cx);
+        }
     }
 
     /// Reopens the task from the last run, once the store holds it. The
@@ -1110,6 +1126,47 @@ impl Workspace {
     /// Replaces every issue and the catalog, and keeps the selection and the
     /// open task by issue ID.
     pub fn load(&mut self, catalog: Catalog, issues: Vec<Issue>, cx: &mut Context<Self>) {
+        self.partial_snapshot = None;
+        self.replace_issues(catalog, issues, Vec::new(), cx);
+    }
+
+    /// LLM-347: the open issues of a snapshot, before its closed and
+    /// trashed issues. Until those arrive, the store keeps the closed and
+    /// trashed copies it holds, so a reload does not empty the Done list
+    /// or close a closed task.
+    pub fn load_open(&mut self, catalog: Catalog, open: Vec<Issue>, cx: &mut Context<Self>) {
+        let ids: std::collections::HashSet<IssueId> = open.iter().map(|i| i.id).collect();
+        let kept = self
+            .store
+            .read(cx)
+            .iter()
+            .filter(|i| (i.deleted || i.status.is_closed()) && !ids.contains(&i.id))
+            .cloned()
+            .collect();
+        self.partial_snapshot = Some(open.clone());
+        self.replace_issues(catalog, open, kept, cx);
+    }
+
+    /// The closed and trashed issues of the partial snapshot before. The
+    /// load then holds what one full snapshot holds.
+    pub fn load_rest(&mut self, rest: Vec<Issue>, cx: &mut Context<Self>) {
+        let Some(mut issues) = self.partial_snapshot.take() else {
+            return;
+        };
+        issues.extend(rest);
+        let catalog = self.store.read(cx).catalog.clone();
+        self.replace_issues(catalog, issues, Vec::new(), cx);
+    }
+
+    /// Replaces every issue and the catalog. `kept` are copies the store
+    /// held that stay when `issues` lacks them.
+    fn replace_issues(
+        &mut self,
+        catalog: Catalog,
+        issues: Vec<Issue>,
+        kept: Vec<Issue>,
+        cx: &mut Context<Self>,
+    ) {
         let selected = self.list.read(cx).selected_issue();
         let detail = self.task.read(cx).detail();
         // The task in the editor, kept if the snapshot leaves it out.
@@ -1132,6 +1189,11 @@ impl Workspace {
             store.touch_all();
             store.catalog = catalog;
             store.replace_all(issues);
+            for issue in kept {
+                if store.get(issue.id).is_none() {
+                    store.upsert(issue);
+                }
+            }
             // A snapshot holds the Trash too, but an issue can go to the
             // Trash while it loads. The owner may still be editing it. Keep
             // the old copy so the editor and its text stay. The load dropped
@@ -1174,7 +1236,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.rebuild_commands(cx);
-        self.prune_tabs(cx);
+        // A partial snapshot lacks the closed and trashed issues, so it
+        // drops no tabs and closes no task.
+        let partial = self.partial_snapshot.is_some();
+        if !partial {
+            self.prune_tabs(cx);
+        }
         // A team or project that went away leaves the list on every issue.
         let scope = self.list.read(cx).scope.clone();
         let catalog = &self.store.read(cx).catalog;
@@ -1192,7 +1259,7 @@ impl Workspace {
         }
         self.refresh_view(cx);
         self.sync_doc_view(cx);
-        let gone = detail.is_some_and(|d| self.store.read(cx).get(d.issue).is_none());
+        let gone = !partial && detail.is_some_and(|d| self.store.read(cx).get(d.issue).is_none());
         if gone {
             self.task.update(cx, |task, cx| task.close(cx));
             if !self.store.read(cx).is_empty() {

@@ -36,11 +36,25 @@ impl Workspace {
                     catalog,
                     issues,
                     questions,
+                    partial,
                     ..
                 } = *snapshot;
+                // Open questions sit on open issues only, so a partial
+                // snapshot holds every one.
                 self.load_questions(&issues, &questions, cx);
-                self.load(catalog, issues, cx);
+                if partial {
+                    self.load_open(catalog, issues, cx);
+                } else {
+                    self.load(catalog, issues, cx);
+                }
                 self.loaded_tracker(cx);
+            }
+            backend::Event::SnapshotRest(rest) => {
+                // None after a tracker switch: the rest is the old one's.
+                if self.partial_snapshot.is_some() {
+                    self.load_rest(rest.issues, cx);
+                    self.loaded_tracker(cx);
+                }
             }
             backend::Event::Catalog(data) => self.apply_catalog(data.catalog(), cx),
             backend::Event::Issue(issue) => self.receive_rows(vec![*issue], cx),

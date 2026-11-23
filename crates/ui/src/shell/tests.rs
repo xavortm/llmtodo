@@ -4617,3 +4617,53 @@ fn a_refused_review_move_shows_the_short_summary(cx: &mut TestAppContext) {
         )
     });
 }
+
+/// LLM-347: a reload sends the open issues first. Until the closed and
+/// trashed issues follow, the app keeps the copies it holds, so the open
+/// closed task stays open. The rest then drops what the server no longer
+/// has, as one full snapshot would.
+#[gpui_kit::test]
+fn a_partial_snapshot_keeps_closed_tasks_until_the_rest_arrives(cx: &mut TestAppContext) {
+    let (_, view) = open(cx);
+    let (closed_key, dropped, catalog, open_issues, rest, count) = cx.read(|cx| {
+        let store = view.read(cx).store().read(cx);
+        let all: Vec<_> = store.iter().cloned().collect();
+        let (open_issues, mut rest): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|i| !i.deleted && !i.status.is_closed());
+        let closed_key = rest.iter().find(|i| !i.deleted).unwrap().key.to_string();
+        // The server purged one closed issue meanwhile.
+        let dropped = rest.iter().rposition(|i| i.key != closed_key).unwrap();
+        let dropped = rest.remove(dropped).id;
+        (
+            closed_key,
+            dropped,
+            store.catalog.clone(),
+            open_issues,
+            rest,
+            store.len(),
+        )
+    });
+    view.update(cx, |this, cx| this.open_key(&closed_key, cx));
+    let open_task = |cx: &mut TestAppContext| {
+        cx.read(|cx| view.read(cx).task().read(cx).detail().map(|d| d.issue))
+    };
+    let closed_id = open_task(cx).expect("the closed task is open");
+
+    view.update(cx, |this, cx| this.load_open(catalog, open_issues, cx));
+    cx.read(|cx| {
+        let store = view.read(cx).store().read(cx);
+        assert_eq!(store.len(), count, "the closed copies stay for now");
+        assert!(store.get(dropped).is_some());
+    });
+    assert_eq!(open_task(cx), Some(closed_id), "the closed task stays open");
+
+    view.update(cx, |this, cx| this.load_rest(rest, cx));
+    cx.read(|cx| {
+        let store = view.read(cx).store().read(cx);
+        assert_eq!(store.len(), count - 1);
+        assert!(store.get(dropped).is_none(), "the purged issue is gone");
+        assert!(store.get(closed_id).is_some());
+    });
+    assert_eq!(open_task(cx), Some(closed_id));
+}
