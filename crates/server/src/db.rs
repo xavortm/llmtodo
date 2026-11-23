@@ -45,8 +45,23 @@ pub fn url_host(url: &str) -> String {
 pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result<Pool> {
     use sqlx::postgres::PgPoolOptions;
     let shown = redact_url(url);
+    // A ping before each use would cost a round trip per request. Only a
+    // connection idle for 30 seconds gets one, because a laptop that slept,
+    // or a host such as Neon that suspended an idle database, may have
+    // dropped it. One idle for 4 minutes is closed: Neon suspends after 5.
     let pg = PgPoolOptions::new()
-        .max_connections(8)
+        .max_connections(16)
+        .test_before_acquire(false)
+        .before_acquire(|conn, meta| {
+            Box::pin(async move {
+                if meta.idle_for < Duration::from_secs(30) {
+                    return Ok(true);
+                }
+                use sqlx::Connection as _;
+                Ok(conn.ping().await.is_ok())
+            })
+        })
+        .idle_timeout(Duration::from_secs(4 * 60))
         .acquire_timeout(Duration::from_secs(30))
         .connect(url)
         .await
@@ -441,8 +456,13 @@ pub async fn set_setting(
 /// Listens for writes by other servers on the shared Postgres database and
 /// sends their events to this server's clients (LLM-459). It holds one
 /// connection of its own, which must not go through a transaction pooler
-/// such as PgBouncer. A lost connection reconnects after a pause, and the
-/// first notice after that catches up from the last seq sent.
+/// such as PgBouncer.
+///
+/// It listens only while a client, such as the app, follows the live
+/// events. A host such as Neon suspends an idle database and drops the
+/// connection, and a listener that always reconnected would keep waking it
+/// (LLM-465). Each start catches up from the last seq sent, so no event is
+/// lost across a pause.
 pub async fn listen_loop(state: crate::state::AppState) {
     use sqlx::postgres::PgListener;
     // Enabled now, so a stop that comes while this loop sends still ends it.
@@ -450,12 +470,20 @@ pub async fn listen_loop(state: crate::state::AppState) {
     tokio::pin!(shutdown);
     shutdown.as_mut().enable();
     let mut pause = Duration::from_millis(500);
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     loop {
         let Some(pg) = state.pool().postgres().cloned() else {
             return;
         };
         if pg.is_closed() {
             return;
+        }
+        // Wait for a live client.
+        if state.events.receiver_count() == 0 {
+            tokio::select! {
+                _ = tick.tick() => continue,
+                _ = &mut shutdown => return,
+            }
         }
         let listener = async {
             let mut l = PgListener::connect_with(&pg).await?;
@@ -468,21 +496,30 @@ pub async fn listen_loop(state: crate::state::AppState) {
                 pause = Duration::from_millis(500);
                 // Writes made while no connection listened.
                 crate::state::send_remote(&state).await;
-                // The loop also looks at the pool, which the stop closes: an
-                // open listener would keep that close waiting.
-                let mut tick = tokio::time::interval(Duration::from_millis(250));
+                // How long the last client has been gone.
+                let mut alone = Duration::ZERO;
                 loop {
                     tokio::select! {
                         n = l.recv() => match n {
                             Ok(_) => crate::state::send_remote(&state).await,
                             Err(e) => {
-                                tracing::warn!(error = %pg_error(&e), "the Postgres listen connection dropped");
+                                tracing::info!(error = %pg_error(&e), "the Postgres listen connection dropped");
                                 break;
                             }
                         },
+                        // The stop closes the pool, and an open listener
+                        // would keep that close waiting.
                         _ = tick.tick() => {
                             if pg.is_closed() {
                                 return;
+                            }
+                            if state.events.receiver_count() == 0 {
+                                alone += Duration::from_millis(250);
+                                if alone >= LISTEN_GRACE {
+                                    break;
+                                }
+                            } else {
+                                alone = Duration::ZERO;
                             }
                         }
                         _ = &mut shutdown => return,
@@ -498,3 +535,7 @@ pub async fn listen_loop(state: crate::state::AppState) {
         pause = (pause * 2).min(Duration::from_secs(30));
     }
 }
+
+/// How long the listener stays after the last live client leaves, so an
+/// app that reconnects finds it still there.
+const LISTEN_GRACE: Duration = Duration::from_secs(60);

@@ -48,6 +48,10 @@ pub struct Inner {
     /// Each request's method and route, such as `GET /v1/issues/{issue}`,
     /// while a test records them. None, and free, otherwise.
     pub route_log: std::sync::Mutex<Option<Vec<String>>>,
+    /// When the last request came, in Unix seconds. On a shared database
+    /// the background jobs pause while nobody uses this server, so a host
+    /// such as Neon can suspend the database (LLM-465).
+    pub last_request: std::sync::atomic::AtomicI64,
 }
 
 impl std::ops::Deref for AppState {
@@ -58,6 +62,19 @@ impl std::ops::Deref for AppState {
 }
 
 impl Inner {
+    /// Notes a request, for [`Inner::idle`].
+    pub fn note_request(&self) {
+        self.last_request
+            .store(Timestamp::now().as_second(), Ordering::Relaxed);
+    }
+
+    /// True when no client listens live and no request came for `quiet`.
+    pub fn idle(&self, quiet: std::time::Duration) -> bool {
+        let last = self.last_request.load(Ordering::Relaxed);
+        self.events.receiver_count() == 0
+            && Timestamp::now().as_second() - last >= quiet.as_secs() as i64
+    }
+
     pub fn pool(&self) -> Pool {
         self.pool_slot.read().expect("pool lock").clone()
     }
@@ -112,6 +129,7 @@ where
                 "{CONTEXT_HEADER}: head must be a 7 to 64 character hex commit hash"
             )));
         }
+        state.note_request();
         let actor = store::actors::resolve_input(&state.pool(), &client.actor).await?;
         Ok(Ctx { client, actor })
     }

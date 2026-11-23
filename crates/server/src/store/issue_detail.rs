@@ -12,41 +12,104 @@ pub async fn load(conn: &mut Conn, issue_id: &str) -> ApiResult<IssueDetail> {
     // One lookup of statuses and actors serves every part below.
     let lookup = issues::Lookup::load(conn).await?;
     let actors = &lookup.actors;
-    let issue = issues::load_one_with(conn, issue_id, true, &lookup).await?;
-    let aliases: Vec<String> = backend::query_scalar(
-        "SELECT key FROM issue_keys WHERE issue_id = ? AND key <> ? ORDER BY key",
+    let statuses = &lookup.statuses;
+    // The parts read only by the issue's ID. On Postgres, outside a
+    // transaction, they run at once on their own connections (LLM-465).
+    let (
+        issue,
+        aliases,
+        children,
+        sessions,
+        prices,
+        attachments,
+        git_row,
+        relations,
+        comments,
+        reviews,
+    ) = match conn.read_pool().cloned() {
+        Some(pool) => {
+            let c = || async { pool.acquire().await.map_err(crate::error::ApiError::from) };
+            tokio::try_join!(
+                async { issues::load_one_with(&mut c().await?, issue_id, true, &lookup).await },
+                async { aliases(&mut c().await?, issue_id).await },
+                async { children(&mut c().await?, issue_id, statuses).await },
+                async { sessions::for_issue(&mut c().await?, issue_id, actors).await },
+                async { usage::prices(&mut c().await?).await },
+                async { attachments::attachments(&mut c().await?, issue_id).await },
+                async { git_row(&mut c().await?, issue_id).await },
+                async { relations::relations(&mut c().await?, issue_id, statuses).await },
+                async { comments::comments(&mut c().await?, issue_id, actors).await },
+                async { reviews::for_issue_with(&mut c().await?, issue_id, actors).await },
+            )?
+        }
+        None => (
+            issues::load_one_with(conn, issue_id, true, &lookup).await?,
+            aliases(conn, issue_id).await?,
+            children(conn, issue_id, statuses).await?,
+            sessions::for_issue(conn, issue_id, actors).await?,
+            usage::prices(conn).await?,
+            attachments::attachments(conn, issue_id).await?,
+            git_row(conn, issue_id).await?,
+            relations::relations(conn, issue_id, statuses).await?,
+            comments::comments(conn, issue_id, actors).await?,
+            reviews::for_issue_with(conn, issue_id, actors).await?,
+        ),
+    };
+    // An issue moved to another team keeps its old key as an alias.
+    let aliases: Vec<String> = aliases
+        .into_iter()
+        .filter(|k| *k != issue.key.to_string())
+        .collect();
+    let mut total = std::collections::BTreeMap::new();
+    for ws in &sessions {
+        usage::merge(&mut total, &ws.usage.by_model);
+    }
+    let git = git(git_row, &attachments, &sessions);
+    Ok(IssueDetail {
+        aliases,
+        children,
+        relations,
+        attachments,
+        git,
+        comments,
+        sessions,
+        usage: usage::summary(total, &prices),
+        reviews,
+        issue,
+    })
+}
+
+/// Every key of the issue, the current one included.
+async fn aliases(conn: &mut Conn, issue_id: &str) -> ApiResult<Vec<String>> {
+    Ok(
+        backend::query_scalar("SELECT key FROM issue_keys WHERE issue_id = ? ORDER BY key")
+            .bind(issue_id)
+            .fetch_all(&mut *conn)
+            .await?,
     )
-    .bind(issue_id)
-    .bind(issue.key.to_string())
-    .fetch_all(&mut *conn)
-    .await?;
+}
+
+async fn children(
+    conn: &mut Conn,
+    issue_id: &str,
+    statuses: &std::collections::HashMap<String, crate::store::teams::StatusRow>,
+) -> ApiResult<Vec<llmtodo_api_types::IssueLink>> {
     let child_ids: Vec<String> = backend::query_scalar(
         "SELECT id FROM issues WHERE parent_id = ? AND deleted_at IS NULL ORDER BY number",
     )
     .bind(issue_id)
     .fetch_all(&mut *conn)
     .await?;
-    let children = issues::links(conn, &child_ids, &lookup.statuses).await?;
-    let sessions = sessions::for_issue(conn, issue_id, actors).await?;
-    let mut total = std::collections::BTreeMap::new();
-    for ws in &sessions {
-        usage::merge(&mut total, &ws.usage.by_model);
-    }
-    let prices = usage::prices(conn).await?;
-    let attachments = attachments::attachments(conn, issue_id).await?;
-    let git = git(conn, issue_id, &attachments, &sessions).await?;
-    Ok(IssueDetail {
-        aliases,
-        children,
-        relations: relations::relations(conn, issue_id, &lookup.statuses).await?,
-        attachments,
-        git,
-        comments: comments::comments(conn, issue_id, actors).await?,
-        sessions,
-        usage: usage::summary(total, &prices),
-        reviews: reviews::for_issue_with(conn, issue_id, actors).await?,
-        issue,
-    })
+    issues::links(conn, &child_ids, statuses).await
+}
+
+async fn git_row(conn: &mut Conn, issue_id: &str) -> ApiResult<GitRow> {
+    Ok(backend::query_as::<GitRow>(
+        "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
+    )
+    .bind(issue_id)
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 #[derive(sqlx::FromRow)]
@@ -59,18 +122,7 @@ struct GitRow {
 
 /// The git panel of an issue. The PR is the one set by hand, or else the
 /// newest PR attachment that is still open, or else the newest one.
-async fn git(
-    conn: &mut Conn,
-    issue_id: &str,
-    attachments: &[Attachment],
-    sessions: &[WorkSession],
-) -> ApiResult<IssueGit> {
-    let r = backend::query_as::<GitRow>(
-        "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
-    )
-    .bind(issue_id)
-    .fetch_one(&mut *conn)
-    .await?;
+fn git(r: GitRow, attachments: &[Attachment], sessions: &[WorkSession]) -> IssueGit {
     let prs: Vec<&Attachment> = attachments
         .iter()
         .filter(|a| a.kind == AttachmentKind::PullRequest)
@@ -99,7 +151,7 @@ async fn git(
         .filter(|s| s.last_head.is_some())
         .max_by_key(|s| s.last_seen_at)
         .and_then(|s| s.last_head.clone());
-    Ok(IssueGit {
+    IssueGit {
         branch: r.git_branch,
         worktree: r.git_worktree,
         host: r.git_host,
@@ -107,7 +159,7 @@ async fn git(
         head,
         commits: Vec::new(),
         repo_url: None,
-    })
+    }
 }
 
 fn git_pr(a: &Attachment) -> GitPr {

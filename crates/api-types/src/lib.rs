@@ -195,8 +195,10 @@ pub struct Actor {
 
 // ---------------------------------------------------------------- lists
 
-/// The most issues one page of an issue query returns.
-pub const MAX_ISSUE_PAGE: u32 = 1000;
+/// The most issues one page of an issue query returns. Each page costs a
+/// few round trips to a shared database, so the app's snapshot reads big
+/// pages: 50,000 issues take 10 (LLM-465).
+pub const MAX_ISSUE_PAGE: u32 = 5000;
 
 /// One page of a list. Pass `next_cursor` back as `cursor` for the next page.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

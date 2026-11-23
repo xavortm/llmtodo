@@ -196,6 +196,10 @@ pub static LAST: Mutex<Option<GithubReport>> = Mutex::const_new(None);
 /// One poll at a time.
 static RUNNING: Mutex<()> = Mutex::const_new(());
 
+/// On a shared database the poll pauses after this long without a request
+/// or a live client.
+const POLL_IDLE_AFTER: Duration = Duration::from_secs(10 * 60);
+
 /// The advisory lock key that elects the polling server on a shared
 /// database.
 const GITHUB_POLL_LOCK: i64 = 0x6c6c_6d74_6f64_6f02;
@@ -497,7 +501,18 @@ pub async fn poll_loop(st: AppState) {
     // The others try again each round, so one takes over when the first
     // stops or loses its connection (LLM-460).
     let mut lock: Option<crate::store::backend::JobLock> = None;
+    let shared = st.pool().backend() == crate::store::backend::Backend::Postgres;
     loop {
+        // A shared database can suspend while nobody uses it, and a poll
+        // would wake it every few minutes. The next poll after a pause
+        // catches up on what changed (LLM-465).
+        if shared && st.idle(POLL_IDLE_AFTER) {
+            lock = None;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(30)) => continue,
+                _ = &mut shutdown => return,
+            }
+        }
         if let Some(l) = lock.as_mut()
             && !l.alive().await
         {

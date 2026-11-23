@@ -19,6 +19,22 @@ use sqlx::{
     SqlitePool, Transaction, Type,
 };
 
+/// Statements run so far in this process, on either backend. The latency
+/// test reads it to count the round trips a request costs (LLM-465).
+pub static STATEMENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn count_statement(sql: &Sql) {
+    STATEMENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if std::env::var_os("LLMTODO_SQL_TRACE").is_some() {
+        let one_line: String = sql
+            .as_str()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("SQL {}", one_line.chars().take(150).collect::<String>());
+    }
+}
+
 /// Which database a pool or connection talks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
@@ -61,7 +77,11 @@ impl Pool {
             Pool::Sqlite(p) => ConnInner::SqlitePooled(p.acquire().await?),
             Pool::Postgres(p) => ConnInner::PgPooled(p.acquire().await?),
         };
-        Ok(Conn::new(inner))
+        let mut c = Conn::new(inner);
+        if let Pool::Postgres(_) = self {
+            c.read_pool = Some(self.clone());
+        }
+        Ok(c)
     }
 
     /// A plain transaction, with no write lock.
@@ -175,6 +195,10 @@ pub struct Conn {
     inner: ConnInner,
     /// Rows changed through this connection so far, from `execute`.
     changes: u64,
+    /// Set on a pooled Postgres connection outside a transaction. Reads
+    /// that do not depend on each other may then run at once on other
+    /// connections of this pool, so their round trips overlap (LLM-465).
+    read_pool: Option<Pool>,
 }
 
 pub(crate) enum Raw<'a> {
@@ -184,7 +208,19 @@ pub(crate) enum Raw<'a> {
 
 impl Conn {
     fn new(inner: ConnInner) -> Self {
-        Conn { inner, changes: 0 }
+        Conn {
+            inner,
+            changes: 0,
+            read_pool: None,
+        }
+    }
+
+    /// The pool for reads that may run beside this connection, when that
+    /// helps: a pooled Postgres connection outside a transaction. `None` on
+    /// SQLite, where a query costs no round trip, and inside a transaction,
+    /// whose writes other connections cannot see yet.
+    pub fn read_pool(&self) -> Option<&Pool> {
+        self.read_pool.as_ref()
     }
 
     /// Wraps a connection opened outside a pool, such as a second database
@@ -602,6 +638,7 @@ impl Query {
     }
 
     pub async fn fetch_all<'a>(self, t: impl Into<Target<'a>>) -> Result<Vec<Row>, sqlx::Error> {
+        count_statement(&self.sql);
         with_conn!(t, |c| {
             let sql = self.sql.for_backend(c.backend());
             match c.raw() {
@@ -629,6 +666,7 @@ impl Query {
 }
 
 async fn execute_on(c: &mut Conn, sql: Sql, args: Vec<Arg>) -> Result<Done, sqlx::Error> {
+    count_statement(&sql);
     let sql = sql.for_backend(c.backend());
     let rows = match c.raw() {
         Raw::Sqlite(c) => bind_args!(sqlx::query(AssertSqlSafe(sql)), args)
@@ -699,6 +737,7 @@ pub fn query_as<O: AnyFromRow>(sql: impl Into<Sql>) -> QueryAs<O> {
 macro_rules! fetch_methods {
     ($ctor:path, $bound:ident) => {
         pub async fn fetch_all<'a>(self, t: impl Into<Target<'a>>) -> Result<Vec<O>, sqlx::Error> {
+            count_statement(&self.sql);
             with_conn!(t, |c| {
                 let sql = self.sql.for_backend(c.backend());
                 match c.raw() {
@@ -721,6 +760,7 @@ macro_rules! fetch_methods {
         }
 
         pub async fn fetch_one<'a>(self, t: impl Into<Target<'a>>) -> Result<O, sqlx::Error> {
+            count_statement(&self.sql);
             with_conn!(t, |c| {
                 let sql = self.sql.for_backend(c.backend());
                 match c.raw() {
@@ -746,6 +786,7 @@ macro_rules! fetch_methods {
             self,
             t: impl Into<Target<'a>>,
         ) -> Result<Option<O>, sqlx::Error> {
+            count_statement(&self.sql);
             with_conn!(t, |c| {
                 let sql = self.sql.for_backend(c.backend());
                 match c.raw() {
