@@ -53,6 +53,24 @@ llmtodo server status     # check that it runs
 
 Data lives in `~/Library/Application Support/llmtodo`. Set `LLMTODO_DATA_DIR` to use another folder.
 
+### Settings
+
+The app keeps its preferences in `~/.config/llmtodo/config.toml`. Set `XDG_CONFIG_HOME` or `LLMTODO_CONFIG_DIR` to move it. The file is optional: every key has a default, and the app writes only the keys you change in Settings. You can edit it by hand and keep it in a dotfiles repo. The app keeps your comments, follows a symlink, leaves a read-only file alone and applies a hand edit when its window gets focus.
+
+```toml
+# data_dir = "/somewhere/else"   # the data folder, if not the standard one
+
+[app]
+theme = "auto"            # dark, light or auto
+color_theme = "catppuccin"
+vim_editor = true
+zoom = 1.1
+hide_closed = true
+hide_closed_days = 14
+```
+
+Window size, pane sizes, open tabs, sort and grouping change all the time, so they live apart, in `ui-state.json` in the data folder.
+
 ### Set up a repo for agents
 
 Run this at the root of each repo whose agents should use llmtodo:

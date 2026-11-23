@@ -1,5 +1,6 @@
 //! Typed HTTP client for the llmtodo API, used by the CLI and the app.
 
+pub mod config;
 pub mod data_dir;
 pub mod git;
 pub mod identity;

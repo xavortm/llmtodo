@@ -63,17 +63,27 @@ echo "PREVIEW_SERVER=$(cat "$tmp/server.json" | tr -d '\n ')"
 # LLMTODO_PREVIEW_APP swaps the app for another command, for tests.
 # UI settings live in their own folder beside the real data folder, so the
 # owner's layout carries over between previews but a preview never touches
-# the real ui.json.
+# the real config.toml or ui-state.json.
 real_dir="$HOME/Library/Application Support/llmtodo"
 ui_dir="$HOME/Library/Application Support/llmtodo-preview"
 old_ui_dir="$real_dir/preview-config"
+# LLMTODO_CONFIG_DIR holds both of the preview's files: config.toml and
+# ui-state.json. The first preview copies the owner's. The app moves an old
+# ui.json over by itself.
+real_config="${XDG_CONFIG_HOME:-$HOME/.config}/llmtodo/config.toml"
 mkdir -p "$ui_dir"
-if [ ! -f "$ui_dir/ui.json" ]; then
+if [ ! -f "$ui_dir/ui-state.json" ] && [ ! -f "$ui_dir/ui.json" ]; then
   if [ -f "$old_ui_dir/ui.json" ]; then
     cp "$old_ui_dir/ui.json" "$ui_dir/ui.json"
+  elif [ -f "$real_dir/ui-state.json" ]; then
+    cp "$real_dir/ui-state.json" "$ui_dir/ui-state.json"
   elif [ -f "$real_dir/ui.json" ]; then
     cp "$real_dir/ui.json" "$ui_dir/ui.json"
   fi
+fi
+# A plain copy, never a link, so a preview cannot change the real file.
+if [ ! -e "$ui_dir/config.toml" ] && [ -f "$real_config" ]; then
+  cp -L "$real_config" "$ui_dir/config.toml"
 fi
 # Older previews kept their settings inside the real data folder.
 if [ -d "$old_ui_dir" ]; then

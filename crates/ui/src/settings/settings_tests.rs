@@ -1,6 +1,6 @@
 //! UI integration tests for the Settings view: opening and leaving it, the
-//! switches and number fields, hiding old closed tasks, and what `ui.json`
-//! keeps.
+//! switches and number fields, hiding old closed tasks, and what the settings
+//! files keep.
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};
@@ -981,4 +981,81 @@ fn the_open_task_saves_once_the_keys_rest(cx: &mut TestAppContext) {
     assert_eq!(saved().as_deref(), Some(&*first), "no save on each key");
     rest(cx);
     assert_eq!(saved().as_deref(), Some(&*last));
+}
+
+/// Comes back to the window, as after a hand edit in another app.
+fn refocus(handle: AnyWindowHandle, view: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| this.reload_config_file(window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn config_note(view: &Entity<Workspace>, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        view.read(cx)
+            .settings_view()
+            .read(cx)
+            .config_note()
+            .map(|n| n.to_string())
+    })
+}
+
+#[gpui_kit::test]
+fn a_read_only_config_keeps_the_change_for_this_run_and_shows_a_note(cx: &mut TestAppContext) {
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[app]\nvim_editor = true\n").unwrap();
+    let mut perms = std::fs::metadata(&config).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&config, perms).unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    run(handle, &view, "settings", cx);
+    assert_eq!(config_note(&view, cx), None);
+
+    click(handle, "settings-row-vim", cx);
+    assert!(!cx.read(|cx| view.read(cx).current_settings(cx).vim_editor));
+    assert_eq!(
+        config_note(&view, cx).as_deref(),
+        Some("Settings file is read-only. Changes last until you quit.")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "[app]\nvim_editor = true\n"
+    );
+}
+
+#[gpui_kit::test]
+fn a_hand_edit_applies_when_the_window_gets_focus(cx: &mut TestAppContext) {
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    run(handle, &view, "settings", cx);
+    assert!(!config.exists(), "no file at start");
+
+    std::fs::write(
+        &config,
+        "# by hand\n[app]\nmascot = false\nstrike_done = false\n",
+    )
+    .unwrap();
+    refocus(handle, &view, cx);
+    let now = cx.read(|cx| view.read(cx).current_settings(cx));
+    assert!(!now.mascot);
+    assert!(!now.strike_done);
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "# by hand\n[app]\nmascot = false\nstrike_done = false\n",
+        "nothing written back"
+    );
+
+    std::fs::write(&config, "[app]\nmascot = true\nzoom = \n").unwrap();
+    refocus(handle, &view, cx);
+    assert!(
+        !cx.read(|cx| view.read(cx).current_settings(cx).mascot),
+        "last good"
+    );
+    let note = config_note(&view, cx).expect("a parse error");
+    assert!(note.contains("line 3"), "{note}");
 }

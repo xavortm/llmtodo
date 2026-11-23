@@ -1,5 +1,5 @@
 //! The Settings view. It replaces the issue list and the task panel, like
-//! the inbox does. Every change applies at once and goes to `ui.json`, so
+//! the inbox does. Every change applies at once and goes to `config.toml` or `ui-state.json`, so
 //! there is no Save button.
 //!
 //! `j` / `k` and `Ctrl-N` / `Ctrl-P` move between rows. `Enter` or `Space`
@@ -201,6 +201,8 @@ pub struct SettingsView {
     days: Entity<InputState>,
     zoom: Entity<InputState>,
     scroll: ScrollHandle,
+    /// Why changes do not reach `config.toml`, such as a read-only file.
+    config_note: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -295,6 +297,7 @@ impl SettingsView {
             days,
             zoom,
             scroll: ScrollHandle::new(),
+            config_note: None,
             _subscriptions: subscriptions,
         }
     }
@@ -318,6 +321,19 @@ impl SettingsView {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn zoom_input(&self) -> &Entity<InputState> {
         &self.zoom
+    }
+
+    /// Shows `note` under the heading, or nothing for `None`.
+    pub fn set_config_note(&mut self, note: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.config_note != note {
+            self.config_note = note;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn config_note(&self) -> Option<&SharedString> {
+        self.config_note.as_ref()
     }
 
     fn values(&self, cx: &App) -> UiSettings {
@@ -850,6 +866,17 @@ impl Render for SettingsView {
                         .py_6()
                         .gap_1()
                         .child(div().px_3().pb_3().text_lg().child("Settings"))
+                        .when_some(self.config_note.clone(), |el, note| {
+                            el.child(
+                                div()
+                                    .id("settings-config-note")
+                                    .px_3()
+                                    .pb_3()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(note),
+                            )
+                        })
                         .children(rows),
                 ),
             )

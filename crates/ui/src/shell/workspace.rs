@@ -333,6 +333,8 @@ pub struct Workspace {
     layout: Layout,
     window_frame: Option<[f32; 4]>,
     settings: SettingsStore,
+    /// The note Settings shows about `config.toml`, as last sent.
+    config_note: Option<SharedString>,
     /// The settings as last saved, to skip writes that change nothing.
     saved: UiSettings,
     /// A save that waits until the window stops moving.
@@ -606,6 +608,10 @@ impl Workspace {
             let inactive = !window.is_window_active();
             this.mascot
                 .update(cx, |mascot, cx| mascot.set_inactive(inactive, cx));
+            // Back from an editor: apply a hand edit of config.toml.
+            if !inactive {
+                this.reload_config_file(window, cx);
+            }
         }));
         // On Auto, the theme follows macOS between light and dark.
         subscriptions.push(cx.observe_window_appearance(window, |_, window, cx| {
@@ -682,6 +688,7 @@ impl Workspace {
             layout: Layout::new(split_side, split_stacked, narrow),
             window_frame: None,
             settings: store,
+            config_note: None,
             saved: settings.clone(),
             save_soon: None,
             view_refresh: None,
@@ -707,6 +714,9 @@ impl Workspace {
         this.rebuild_commands(cx);
         let values = this.current_settings(cx);
         this.settings_values.update(cx, |shown, _| *shown = values);
+        // Notes the file's time, and shows a parse error from the start.
+        this.settings.check_file();
+        this.show_config_problem(cx);
         this
     }
 
@@ -1680,10 +1690,80 @@ impl Workspace {
         if now == self.saved {
             return;
         }
-        if let Err(err) = self.settings.save(&now) {
+        if let Err(err) = self.settings.save(&self.saved, &now) {
             self.message = format!("Could not save settings: {err}").into();
         }
         self.saved = now;
+        self.show_config_problem(cx);
+    }
+
+    /// Applies a change to `config.toml` made outside the app, such as a
+    /// hand edit. The workspace checks when the window gets focus: a cheap
+    /// look at the file's modification time, not a file watcher.
+    pub fn reload_config_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prefs) = self.settings.check_file() else {
+            self.show_config_problem(cx);
+            return;
+        };
+        let now = prefs.apply_to(&self.current_settings(cx));
+        let appearance = crate::shell::theme::Appearance::from_id(&now.theme).unwrap_or_default();
+        crate::shell::theme::set_appearance(appearance, window.appearance(), cx);
+        let color = crate::shell::theme::ColorTheme::from_id(&now.color_theme).unwrap_or_default();
+        crate::shell::theme::set_color_theme(color, cx);
+        crate::shell::theme::set_zoom(now.zoom, cx);
+        crate::shell::motion::set(now.animations, cx);
+        self.mascot_on = now.mascot;
+        self.sync_mascot(cx);
+        self.open_last_view = now.open_last_view;
+        self.hide_closed = now.hide_closed;
+        self.hide_closed_days = now.hide_closed_days.min(MAX_HIDE_DAYS);
+        let vim = now.vim_editor;
+        self.task.update(cx, |task, cx| {
+            task.vim_enabled = vim;
+            if !vim {
+                task.editor_vim = VimMode::Insert;
+            }
+            cx.notify();
+        });
+        let after = self.hide_closed.then_some(self.hide_closed_days);
+        let hidden_columns = now
+            .hidden_columns
+            .iter()
+            .filter_map(|name| Column::hideable_from_setting(name))
+            .collect();
+        let strike_done = now.strike_done;
+        let selected = self.selected_issue(cx);
+        self.list_do(cx, |list, cx| {
+            list.hide_closed_after = after;
+            list.hidden_columns = hidden_columns;
+            list.strike_done = strike_done;
+            list.reload(selected, cx);
+        });
+        // The file holds these values already: nothing to write back.
+        let shown = self.current_settings(cx);
+        self.saved = shown.clone();
+        self.settings_values.update(cx, |values, cx| {
+            *values = shown;
+            cx.notify();
+        });
+        self.show_config_problem(cx);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Settings shows why changes do not reach `config.toml`, if they don't.
+    fn show_config_problem(&mut self, cx: &mut Context<Self>) {
+        let note = self
+            .settings
+            .problem()
+            .map(|p| SharedString::from(p.note()));
+        if note == self.config_note {
+            return;
+        }
+        self.config_note = note.clone();
+        // A save can run inside a Settings event, while the view is busy.
+        let view = self.settings_view.clone();
+        cx.defer(move |cx| view.update(cx, |view, cx| view.set_config_note(note, cx)));
     }
 
     // Readers, mostly for tests.
