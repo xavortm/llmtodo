@@ -16,6 +16,7 @@ use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, send_reload};
 use crate::store;
+use crate::store::backend;
 
 const DB_FILE: &str = "llmtodo.db.gz";
 const MANIFEST: &str = "manifest.json";
@@ -203,9 +204,10 @@ async fn snapshot_dirty(snapshot: &Path) -> ApiResult<Option<String>> {
     let opts = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(snapshot)
         .read_only(true);
-    let mut c = sqlx::SqliteConnection::connect_with(&opts).await?;
+    let mut c = crate::store::backend::Conn::from_sqlite(
+        sqlx::SqliteConnection::connect_with(&opts).await?,
+    );
     let v = store::sync::dirty_value(&mut c).await?;
-    c.close().await?;
     Ok(v)
 }
 
@@ -321,7 +323,7 @@ async fn prepare_incoming(staging: &Path) -> ApiResult<()> {
         .map_err(|e| ApiError::internal(format!("open sync copy: {e:#}")))?;
     let ready = async {
         crate::store::actors::seed(&pool).await?;
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        backend::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&pool)
             .await?;
         ApiResult::Ok(())
@@ -469,6 +471,8 @@ mod tests {
     use serde_json::{Value, json};
     use tokio::sync::Notify;
 
+    use crate::store::backend;
+
     /// When set, push stops after it takes the copy: it signals the first
     /// `Notify` and waits on the second.
     static PAUSE: Mutex<Option<(Arc<Notify>, Arc<Notify>)>> = Mutex::new(None);
@@ -560,7 +564,7 @@ mod tests {
         .await
         .unwrap();
         // About 16 MB that gzip cannot shrink much.
-        sqlx::query(
+        backend::query(
             "INSERT INTO settings (key, value) VALUES ('ballast', hex(randomblob(8000000)))",
         )
         .execute(&running.state.pool())

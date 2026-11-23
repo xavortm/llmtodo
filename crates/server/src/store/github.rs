@@ -1,13 +1,11 @@
 //! Github.
 
 use crate::error::ApiResult;
-use sqlx::SqliteConnection;
+use crate::store::backend;
+use crate::store::backend::Conn;
 
-pub async fn issues_claimed_on_branch(
-    c: &mut SqliteConnection,
-    branch: &str,
-) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar(
+pub async fn issues_claimed_on_branch(c: &mut Conn, branch: &str) -> ApiResult<Vec<String>> {
+    Ok(backend::query_scalar(
         "SELECT DISTINCT issue_id FROM claims WHERE branch = ? AND ended_at IS NULL",
     )
     .bind(branch)
@@ -15,9 +13,9 @@ pub async fn issues_claimed_on_branch(
     .await?)
 }
 
-pub async fn issues_with_attachment(c: &mut SqliteConnection, url: &str) -> ApiResult<Vec<String>> {
+pub async fn issues_with_attachment(c: &mut Conn, url: &str) -> ApiResult<Vec<String>> {
     Ok(
-        sqlx::query_scalar("SELECT DISTINCT issue_id FROM attachments WHERE url = ?")
+        backend::query_scalar("SELECT DISTINCT issue_id FROM attachments WHERE url = ?")
             .bind(url)
             .fetch_all(&mut *c)
             .await?,
@@ -25,10 +23,10 @@ pub async fn issues_with_attachment(c: &mut SqliteConnection, url: &str) -> ApiR
 }
 
 pub async fn repos(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
 ) -> ApiResult<Vec<(String, String, Option<String>, Option<String>)>> {
     Ok(
-        sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        backend::query_as::<(String, String, Option<String>, Option<String>)>(
             "SELECT project_id, repo, etag, last_polled_at FROM project_repos ORDER BY repo",
         )
         .fetch_all(&mut *c)
@@ -36,22 +34,18 @@ pub async fn repos(
     )
 }
 
-pub async fn attachment_count(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<i64> {
+pub async fn attachment_count(c: &mut Conn, issue_id: &str) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT count(*) FROM attachments WHERE issue_id = ?")
+        backend::query_scalar("SELECT count(*) FROM attachments WHERE issue_id = ?")
             .bind(issue_id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn has_attachment(
-    c: &mut SqliteConnection,
-    issue_id: &str,
-    url: &str,
-) -> ApiResult<Option<i64>> {
+pub async fn has_attachment(c: &mut Conn, issue_id: &str, url: &str) -> ApiResult<Option<i64>> {
     Ok(
-        sqlx::query_scalar("SELECT 1 FROM attachments WHERE issue_id = ? AND url = ?")
+        backend::query_scalar("SELECT 1 FROM attachments WHERE issue_id = ? AND url = ?")
             .bind(issue_id)
             .bind(url)
             .fetch_optional(&mut *c)
@@ -60,13 +54,13 @@ pub async fn has_attachment(
 }
 
 pub async fn save_poll(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     etag: &Option<String>,
     started: &str,
     project_id: &str,
     repo: &str,
 ) -> ApiResult<()> {
-    sqlx::query(
+    backend::query(
         "UPDATE project_repos SET etag = ?, last_polled_at = ? WHERE project_id = ? AND repo = ?",
     )
     .bind(etag)
@@ -78,8 +72,8 @@ pub async fn save_poll(
     Ok(())
 }
 
-pub async fn repo_count(c: &mut SqliteConnection) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM project_repos")
+pub async fn repo_count(c: &mut Conn) -> ApiResult<i64> {
+    Ok(backend::query_scalar("SELECT count(*) FROM project_repos")
         .fetch_one(&mut *c)
         .await?)
 }

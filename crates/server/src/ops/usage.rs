@@ -1,13 +1,13 @@
 //! Token usage reports.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
-use sqlx::SqliteConnection;
 
 use crate::error::ApiResult;
 use crate::store::{self, usage};
 
 /// Usage by issue, the most expensive first.
-pub async fn report(c: &mut SqliteConnection, q: &UsageQuery) -> ApiResult<UsageReport> {
+pub async fn report(c: &mut Conn, q: &UsageQuery) -> ApiResult<UsageReport> {
     let project = match &q.project {
         Some(p) => Some(store::projects::resolve(c, p).await?.id),
         None => None,

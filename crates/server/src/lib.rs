@@ -7,7 +7,7 @@
 /// input. Values always go through `bind`.
 #[macro_export]
 macro_rules! sql {
-    ($($t:tt)*) => { sqlx::AssertSqlSafe(format!($($t)*)) };
+    ($($t:tt)*) => { $crate::store::backend::Sql::assert_safe(format!($($t)*)) };
 }
 
 pub mod db;

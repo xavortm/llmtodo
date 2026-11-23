@@ -307,7 +307,7 @@ pub async fn poll(st: &AppState, api: &impl GithubApi) -> ApiResult<GithubReport
         ..Default::default()
     };
     let pool = st.pool();
-    let repos: Vec<Repo> = store::github::repos(&mut *pool.acquire().await?)
+    let repos: Vec<Repo> = store::github::repos(&mut pool.acquire().await?)
         .await?
         .into_iter()
         .map(|(project_id, repo, etag, last_polled_at)| Repo {
@@ -452,7 +452,7 @@ pub async fn poll(st: &AppState, api: &impl GithubApi) -> ApiResult<GithubReport
 }
 
 pub async fn poll_with_gh(st: &AppState) -> ApiResult<GithubReport> {
-    let repos: i64 = store::github::repo_count(&mut *st.pool().acquire().await?).await?;
+    let repos: i64 = store::github::repo_count(&mut st.pool().acquire().await?).await?;
     if repos == 0 {
         let r = GithubReport {
             paused: Some("no linked repos; run `llmtodo project link-repo <owner/name>`".into()),

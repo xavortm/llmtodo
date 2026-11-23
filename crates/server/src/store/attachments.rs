@@ -1,10 +1,11 @@
 //! Links and files attached to issues.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Attachment, AttachmentKind};
-use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 #[derive(sqlx::FromRow)]
 struct AttachmentRow {
@@ -31,27 +32,21 @@ fn attachment(r: AttachmentRow) -> Attachment {
     }
 }
 
-pub async fn attachments(
-    conn: &mut SqliteConnection,
-    issue_id: &str,
-) -> ApiResult<Vec<Attachment>> {
-    let rows = sqlx::query_as::<_, AttachmentRow>("SELECT id, kind, url, title, subtitle, source, metadata, created_at FROM attachments WHERE issue_id = ? ORDER BY created_at")
+pub async fn attachments(conn: &mut Conn, issue_id: &str) -> ApiResult<Vec<Attachment>> {
+    let rows = backend::query_as::<AttachmentRow>("SELECT id, kind, url, title, subtitle, source, metadata, created_at FROM attachments WHERE issue_id = ? ORDER BY created_at")
         .bind(issue_id)
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.into_iter().map(attachment).collect())
 }
 
-pub async fn attachment_by_id(
-    conn: &mut SqliteConnection,
-    id: &str,
-) -> ApiResult<(String, Attachment)> {
-    let issue_id: String = sqlx::query_scalar("SELECT issue_id FROM attachments WHERE id = ?")
+pub async fn attachment_by_id(conn: &mut Conn, id: &str) -> ApiResult<(String, Attachment)> {
+    let issue_id: String = backend::query_scalar("SELECT issue_id FROM attachments WHERE id = ?")
         .bind(id)
         .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| ApiError::not_found("attachment", id))?;
-    let r = sqlx::query_as::<_, AttachmentRow>("SELECT id, kind, url, title, subtitle, source, metadata, created_at FROM attachments WHERE id = ?")
+    let r = backend::query_as::<AttachmentRow>("SELECT id, kind, url, title, subtitle, source, metadata, created_at FROM attachments WHERE id = ?")
         .bind(id)
         .fetch_one(&mut *conn)
         .await?;
@@ -76,13 +71,9 @@ pub fn guess_kind(url: &str) -> AttachmentKind {
     }
 }
 
-pub async fn id_by_url(
-    c: &mut SqliteConnection,
-    issue_id: &str,
-    url: &str,
-) -> ApiResult<Option<String>> {
+pub async fn id_by_url(c: &mut Conn, issue_id: &str, url: &str) -> ApiResult<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT id FROM attachments WHERE issue_id = ? AND url = ?")
+        backend::query_scalar("SELECT id FROM attachments WHERE issue_id = ? AND url = ?")
             .bind(issue_id)
             .bind(url)
             .fetch_optional(&mut *c)
@@ -91,14 +82,14 @@ pub async fn id_by_url(
 }
 
 pub async fn update_title_metadata(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     title: Option<&str>,
     metadata: String,
     id: &str,
 ) -> ApiResult<()> {
     // Skips the row when nothing differs, so a PR read again counts as no
     // change.
-    sqlx::query(
+    backend::query(
         "UPDATE attachments SET title = coalesce(?1, title),
              metadata = CASE WHEN ?2 = '{}' THEN metadata ELSE ?2 END
          WHERE id = ?3
@@ -115,7 +106,7 @@ pub async fn update_title_metadata(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     issue_id: &str,
     kind: &str,
@@ -125,7 +116,7 @@ pub async fn insert(
     metadata: String,
     actor_id: String,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO attachments (id, issue_id, kind, url, title, source, metadata, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO attachments (id, issue_id, kind, url, title, source, metadata, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(issue_id)
         .bind(kind)
@@ -140,8 +131,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn delete(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM attachments WHERE id = ?")
+pub async fn delete(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM attachments WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;

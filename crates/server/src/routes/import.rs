@@ -33,7 +33,7 @@ pub async fn file(
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ApiError::bad_request("file hash must be 64 hex characters"));
     }
-    let mime: Option<String> = store::import::file_mime(&mut *st.pool().acquire().await?, &hash)
+    let mime: Option<String> = store::import::file_mime(&mut st.pool().acquire().await?, &hash)
         .await?
         .flatten();
     // Streamed in chunks, so a big file neither sits in memory nor blocks

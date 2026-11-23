@@ -8,13 +8,14 @@
 
 use std::collections::BTreeMap;
 
+use crate::store::backend::{Conn, Pool};
 use llmtodo_api_types::Revision;
-use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::db::{new_id, now, parse_ts};
 use crate::delta;
 use crate::error::{ApiError, ApiResult};
 use crate::store::actors;
+use crate::store::backend;
 
 /// Every version divisible by this keeps its full text.
 const FULL_EVERY: i64 = 32;
@@ -50,7 +51,7 @@ fn rebuild(mut rows: Vec<Stored>) -> ApiResult<BTreeMap<i64, String>> {
 }
 
 pub async fn add_revision(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     entity_type: &str,
     entity_id: &str,
     version: i64,
@@ -58,14 +59,14 @@ pub async fn add_revision(
     actor_id: &str,
     session: Option<&str>,
 ) -> ApiResult<()> {
-    let newest: Option<Stored> = sqlx::query_as(
+    let newest: Option<Stored> = backend::query_as(
         "SELECT version, body, base_version FROM revisions WHERE entity_type = ? AND entity_id = ? ORDER BY version DESC LIMIT 1",
     )
     .bind(entity_type)
     .bind(entity_id)
     .fetch_optional(&mut *conn)
     .await?;
-    sqlx::query("INSERT INTO revisions (id, entity_type, entity_id, version, body, actor_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO revisions (id, entity_type, entity_id, version, body, actor_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(new_id())
         .bind(entity_type)
         .bind(entity_id)
@@ -88,14 +89,14 @@ pub async fn add_revision(
 }
 
 async fn set_delta(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     entity_type: &str,
     entity_id: &str,
     version: i64,
     delta: &str,
     base: i64,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE revisions SET body = ?, base_version = ? WHERE entity_type = ? AND entity_id = ? AND version = ?")
+    backend::query("UPDATE revisions SET body = ?, base_version = ? WHERE entity_type = ? AND entity_id = ? AND version = ?")
         .bind(delta)
         .bind(base)
         .bind(entity_type)
@@ -106,12 +107,8 @@ async fn set_delta(
     Ok(())
 }
 
-async fn stored_rows(
-    c: &mut SqliteConnection,
-    entity_type: &str,
-    entity_id: &str,
-) -> ApiResult<Vec<Stored>> {
-    Ok(sqlx::query_as(
+async fn stored_rows(c: &mut Conn, entity_type: &str, entity_id: &str) -> ApiResult<Vec<Stored>> {
+    Ok(backend::query_as(
         "SELECT version, body, base_version FROM revisions WHERE entity_type = ? AND entity_id = ?",
     )
     .bind(entity_type)
@@ -123,7 +120,7 @@ async fn stored_rows(
 /// Every revision of an entity, oldest first. The text comes only with
 /// `bodies`.
 pub async fn revisions(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     entity_type: &str,
     entity_id: &str,
     bodies: bool,
@@ -135,7 +132,7 @@ pub async fn revisions(
         BTreeMap::new()
     };
     type Row = (i64, Option<String>, Option<String>, String);
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<Row> = backend::query_as(
         "SELECT version, actor_id, session_id, created_at FROM revisions WHERE entity_type = ? AND entity_id = ? ORDER BY version",
     )
     .bind(entity_type)
@@ -155,13 +152,13 @@ pub async fn revisions(
 }
 
 pub async fn revision_body(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     entity_type: &str,
     entity_id: &str,
     version: i64,
 ) -> ApiResult<String> {
     // The chain from a version runs up to the nearest full row above it.
-    let rows: Vec<Stored> = sqlx::query_as(
+    let rows: Vec<Stored> = backend::query_as(
         "SELECT version, body, base_version FROM revisions
          WHERE entity_type = ?1 AND entity_id = ?2 AND version >= ?3
          AND version <= coalesce((SELECT min(version) FROM revisions
@@ -180,7 +177,7 @@ pub async fn revision_body(
     let rows = if rows.iter().all(|r| r.2.is_none_or(has)) {
         rows
     } else {
-        sqlx::query_as(
+        backend::query_as(
             "SELECT version, body, base_version FROM revisions WHERE entity_type = ? AND entity_id = ? AND version >= ?",
         )
         .bind(entity_type)
@@ -195,10 +192,10 @@ pub async fn revision_body(
 }
 
 pub async fn of_issue_oldest_first(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
 ) -> ApiResult<Vec<(i64, String, Option<String>)>> {
-    let actors: Vec<(i64, Option<String>)> = sqlx::query_as(
+    let actors: Vec<(i64, Option<String>)> = backend::query_as(
         "SELECT version, actor_id FROM revisions
          WHERE entity_type = 'issue' AND entity_id = ? ORDER BY version",
     )
@@ -212,16 +209,16 @@ pub async fn of_issue_oldest_first(
         .collect())
 }
 
-pub async fn delete_of_issue(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM revisions WHERE entity_type = 'issue' AND entity_id = ?")
+pub async fn delete_of_issue(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM revisions WHERE entity_type = 'issue' AND entity_id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;
     Ok(())
 }
 
-pub async fn delete_of_comments(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM revisions WHERE entity_type = 'comment' AND entity_id IN (SELECT id FROM comments WHERE issue_id = ?)")
+pub async fn delete_of_comments(c: &mut Conn, issue_id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM revisions WHERE entity_type = 'comment' AND entity_id IN (SELECT id FROM comments WHERE issue_id = ?)")
         .bind(issue_id)
         .execute(&mut *c)
         .await?;
@@ -233,11 +230,11 @@ pub async fn delete_of_comments(c: &mut SqliteConnection, issue_id: &str) -> Api
 const OLD: &str = "r.created_at < ?1 AND r.version < (SELECT max(version) FROM revisions r2
     WHERE r2.entity_type = r.entity_type AND r2.entity_id = r.entity_id)";
 
-pub async fn delete_old(c: &mut SqliteConnection, before: String) -> ApiResult<()> {
+pub async fn delete_old(c: &mut Conn, before: String) -> ApiResult<()> {
     // A kept delta whose base goes too gets its full text first. Bases are
     // newer than their deltas, so this happens only when created_at runs
     // against the version order.
-    let orphans: Vec<(String, String, i64)> = sqlx::query_as(crate::sql!(
+    let orphans: Vec<(String, String, i64)> = backend::query_as(crate::sql!(
         "SELECT k.entity_type, k.entity_id, k.version FROM revisions k
          JOIN revisions r ON r.entity_type = k.entity_type AND r.entity_id = k.entity_id AND r.version = k.base_version
          WHERE {OLD} AND NOT (k.created_at < ?1 AND k.version < (SELECT max(version) FROM revisions r3
@@ -248,7 +245,7 @@ pub async fn delete_old(c: &mut SqliteConnection, before: String) -> ApiResult<(
     .await?;
     for (entity_type, entity_id, version) in orphans {
         let text = revision_body(c, &entity_type, &entity_id, version).await?;
-        sqlx::query("UPDATE revisions SET body = ?, base_version = NULL WHERE entity_type = ? AND entity_id = ? AND version = ?")
+        backend::query("UPDATE revisions SET body = ?, base_version = NULL WHERE entity_type = ? AND entity_id = ? AND version = ?")
             .bind(text)
             .bind(&entity_type)
             .bind(&entity_id)
@@ -256,7 +253,7 @@ pub async fn delete_old(c: &mut SqliteConnection, before: String) -> ApiResult<(
             .execute(&mut *c)
             .await?;
     }
-    sqlx::query(crate::sql!(
+    backend::query(crate::sql!(
         "DELETE FROM revisions WHERE id IN (SELECT r.id FROM revisions r WHERE {OLD})"
     ))
     .bind(before)
@@ -265,9 +262,9 @@ pub async fn delete_old(c: &mut SqliteConnection, before: String) -> ApiResult<(
     Ok(())
 }
 
-pub async fn count_old(c: &mut SqliteConnection, before: String) -> ApiResult<i64> {
+pub async fn count_old(c: &mut Conn, before: String) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar(crate::sql!("SELECT count(*) FROM revisions r WHERE {OLD}"))
+        backend::query_scalar(crate::sql!("SELECT count(*) FROM revisions r WHERE {OLD}"))
             .bind(before)
             .fetch_one(&mut *c)
             .await?,
@@ -278,26 +275,27 @@ pub async fn count_old(c: &mut SqliteConnection, before: String) -> ApiResult<i6
 /// migration that adds `base_version`. The text of every revision stays the
 /// same. One transaction clears the pending mark too, so a crash leaves the
 /// work to the next start.
-pub async fn compact(pool: &SqlitePool) -> ApiResult<()> {
-    async fn pending(c: &mut SqliteConnection) -> ApiResult<bool> {
-        let found: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-            .bind(COMPACT_KEY)
-            .fetch_optional(&mut *c)
-            .await?;
+pub async fn compact(pool: &Pool) -> ApiResult<()> {
+    async fn pending(c: &mut Conn) -> ApiResult<bool> {
+        let found: Option<String> =
+            backend::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(COMPACT_KEY)
+                .fetch_optional(&mut *c)
+                .await?;
         Ok(found.is_some())
     }
     // A plain read first, so a start with nothing to do takes no write lock.
-    if !pending(&mut *pool.acquire().await?).await? {
+    if !pending(&mut pool.acquire().await?).await? {
         return Ok(());
     }
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = pool.begin_write().await?;
     if !pending(&mut tx).await? {
         return Ok(());
     }
-    let entities: Vec<(String, String)> = sqlx::query_as(
+    let entities: Vec<(String, String)> = backend::query_as(
         "SELECT entity_type, entity_id FROM revisions GROUP BY entity_type, entity_id HAVING count(*) > 1",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut tx)
     .await?;
     let mut compacted = 0;
     for (entity_type, entity_id) in &entities {
@@ -314,9 +312,9 @@ pub async fn compact(pool: &SqlitePool) -> ApiResult<()> {
             }
         }
     }
-    sqlx::query("DELETE FROM settings WHERE key = ?")
+    backend::query("DELETE FROM settings WHERE key = ?")
         .bind(COMPACT_KEY)
-        .execute(&mut *tx)
+        .execute(&mut tx)
         .await?;
     tx.commit().await?;
     tracing::info!(revisions = compacted, "old revisions stored as deltas");

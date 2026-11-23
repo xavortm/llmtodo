@@ -1,6 +1,6 @@
 //! Keeps the layer rules in ARCHITECTURE.md true: routes hold no SQL, nothing
-//! outside routes imports routes, and modules in routes do not import each
-//! other.
+//! outside routes imports routes, modules in routes do not import each
+//! other, and only the backend layer names a database driver.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,9 +53,42 @@ fn fail(rule: &str, found: &[(PathBuf, usize, String)]) {
 fn routes_hold_no_sql() {
     let found: Vec<_> = code_lines(&src().join("routes"))
         .into_iter()
-        .filter(|(_, _, t)| t.contains("sqlx::"))
+        .filter(|(_, _, t)| {
+            t.contains("sqlx::") || t.contains("backend::query") || t.contains("QueryBuilder")
+        })
         .collect();
-    fail("routes must not use sqlx; put SQL in store", &found);
+    fail("routes must not run SQL; put SQL in store", &found);
+}
+
+/// Only the backend layer, the database opener and laptop sync, which reads
+/// SQLite files, name a sqlx driver type (LLM-452).
+#[test]
+fn only_the_backend_layer_names_a_driver() {
+    const DRIVER: [&str; 10] = [
+        "SqliteConnection",
+        "SqlitePool",
+        "SqliteRow",
+        "SqliteQueryResult",
+        "sqlx::Sqlite",
+        "PgConnection",
+        "PgPool",
+        "PgRow",
+        "sqlx::Postgres",
+        "sqlx::Transaction",
+    ];
+    let allowed = [
+        src().join("store/backend.rs"),
+        src().join("db.rs"),
+        src().join("ops/sync.rs"),
+    ];
+    let found: Vec<_> = code_lines(&src())
+        .into_iter()
+        .filter(|(f, _, t)| !allowed.contains(f) && DRIVER.iter().any(|d| t.contains(d)))
+        .collect();
+    fail(
+        "only store/backend.rs, db.rs and ops/sync.rs may name a sqlx driver type",
+        &found,
+    );
 }
 
 #[test]

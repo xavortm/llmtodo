@@ -1,23 +1,19 @@
 use std::collections::HashMap;
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Actor, SessionNote, WorkSession};
-use sqlx::SqliteConnection;
 
 use crate::db::{new_id, now, parse_ts, parse_uuid};
 use crate::error::ApiResult;
 use crate::state::Ctx;
+use crate::store::backend;
 
 /// Adds or updates the work-session record of one agent session on one
 /// issue. Keeps the first `HEAD` and moves the latest one.
-pub async fn touch(
-    conn: &mut SqliteConnection,
-    ctx: &Ctx,
-    session: &str,
-    issue_id: &str,
-) -> ApiResult<()> {
+pub async fn touch(conn: &mut Conn, ctx: &Ctx, session: &str, issue_id: &str) -> ApiResult<()> {
     let c = &ctx.client;
     let t = now();
-    sqlx::query(
+    backend::query(
         "INSERT INTO work_sessions (id, session_id, issue_id, actor_id, harness_version, transcript_path, herdr_pane, host, worktree, branch, first_head, last_head, started_at, last_seen_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (session_id, issue_id) DO UPDATE SET
@@ -92,8 +88,8 @@ fn note(r: &NoteRow) -> SessionNote {
     }
 }
 
-async fn notes_for(conn: &mut SqliteConnection, session_ids: &[String]) -> ApiResult<Vec<NoteRow>> {
-    Ok(sqlx::query_as::<_, NoteRow>(
+async fn notes_for(conn: &mut Conn, session_ids: &[String]) -> ApiResult<Vec<NoteRow>> {
+    Ok(backend::query_as::<NoteRow>(
         "SELECT n.id, n.session_id, i.key AS issue_key, n.body, n.created_at FROM session_notes n LEFT JOIN issues i ON i.id = n.issue_id
          WHERE n.session_id IN (SELECT value FROM json_each(?)) ORDER BY n.created_at",
     )
@@ -103,7 +99,7 @@ async fn notes_for(conn: &mut SqliteConnection, session_ids: &[String]) -> ApiRe
 }
 
 async fn build(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     rows: Vec<Row>,
     actors: &HashMap<String, Actor>,
 ) -> ApiResult<Vec<WorkSession>> {
@@ -151,11 +147,11 @@ async fn build(
 }
 
 pub async fn for_issue(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     issue_id: &str,
     actors: &HashMap<String, Actor>,
 ) -> ApiResult<Vec<WorkSession>> {
-    let rows = sqlx::query_as::<_, Row>(crate::sql!("SELECT {COLS} FROM work_sessions w JOIN issues i ON i.id = w.issue_id WHERE w.issue_id = ? ORDER BY w.started_at"))
+    let rows = backend::query_as::<Row>(crate::sql!("SELECT {COLS} FROM work_sessions w JOIN issues i ON i.id = w.issue_id WHERE w.issue_id = ? ORDER BY w.started_at"))
         .bind(issue_id)
         .fetch_all(&mut *conn)
         .await?;
@@ -163,11 +159,11 @@ pub async fn for_issue(
 }
 
 pub async fn for_session(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     session_id: &str,
     actors: &HashMap<String, Actor>,
 ) -> ApiResult<(Vec<WorkSession>, Vec<SessionNote>)> {
-    let rows = sqlx::query_as::<_, Row>(crate::sql!("SELECT {COLS} FROM work_sessions w JOIN issues i ON i.id = w.issue_id WHERE w.session_id = ? ORDER BY w.started_at"))
+    let rows = backend::query_as::<Row>(crate::sql!("SELECT {COLS} FROM work_sessions w JOIN issues i ON i.id = w.issue_id WHERE w.session_id = ? ORDER BY w.started_at"))
         .bind(session_id)
         .fetch_all(&mut *conn)
         .await?;
@@ -180,8 +176,8 @@ pub async fn for_session(
     Ok((issues, notes))
 }
 
-pub async fn note_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<SessionNote> {
-    let r = sqlx::query_as::<_, NoteRow>("SELECT n.id, n.session_id, i.key AS issue_key, n.body, n.created_at FROM session_notes n LEFT JOIN issues i ON i.id = n.issue_id WHERE n.id = ?")
+pub async fn note_by_id(conn: &mut Conn, id: &str) -> ApiResult<SessionNote> {
+    let r = backend::query_as::<NoteRow>("SELECT n.id, n.session_id, i.key AS issue_key, n.body, n.created_at FROM session_notes n LEFT JOIN issues i ON i.id = n.issue_id WHERE n.id = ?")
         .bind(id)
         .fetch_one(&mut *conn)
         .await?;
@@ -189,14 +185,14 @@ pub async fn note_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<Sess
 }
 
 pub async fn add_note(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     session_id: &str,
     issue_id: Option<&str>,
     body: &str,
     actor_id: String,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO session_notes (id, session_id, issue_id, body, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO session_notes (id, session_id, issue_id, body, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(session_id)
         .bind(issue_id)

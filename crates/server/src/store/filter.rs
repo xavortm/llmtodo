@@ -1,8 +1,8 @@
 //! The SQL form of the shared issue filter. `IssueFilter` in `core` states
 //! the rules, and `IssueFilter::matches` is the same filter for the app.
 
+use crate::store::backend::{Conn, QueryBuilder};
 use llmtodo_api_types::{Actor, IssueFilter};
-use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 use crate::error::ApiResult;
 use crate::store::{actors, labels};
@@ -12,8 +12,8 @@ use super::issues::analyzing_cutoff;
 /// Pushes every condition of `f`. The query must name the issue `i` and its
 /// status `s`.
 pub async fn push(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
+    b: &mut QueryBuilder,
+    conn: &mut Conn,
     me: &Actor,
     f: &IssueFilter,
 ) -> ApiResult<()> {
@@ -24,7 +24,7 @@ pub async fn push(
     Ok(())
 }
 
-fn push_status(b: &mut QueryBuilder<Sqlite>, f: &IssueFilter) -> ApiResult<()> {
+fn push_status(b: &mut QueryBuilder, f: &IssueFilter) -> ApiResult<()> {
     if !f.statuses.is_empty() {
         let names: Vec<String> = f.statuses.iter().map(|s| s.trim().to_lowercase()).collect();
         b.push(" AND (lower(s.name) IN (SELECT value FROM json_each(")
@@ -45,11 +45,7 @@ fn push_status(b: &mut QueryBuilder<Sqlite>, f: &IssueFilter) -> ApiResult<()> {
     Ok(())
 }
 
-async fn push_labels(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
-    f: &IssueFilter,
-) -> ApiResult<()> {
+async fn push_labels(b: &mut QueryBuilder, conn: &mut Conn, f: &IssueFilter) -> ApiResult<()> {
     for l in &f.labels {
         let label = labels::resolve(conn, l).await?;
         b.push(" AND EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = ").push_bind(label.id).push(")");
@@ -58,8 +54,8 @@ async fn push_labels(
 }
 
 async fn push_assignee(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
+    b: &mut QueryBuilder,
+    conn: &mut Conn,
     me: &Actor,
     f: &IssueFilter,
 ) -> ApiResult<()> {
@@ -90,7 +86,7 @@ async fn push_assignee(
 
 /// Keeps the issues an agent is on. The two flags together keep an issue
 /// with either state, because a claim ends an Analyzing mark.
-fn push_llm_status(b: &mut QueryBuilder<Sqlite>, f: &IssueFilter) {
+fn push_llm_status(b: &mut QueryBuilder, f: &IssueFilter) {
     if !f.claimed && !f.analyzing {
         return;
     }

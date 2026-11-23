@@ -3,9 +3,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
 use serde_json::json;
-use sqlx::SqliteConnection;
 
 use super::analyzing::end_analyzing;
 use super::attachments::attach;
@@ -21,11 +21,7 @@ use crate::store::revisions::{self, add_revision};
 use crate::store::{self, activity, actors, deps, issue_detail, labels, projects, teams};
 
 /// Runs an issue query. A saved view named in `q` gives the base filters.
-pub async fn query(
-    c: &mut SqliteConnection,
-    actor: &Actor,
-    q: IssueQuery,
-) -> ApiResult<Page<Issue>> {
+pub async fn query(c: &mut Conn, actor: &Actor, q: IssueQuery) -> ApiResult<Page<Issue>> {
     let q = with_view(c, q).await?;
     let (found, next) = issues::query(c, actor, &q).await?;
     let ids: Vec<String> = found.iter().map(|(id, _)| id.clone()).collect();
@@ -41,18 +37,14 @@ pub async fn query(
 
 /// The IDs of every issue a query matches, with no paging. The app keeps a
 /// saved view exact with it, and reads no full issues to do so.
-pub async fn query_ids(
-    c: &mut SqliteConnection,
-    actor: &Actor,
-    q: IssueQuery,
-) -> ApiResult<Vec<IssueId>> {
+pub async fn query_ids(c: &mut Conn, actor: &Actor, q: IssueQuery) -> ApiResult<Vec<IssueId>> {
     let q = with_view(c, q).await?;
     let ids = issues::query_ids(c, actor, &q).await?;
     Ok(ids.iter().map(|id| crate::db::parse_uuid(id)).collect())
 }
 
 /// Puts the saved view named in `q` under its other filters.
-async fn with_view(c: &mut SqliteConnection, mut q: IssueQuery) -> ApiResult<IssueQuery> {
+async fn with_view(c: &mut Conn, mut q: IssueQuery) -> ApiResult<IssueQuery> {
     let Some(name) = q.view.take() else {
         return Ok(q);
     };
@@ -64,7 +56,7 @@ async fn with_view(c: &mut SqliteConnection, mut q: IssueQuery) -> ApiResult<Iss
 }
 
 /// The open, unblocked issues under a root issue or inside a project.
-pub async fn frontier(c: &mut SqliteConnection, q: &FrontierQuery) -> ApiResult<Vec<Issue>> {
+pub async fn frontier(c: &mut Conn, q: &FrontierQuery) -> ApiResult<Vec<Issue>> {
     let root = match &q.issue {
         Some(r) => Some(issues::resolve_live(c, r).await?.id),
         None => None,
@@ -85,19 +77,19 @@ pub async fn frontier(c: &mut SqliteConnection, q: &FrontierQuery) -> ApiResult<
 }
 
 /// The full detail of an issue by key, alias or ID.
-pub async fn view(c: &mut SqliteConnection, r: &str) -> ApiResult<IssueDetail> {
+pub async fn view(c: &mut Conn, r: &str) -> ApiResult<IssueDetail> {
     let id = issues::resolve_id(c, r).await?;
     issue_detail::load(c, &id).await
 }
 
 /// The dependency tree of an issue.
-pub async fn deps(c: &mut SqliteConnection, r: &str, open: bool) -> ApiResult<DepNode> {
+pub async fn deps(c: &mut Conn, r: &str, open: bool) -> ApiResult<DepNode> {
     let id = issues::resolve_id(c, r).await?;
     deps::tree(c, &id, open).await
 }
 
 /// The description revisions and the activity of an issue.
-pub async fn history(c: &mut SqliteConnection, r: &str, bodies: bool) -> ApiResult<History> {
+pub async fn history(c: &mut Conn, r: &str, bodies: bool) -> ApiResult<History> {
     let id = issues::resolve_id(c, r).await?;
     Ok(History {
         revisions: revisions::revisions(c, "issue", &id, bodies).await?,

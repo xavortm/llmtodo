@@ -2,20 +2,21 @@
 
 use std::collections::HashMap;
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{IssueLink, Relation, RelationSource, RelationType};
-use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_uuid};
 use crate::error::ApiResult;
+use crate::store::backend;
 use crate::store::{issues, teams};
 
 /// The relations of one issue, with the statuses given.
 pub async fn relations(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     issue_id: &str,
     statuses: &HashMap<String, teams::StatusRow>,
 ) -> ApiResult<Vec<Relation>> {
-    let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, String, String)> = backend::query_as(
         "SELECT id, type, from_id, to_id, created_at, source FROM relations WHERE from_id = ? OR to_id = ? ORDER BY created_at",
     )
     .bind(issue_id)
@@ -54,21 +55,17 @@ pub async fn relations(
         .collect())
 }
 
-pub async fn first_duplicate_of(c: &mut SqliteConnection, id: &str) -> ApiResult<Option<i64>> {
+pub async fn first_duplicate_of(c: &mut Conn, id: &str) -> ApiResult<Option<i64>> {
     Ok(
-        sqlx::query_scalar("SELECT 1 FROM relations WHERE type = 'duplicate' AND from_id = ?")
+        backend::query_scalar("SELECT 1 FROM relations WHERE type = 'duplicate' AND from_id = ?")
             .bind(id)
             .fetch_optional(&mut *c)
             .await?,
     )
 }
 
-pub async fn related_exists(
-    c: &mut SqliteConnection,
-    from: &str,
-    to: &str,
-) -> ApiResult<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT 1 FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
+pub async fn related_exists(c: &mut Conn, from: &str, to: &str) -> ApiResult<Option<i64>> {
+    Ok(backend::query_scalar("SELECT 1 FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
         .bind(from)
         .bind(to)
         .bind(to)
@@ -77,31 +74,26 @@ pub async fn related_exists(
         .await?)
 }
 
-pub async fn exists(
-    c: &mut SqliteConnection,
-    kind: &str,
-    from: &str,
-    to: &str,
-) -> ApiResult<Option<i64>> {
-    Ok(
-        sqlx::query_scalar("SELECT 1 FROM relations WHERE type = ? AND from_id = ? AND to_id = ?")
-            .bind(kind)
-            .bind(from)
-            .bind(to)
-            .fetch_optional(&mut *c)
-            .await?,
+pub async fn exists(c: &mut Conn, kind: &str, from: &str, to: &str) -> ApiResult<Option<i64>> {
+    Ok(backend::query_scalar(
+        "SELECT 1 FROM relations WHERE type = ? AND from_id = ? AND to_id = ?",
     )
+    .bind(kind)
+    .bind(from)
+    .bind(to)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     kind: &str,
     from: &str,
     to: &str,
     actor_id: String,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO relations (id, type, from_id, to_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO relations (id, type, from_id, to_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(kind)
         .bind(from)
@@ -113,12 +105,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn related_id(
-    c: &mut SqliteConnection,
-    from: &str,
-    to: &str,
-) -> ApiResult<Option<String>> {
-    Ok(sqlx::query_scalar("SELECT id FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
+pub async fn related_id(c: &mut Conn, from: &str, to: &str) -> ApiResult<Option<String>> {
+    Ok(backend::query_scalar("SELECT id FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
         .bind(from)
         .bind(to)
         .bind(to)
@@ -127,24 +115,19 @@ pub async fn related_id(
         .await?)
 }
 
-pub async fn id_of(
-    c: &mut SqliteConnection,
-    kind: &str,
-    from: &str,
-    to: &str,
-) -> ApiResult<Option<String>> {
-    Ok(
-        sqlx::query_scalar("SELECT id FROM relations WHERE type = ? AND from_id = ? AND to_id = ?")
-            .bind(kind)
-            .bind(from)
-            .bind(to)
-            .fetch_optional(&mut *c)
-            .await?,
+pub async fn id_of(c: &mut Conn, kind: &str, from: &str, to: &str) -> ApiResult<Option<String>> {
+    Ok(backend::query_scalar(
+        "SELECT id FROM relations WHERE type = ? AND from_id = ? AND to_id = ?",
     )
+    .bind(kind)
+    .bind(from)
+    .bind(to)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
-pub async fn delete(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM relations WHERE id = ?")
+pub async fn delete(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM relations WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;
@@ -153,11 +136,11 @@ pub async fn delete(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
 
 /// The ID and source of the `blocks` edge from `from` to `to`.
 pub async fn blocks_edge(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     from: &str,
     to: &str,
 ) -> ApiResult<Option<(String, String)>> {
-    Ok(sqlx::query_as(
+    Ok(backend::query_as(
         "SELECT id, source FROM relations WHERE type = 'blocks' AND from_id = ? AND to_id = ?",
     )
     .bind(from)
@@ -166,12 +149,8 @@ pub async fn blocks_edge(
     .await?)
 }
 
-pub async fn set_source(
-    c: &mut SqliteConnection,
-    id: &str,
-    source: RelationSource,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE relations SET source = ? WHERE id = ?")
+pub async fn set_source(c: &mut Conn, id: &str, source: RelationSource) -> ApiResult<()> {
+    backend::query("UPDATE relations SET source = ? WHERE id = ?")
         .bind(source.as_str())
         .bind(id)
         .execute(&mut *c)

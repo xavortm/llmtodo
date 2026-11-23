@@ -22,7 +22,7 @@ pub async fn read(st: &AppState) -> ApiResult<Settings> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(300),
         sync_folder: get("sync_folder").await?.filter(|s| !s.is_empty()),
-        model_prices: crate::store::usage::prices(&mut *st.pool().acquire().await?).await?,
+        model_prices: crate::store::usage::prices(&mut st.pool().acquire().await?).await?,
     })
 }
 

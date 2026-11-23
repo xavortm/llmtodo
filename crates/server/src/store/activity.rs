@@ -1,9 +1,10 @@
+use crate::store::backend::{Conn, Pool};
 use llmtodo_api_types::{ActivityEvent, ActivityField, EntityType};
-use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::db::{new_id, now, parse_ts, parse_uuid};
 use crate::error::ApiResult;
 use crate::store::actors;
+use crate::store::backend;
 
 #[derive(sqlx::FromRow)]
 struct Row {
@@ -22,7 +23,7 @@ struct Row {
 const SELECT: &str = "SELECT a.seq, a.entity_type, a.entity_id, i.key AS issue_key, a.field, a.old, a.new, a.actor_id, a.session_id, a.created_at
     FROM activity a LEFT JOIN issues i ON i.id = a.issue_id";
 
-async fn build(conn: &mut SqliteConnection, rows: Vec<Row>) -> ApiResult<Vec<ActivityEvent>> {
+async fn build(conn: &mut Conn, rows: Vec<Row>) -> ApiResult<Vec<ActivityEvent>> {
     let actors = actors::all(conn).await?;
     let parse = |s: Option<String>| s.and_then(|s| serde_json::from_str(&s).ok());
     Ok(rows
@@ -42,33 +43,33 @@ async fn build(conn: &mut SqliteConnection, rows: Vec<Row>) -> ApiResult<Vec<Act
         .collect())
 }
 
-pub async fn by_seqs(pool: &SqlitePool, seqs: &[i64]) -> ApiResult<Vec<ActivityEvent>> {
+pub async fn by_seqs(pool: &Pool, seqs: &[i64]) -> ApiResult<Vec<ActivityEvent>> {
     let mut conn = pool.acquire().await?;
-    let rows = sqlx::query_as::<_, Row>(crate::sql!(
+    let rows = backend::query_as::<Row>(crate::sql!(
         "{SELECT} WHERE a.seq IN (SELECT value FROM json_each(?)) ORDER BY a.seq"
     ))
     .bind(serde_json::to_string(seqs)?)
-    .fetch_all(&mut *conn)
+    .fetch_all(&mut conn)
     .await?;
     build(&mut conn, rows).await
 }
 
 /// The newest activity seq, or 0 when there is none.
-pub async fn max_seq(pool: &SqlitePool) -> ApiResult<i64> {
+pub async fn max_seq(pool: &Pool) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM activity")
+        backend::query_scalar("SELECT coalesce(max(seq), 0) FROM activity")
             .fetch_one(pool)
             .await?,
     )
 }
 
 pub async fn after(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     after_seq: i64,
     issue_id: Option<&str>,
     limit: i64,
 ) -> ApiResult<Vec<ActivityEvent>> {
-    let rows = sqlx::query_as::<_, Row>(crate::sql!(
+    let rows = backend::query_as::<Row>(crate::sql!(
         "{SELECT} WHERE a.seq > ? AND (? IS NULL OR a.issue_id = ?) ORDER BY a.seq LIMIT ?"
     ))
     .bind(after_seq)
@@ -80,52 +81,46 @@ pub async fn after(
     build(conn, rows).await
 }
 
-pub async fn for_issue(
-    conn: &mut SqliteConnection,
-    issue_id: &str,
-) -> ApiResult<Vec<ActivityEvent>> {
+pub async fn for_issue(conn: &mut Conn, issue_id: &str) -> ApiResult<Vec<ActivityEvent>> {
     let rows =
-        sqlx::query_as::<_, Row>(crate::sql!("{SELECT} WHERE a.issue_id = ? ORDER BY a.seq"))
+        backend::query_as::<Row>(crate::sql!("{SELECT} WHERE a.issue_id = ? ORDER BY a.seq"))
             .bind(issue_id)
             .fetch_all(&mut *conn)
             .await?;
     build(conn, rows).await
 }
 
-pub async fn for_entity(
-    conn: &mut SqliteConnection,
-    entity_id: &str,
-) -> ApiResult<Vec<ActivityEvent>> {
+pub async fn for_entity(conn: &mut Conn, entity_id: &str) -> ApiResult<Vec<ActivityEvent>> {
     let rows =
-        sqlx::query_as::<_, Row>(crate::sql!("{SELECT} WHERE a.entity_id = ? ORDER BY a.seq"))
+        backend::query_as::<Row>(crate::sql!("{SELECT} WHERE a.entity_id = ? ORDER BY a.seq"))
             .bind(entity_id)
             .fetch_all(&mut *conn)
             .await?;
     build(conn, rows).await
 }
 
-pub async fn last_seq(conn: &mut SqliteConnection) -> ApiResult<i64> {
+pub async fn last_seq(conn: &mut Conn) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM activity")
+        backend::query_scalar("SELECT coalesce(max(seq), 0) FROM activity")
             .fetch_one(&mut *conn)
             .await?,
     )
 }
 
-pub async fn first_seq(conn: &mut SqliteConnection) -> ApiResult<i64> {
+pub async fn first_seq(conn: &mut Conn) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT coalesce(min(seq), 0) FROM activity")
+        backend::query_scalar("SELECT coalesce(min(seq), 0) FROM activity")
             .fetch_one(&mut *conn)
             .await?,
     )
 }
 
 pub async fn description_seq(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     version: String,
 ) -> ApiResult<Option<i64>> {
-    Ok(sqlx::query_scalar(
+    Ok(backend::query_scalar(
         "SELECT seq FROM activity WHERE issue_id = ? AND field = 'description' AND new = ?
          ORDER BY seq DESC LIMIT 1",
     )
@@ -136,12 +131,12 @@ pub async fn description_seq(
 }
 
 pub async fn later_write(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     after: i64,
     actor_id: &str,
 ) -> ApiResult<Option<(String, String)>> {
-    Ok(sqlx::query_as(
+    Ok(backend::query_as(
         "SELECT actor_id, field FROM activity
          WHERE issue_id = ? AND seq > ? AND actor_id IS NOT NULL AND actor_id != ?
          ORDER BY seq LIMIT 1",
@@ -155,7 +150,7 @@ pub async fn later_write(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     entity_type: &str,
     entity_id: &str,
     issue_id: Option<&str>,
@@ -165,7 +160,7 @@ pub async fn insert(
     actor: String,
     session: Option<String>,
 ) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar(
+    Ok(backend::query_scalar(
             "INSERT INTO activity (id, entity_type, entity_id, issue_id, field, old, new, actor_id, session_id, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
         )

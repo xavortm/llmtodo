@@ -2899,7 +2899,7 @@ async fn undo_answer_needs_no_revisions() {
     let k = asked(&t).await;
     answer_q1(&t, &k).await;
     let pool = t.running.as_ref().unwrap().state.pool();
-    sqlx::query("DELETE FROM revisions WHERE entity_type = 'issue'")
+    llmtodo_server::store::backend::query("DELETE FROM revisions WHERE entity_type = 'issue'")
         .execute(&pool)
         .await
         .unwrap();
@@ -2926,8 +2926,8 @@ async fn undo_refuses_an_answer_written_at_creation() {
 
 type Row = (String, String, i64, String);
 
-async fn issue_rows(pool: &sqlx::SqlitePool) -> Vec<Row> {
-    sqlx::query_as(
+async fn issue_rows(pool: &llmtodo_server::store::backend::Pool) -> Vec<Row> {
+    llmtodo_server::store::backend::query_as(
         "SELECT id, description, description_version, updated_at FROM issues ORDER BY id",
     )
     .fetch_all(pool)
@@ -2935,27 +2935,33 @@ async fn issue_rows(pool: &sqlx::SqlitePool) -> Vec<Row> {
     .unwrap()
 }
 
-async fn count(pool: &sqlx::SqlitePool, sql: &'static str) -> i64 {
-    sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+async fn count(pool: &llmtodo_server::store::backend::Pool, sql: &'static str) -> i64 {
+    llmtodo_server::store::backend::query_scalar(sql)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 /// Turns a current database back into one from before the questions table,
 /// so the next open runs the migration and the backfill as an upgrade does.
-async fn downgrade(pool: &sqlx::SqlitePool) {
+async fn downgrade(pool: &llmtodo_server::store::backend::Pool) {
     for sql in [
         "DROP TABLE questions",
         "DELETE FROM _sqlx_migrations WHERE version = 9",
     ] {
-        sqlx::query(sql).execute(pool).await.unwrap();
+        llmtodo_server::store::backend::query(sql)
+            .execute(pool)
+            .await
+            .unwrap();
     }
 }
 
 async fn author_of(
-    pool: &sqlx::SqlitePool,
+    pool: &llmtodo_server::store::backend::Pool,
     key: &str,
     number: i64,
 ) -> (Option<i64>, Option<String>) {
-    sqlx::query_as(
+    llmtodo_server::store::backend::query_as(
         "SELECT q.answered_version, CASE WHEN a.is_owner THEN 'owner' ELSE a.name END FROM questions q
          JOIN issues i ON i.id = q.issue_id
          LEFT JOIN actors a ON a.id = q.answered_by
@@ -3045,7 +3051,7 @@ async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
 
     let running = t.running.take().unwrap();
     let pool = running.state.pool();
-    sqlx::query(
+    llmtodo_server::store::backend::query(
         "DELETE FROM revisions WHERE entity_type = 'issue' AND version = 1
          AND entity_id = (SELECT id FROM issues WHERE key = ?)",
     )
@@ -3054,12 +3060,14 @@ async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
     .await
     .unwrap();
     // A description with no matching revision must still be read.
-    sqlx::query("DELETE FROM revisions WHERE entity_id = (SELECT id FROM issues WHERE key = ?)")
-        .bind(&lower)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let live: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
+    llmtodo_server::store::backend::query(
+        "DELETE FROM revisions WHERE entity_id = (SELECT id FROM issues WHERE key = ?)",
+    )
+    .bind(&lower)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let live: Vec<(String, i64, String, Option<String>)> = llmtodo_server::store::backend::query_as(
         "SELECT i.key, q.number, q.text, q.answer FROM questions q JOIN issues i ON i.id = q.issue_id
          ORDER BY i.key, q.position",
     )
@@ -3093,15 +3101,16 @@ async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
         count(&pool, "SELECT count(*) FROM work_sessions").await,
         sessions
     );
-    let pending: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM settings WHERE key = 'questions_backfill'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let pending: i64 = llmtodo_server::store::backend::query_scalar(
+        "SELECT count(*) FROM settings WHERE key = 'questions_backfill'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(pending, 0);
 
     // The backfill agrees with what the live writes stored.
-    let filled: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
+    let filled: Vec<(String, i64, String, Option<String>)> = llmtodo_server::store::backend::query_as(
         "SELECT i.key, q.number, q.text, q.answer FROM questions q JOIN issues i ON i.id = q.issue_id
          ORDER BY i.key, q.position",
     )
@@ -3207,10 +3216,12 @@ async fn the_estimate_gate_leaves_claimed_tasks_alone() {
     let k = t.issue("Old claim", json!({})).await;
     let claim = format!("/v1/issues/{k}/claim");
     t.ok(&agent("first"), "POST", &claim, json!({})).await;
-    sqlx::query("UPDATE issues SET estimate_minutes = NULL, estimate_cost_usd = NULL")
-        .execute(&t.running.as_ref().unwrap().state.pool())
-        .await
-        .unwrap();
+    llmtodo_server::store::backend::query(
+        "UPDATE issues SET estimate_minutes = NULL, estimate_cost_usd = NULL",
+    )
+    .execute(&t.running.as_ref().unwrap().state.pool())
+    .await
+    .unwrap();
 
     let again = t.ok(&agent("first"), "POST", &claim, json!({})).await;
     assert_eq!(again["changed"], false);

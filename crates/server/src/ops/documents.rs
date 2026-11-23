@@ -7,7 +7,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::Write;
 use crate::store::{self, activity, documents, projects, revisions};
 
-use sqlx::SqliteConnection;
+use crate::store::backend::Conn;
 
 use super::revisions::apply_body_change;
 use crate::db::{new_id, now};
@@ -15,7 +15,7 @@ use crate::store::revisions::add_revision;
 
 /// Lists documents. `search` ranks by text match, best first.
 pub async fn list(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     project: Option<&str>,
     trashed: bool,
     search: Option<&str>,
@@ -36,7 +36,7 @@ pub async fn list(
 }
 
 /// The revisions and the activity of a document.
-pub async fn history(c: &mut SqliteConnection, r: &str, bodies: bool) -> ApiResult<History> {
+pub async fn history(c: &mut Conn, r: &str, bodies: bool) -> ApiResult<History> {
     let d = documents::resolve(c, r).await?;
     Ok(History {
         revisions: revisions::revisions(c, "document", &d.id, bodies).await?,

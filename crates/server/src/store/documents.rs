@@ -1,10 +1,11 @@
 //! Documents.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::Document;
-use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_ts_opt, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 #[derive(sqlx::FromRow)]
 pub struct DocRow {
@@ -45,11 +46,11 @@ const D_LIST: &str = "SELECT d.id, d.project_id, p.slug AS project_slug, d.slug,
 
 /// Lists documents with an empty body.
 pub async fn documents(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     project_id: Option<&str>,
     trashed: bool,
 ) -> ApiResult<Vec<DocRow>> {
-    Ok(sqlx::query_as::<_, DocRow>(crate::sql!(
+    Ok(backend::query_as::<DocRow>(crate::sql!(
         "{D_LIST} WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL)) ORDER BY p.slug, d.title COLLATE NOCASE"
     ))
     .bind(project_id)
@@ -63,12 +64,12 @@ pub async fn documents(
 /// Documents that match an FTS5 `terms` query, best match first, with an
 /// empty body.
 pub async fn search_documents(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     project_id: Option<&str>,
     trashed: bool,
     terms: &str,
 ) -> ApiResult<Vec<DocRow>> {
-    Ok(sqlx::query_as::<_, DocRow>(crate::sql!(
+    Ok(backend::query_as::<DocRow>(crate::sql!(
         "WITH fts AS MATERIALIZED (SELECT entity_id, -rank AS score FROM search_fts WHERE search_fts MATCH ? AND entity_type = 'document')
         {D_LIST} JOIN fts ON fts.entity_id = d.id
         WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL))
@@ -84,10 +85,10 @@ pub async fn search_documents(
 }
 
 /// Resolves a document by ID, or by `project/slug`.
-pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<DocRow> {
+pub async fn resolve(conn: &mut Conn, r: &str) -> ApiResult<DocRow> {
     let r = r.trim();
     let row = if let Some((project, slug)) = r.split_once('/') {
-        sqlx::query_as::<_, DocRow>(crate::sql!(
+        backend::query_as::<DocRow>(crate::sql!(
             "{D_SELECT} WHERE (p.slug = ? COLLATE NOCASE OR p.id = ?) AND d.slug = ? COLLATE NOCASE"
         ))
         .bind(project)
@@ -96,7 +97,7 @@ pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<DocRow> 
         .fetch_optional(&mut *conn)
         .await?
     } else {
-        sqlx::query_as::<_, DocRow>(crate::sql!("{D_SELECT} WHERE d.id = ?"))
+        backend::query_as::<DocRow>(crate::sql!("{D_SELECT} WHERE d.id = ?"))
             .bind(r)
             .fetch_optional(&mut *conn)
             .await?
@@ -106,7 +107,7 @@ pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<DocRow> 
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     project_id: &str,
     slug: &str,
@@ -115,7 +116,7 @@ pub async fn insert(
     actor_id: String,
     t: &str,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO documents (id, project_id, slug, title, body, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO documents (id, project_id, slug, title, body, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(project_id)
         .bind(slug)
@@ -129,8 +130,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn set_title(c: &mut SqliteConnection, title: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET title = ? WHERE id = ?")
+pub async fn set_title(c: &mut Conn, title: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET title = ? WHERE id = ?")
         .bind(title)
         .bind(id)
         .execute(&mut *c)
@@ -138,13 +139,8 @@ pub async fn set_title(c: &mut SqliteConnection, title: &str, id: &str) -> ApiRe
     Ok(())
 }
 
-pub async fn set_body(
-    c: &mut SqliteConnection,
-    body: &str,
-    version: i64,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET body = ?, version = ? WHERE id = ?")
+pub async fn set_body(c: &mut Conn, body: &str, version: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET body = ?, version = ? WHERE id = ?")
         .bind(body)
         .bind(version)
         .bind(id)
@@ -153,8 +149,8 @@ pub async fn set_body(
     Ok(())
 }
 
-pub async fn touch(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET updated_at = ? WHERE id = ?")
+pub async fn touch(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -162,8 +158,8 @@ pub async fn touch(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET deleted_at = ? WHERE id = ?")
+pub async fn trash(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET deleted_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -171,8 +167,8 @@ pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn untrash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET deleted_at = NULL, updated_at = ? WHERE id = ?")
+pub async fn untrash(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET deleted_at = NULL, updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -180,13 +176,8 @@ pub async fn untrash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn restore_body(
-    c: &mut SqliteConnection,
-    body: &str,
-    version: i64,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE documents SET body = ?, version = ?, updated_at = ? WHERE id = ?")
+pub async fn restore_body(c: &mut Conn, body: &str, version: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE documents SET body = ?, version = ?, updated_at = ? WHERE id = ?")
         .bind(body)
         .bind(version)
         .bind(now())

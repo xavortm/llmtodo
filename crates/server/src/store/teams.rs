@@ -1,8 +1,9 @@
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Status, StatusType, Team};
-use sqlx::SqliteConnection;
 
 use crate::db::{new_id, now, parse_ts, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct StatusRow {
@@ -60,11 +61,8 @@ pub struct TeamRow {
 
 const TEAM_COLS: &str = "id, key, name, pr_open_status_id, pr_merged_status_id, created_at";
 
-pub async fn statuses(
-    conn: &mut SqliteConnection,
-    team_id: Option<&str>,
-) -> ApiResult<Vec<StatusRow>> {
-    let rows = sqlx::query_as::<_, StatusRow>(crate::sql!(
+pub async fn statuses(conn: &mut Conn, team_id: Option<&str>) -> ApiResult<Vec<StatusRow>> {
+    let rows = backend::query_as::<StatusRow>(crate::sql!(
         "SELECT {STATUS_COLS} FROM statuses s JOIN teams t ON t.id = s.team_id WHERE (? IS NULL OR s.team_id = ?) ORDER BY t.key, s.position, s.name"
     ))
     .bind(team_id)
@@ -76,7 +74,7 @@ pub async fn statuses(
 
 /// Every status, by ID.
 pub async fn status_map(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
 ) -> ApiResult<std::collections::HashMap<String, StatusRow>> {
     Ok(statuses(conn, None)
         .await?
@@ -85,8 +83,8 @@ pub async fn status_map(
         .collect())
 }
 
-pub async fn status_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<StatusRow> {
-    sqlx::query_as::<_, StatusRow>(crate::sql!(
+pub async fn status_by_id(conn: &mut Conn, id: &str) -> ApiResult<StatusRow> {
+    backend::query_as::<StatusRow>(crate::sql!(
         "SELECT {STATUS_COLS} FROM statuses s JOIN teams t ON t.id = s.team_id WHERE s.id = ?"
     ))
     .bind(id)
@@ -96,11 +94,7 @@ pub async fn status_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<St
 }
 
 /// Finds a status of one team by name or ID.
-pub async fn status_by_name(
-    conn: &mut SqliteConnection,
-    team_id: &str,
-    r: &str,
-) -> ApiResult<StatusRow> {
+pub async fn status_by_name(conn: &mut Conn, team_id: &str, r: &str) -> ApiResult<StatusRow> {
     let all = statuses(conn, Some(team_id)).await?;
     let r = r.trim();
     all.into_iter()
@@ -110,7 +104,7 @@ pub async fn status_by_name(
 
 /// The first status of a type, by position.
 pub async fn first_of_type(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     team_id: &str,
     kind: StatusType,
 ) -> ApiResult<Option<StatusRow>> {
@@ -124,18 +118,15 @@ pub async fn first_of_type(
 /// a review status. A review status needs a review section and hands the
 /// ticket to the owner, so a claim must never land there, wherever the team
 /// placed it.
-pub async fn first_work_status(
-    conn: &mut SqliteConnection,
-    team_id: &str,
-) -> ApiResult<Option<StatusRow>> {
+pub async fn first_work_status(conn: &mut Conn, team_id: &str) -> ApiResult<Option<StatusRow>> {
     Ok(statuses(conn, Some(team_id))
         .await?
         .into_iter()
         .find(|s| s.kind() == StatusType::Started && !s.review))
 }
 
-pub async fn team_row(conn: &mut SqliteConnection, r: &str) -> ApiResult<TeamRow> {
-    sqlx::query_as::<_, TeamRow>(crate::sql!(
+pub async fn team_row(conn: &mut Conn, r: &str) -> ApiResult<TeamRow> {
+    backend::query_as::<TeamRow>(crate::sql!(
         "SELECT {TEAM_COLS} FROM teams WHERE id = ? OR key = ? COLLATE NOCASE"
     ))
     .bind(r.trim())
@@ -145,21 +136,21 @@ pub async fn team_row(conn: &mut SqliteConnection, r: &str) -> ApiResult<TeamRow
     .ok_or_else(|| ApiError::not_found("team", r))
 }
 
-pub async fn team_rows(conn: &mut SqliteConnection) -> ApiResult<Vec<TeamRow>> {
+pub async fn team_rows(conn: &mut Conn) -> ApiResult<Vec<TeamRow>> {
     Ok(
-        sqlx::query_as::<_, TeamRow>(crate::sql!("SELECT {TEAM_COLS} FROM teams ORDER BY key"))
+        backend::query_as::<TeamRow>(crate::sql!("SELECT {TEAM_COLS} FROM teams ORDER BY key"))
             .fetch_all(&mut *conn)
             .await?,
     )
 }
 
-pub async fn to_api(conn: &mut SqliteConnection, t: TeamRow) -> ApiResult<Team> {
+pub async fn to_api(conn: &mut Conn, t: TeamRow) -> ApiResult<Team> {
     let sts = statuses(conn, Some(&t.id)).await?;
     Ok(team_with(t, &sts))
 }
 
 /// Builds every team from one status query.
-pub async fn all_to_api(conn: &mut SqliteConnection, rows: Vec<TeamRow>) -> ApiResult<Vec<Team>> {
+pub async fn all_to_api(conn: &mut Conn, rows: Vec<TeamRow>) -> ApiResult<Vec<Team>> {
     let mut by_team: std::collections::HashMap<String, Vec<StatusRow>> = Default::default();
     for s in statuses(conn, None).await? {
         by_team.entry(s.team_id.clone()).or_default().push(s);
@@ -193,7 +184,7 @@ fn team_with(t: TeamRow, sts: &[StatusRow]) -> Team {
 
 /// Creates a team with the default statuses. Returns its ID.
 pub async fn create(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     key: &str,
     name: &str,
     linear_id: Option<&str>,
@@ -205,7 +196,7 @@ pub async fn create(
     }
     let id = new_id();
     let t = now();
-    sqlx::query("INSERT INTO teams (id, key, name, linear_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO teams (id, key, name, linear_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&id)
         .bind(&key)
         .bind(name.trim())
@@ -218,7 +209,7 @@ pub async fn create(
     let mut merged = None;
     for (pos, (sname, kind, color)) in llmtodo_core::DEFAULT_STATUSES.iter().enumerate() {
         let sid = new_id();
-        sqlx::query("INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(&sid)
             .bind(&id)
             .bind(*sname)
@@ -235,7 +226,7 @@ pub async fn create(
             merged = Some(sid);
         }
     }
-    sqlx::query("UPDATE teams SET pr_open_status_id = ?, pr_merged_status_id = ? WHERE id = ?")
+    backend::query("UPDATE teams SET pr_open_status_id = ?, pr_merged_status_id = ? WHERE id = ?")
         .bind(open)
         .bind(merged)
         .bind(&id)
@@ -246,9 +237,9 @@ pub async fn create(
 
 /// The team to use when a request names none: the default team setting, or
 /// the only team.
-pub async fn default_team(conn: &mut SqliteConnection) -> ApiResult<TeamRow> {
+pub async fn default_team(conn: &mut Conn) -> ApiResult<TeamRow> {
     let setting: Option<String> =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'default_team'")
+        backend::query_scalar("SELECT value FROM settings WHERE key = 'default_team'")
             .fetch_optional(&mut *conn)
             .await?;
     if let Some(key) = setting.filter(|k| !k.is_empty()) {
@@ -266,8 +257,8 @@ pub async fn default_team(conn: &mut SqliteConnection) -> ApiResult<TeamRow> {
     }
 }
 
-pub async fn reserve_number(c: &mut SqliteConnection, number: i64, team_id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE teams SET next_number = max(next_number, ? + 1) WHERE id = ?")
+pub async fn reserve_number(c: &mut Conn, number: i64, team_id: &str) -> ApiResult<()> {
+    backend::query("UPDATE teams SET next_number = max(next_number, ? + 1) WHERE id = ?")
         .bind(number)
         .bind(team_id)
         .execute(&mut *c)
@@ -275,8 +266,8 @@ pub async fn reserve_number(c: &mut SqliteConnection, number: i64, team_id: &str
     Ok(())
 }
 
-pub async fn allocate_number(c: &mut SqliteConnection, team_id: &str) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar(
+pub async fn allocate_number(c: &mut Conn, team_id: &str) -> ApiResult<i64> {
+    Ok(backend::query_scalar(
         "UPDATE teams SET next_number = next_number + 1 WHERE id = ? RETURNING next_number - 1",
     )
     .bind(team_id)
@@ -284,8 +275,8 @@ pub async fn allocate_number(c: &mut SqliteConnection, team_id: &str) -> ApiResu
     .await?)
 }
 
-pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE teams SET name = ?, updated_at = ? WHERE id = ?")
+pub async fn set_name(c: &mut Conn, name: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE teams SET name = ?, updated_at = ? WHERE id = ?")
         .bind(name)
         .bind(now())
         .bind(id)
@@ -295,12 +286,12 @@ pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResu
 }
 
 pub async fn set_pr_status(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     field: &str,
     status_id: Option<String>,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query(sqlx::AssertSqlSafe(format!(
+    backend::query(crate::store::backend::Sql::assert_safe(format!(
         "UPDATE teams SET {field} = ?, updated_at = ? WHERE id = ?"
     )))
     .bind(status_id)
@@ -311,20 +302,18 @@ pub async fn set_pr_status(
     Ok(())
 }
 
-pub async fn next_status_position(c: &mut SqliteConnection, team_id: &str) -> ApiResult<i64> {
-    Ok(
-        sqlx::query_scalar(
-            "SELECT coalesce(max(position), -1) + 1 FROM statuses WHERE team_id = ?",
-        )
-        .bind(team_id)
-        .fetch_one(&mut *c)
-        .await?,
+pub async fn next_status_position(c: &mut Conn, team_id: &str) -> ApiResult<i64> {
+    Ok(backend::query_scalar(
+        "SELECT coalesce(max(position), -1) + 1 FROM statuses WHERE team_id = ?",
     )
+    .bind(team_id)
+    .fetch_one(&mut *c)
+    .await?)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_status(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     team_id: &str,
     name: &str,
@@ -333,7 +322,7 @@ pub async fn insert_status(
     position: i64,
     review: bool,
 ) -> ApiResult<()> {
-    sqlx::query(
+    backend::query(
         "INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
@@ -348,8 +337,8 @@ pub async fn insert_status(
     Ok(())
 }
 
-pub async fn set_status_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE statuses SET name = ? WHERE id = ?")
+pub async fn set_status_name(c: &mut Conn, name: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE statuses SET name = ? WHERE id = ?")
         .bind(name)
         .bind(id)
         .execute(&mut *c)
@@ -357,8 +346,8 @@ pub async fn set_status_name(c: &mut SqliteConnection, name: &str, id: &str) -> 
     Ok(())
 }
 
-pub async fn set_status_color(c: &mut SqliteConnection, color: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE statuses SET color = ? WHERE id = ?")
+pub async fn set_status_color(c: &mut Conn, color: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE statuses SET color = ? WHERE id = ?")
         .bind(color)
         .bind(id)
         .execute(&mut *c)
@@ -366,8 +355,8 @@ pub async fn set_status_color(c: &mut SqliteConnection, color: &str, id: &str) -
     Ok(())
 }
 
-pub async fn set_status_review(c: &mut SqliteConnection, review: bool, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE statuses SET review = ? WHERE id = ?")
+pub async fn set_status_review(c: &mut Conn, review: bool, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE statuses SET review = ? WHERE id = ?")
         .bind(review)
         .bind(id)
         .execute(&mut *c)
@@ -375,12 +364,8 @@ pub async fn set_status_review(c: &mut SqliteConnection, review: bool, id: &str)
     Ok(())
 }
 
-pub async fn set_status_position(
-    c: &mut SqliteConnection,
-    position: i64,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE statuses SET position = ? WHERE id = ?")
+pub async fn set_status_position(c: &mut Conn, position: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE statuses SET position = ? WHERE id = ?")
         .bind(position)
         .bind(id)
         .execute(&mut *c)
@@ -388,17 +373,17 @@ pub async fn set_status_position(
     Ok(())
 }
 
-pub async fn count_issues_with_status(c: &mut SqliteConnection, id: &str) -> ApiResult<i64> {
+pub async fn count_issues_with_status(c: &mut Conn, id: &str) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT count(*) FROM issues WHERE status_id = ?")
+        backend::query_scalar("SELECT count(*) FROM issues WHERE status_id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn delete_status(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM statuses WHERE id = ?")
+pub async fn delete_status(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM statuses WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;

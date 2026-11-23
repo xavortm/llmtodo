@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Actor, ReviewAnswer, ReviewVerdict};
-use sqlx::SqliteConnection;
 
 use crate::db::{new_id, now, parse_ts};
 use crate::error::ApiResult;
 use crate::store::actors;
+use crate::store::backend;
 
 #[derive(sqlx::FromRow)]
 struct Row {
@@ -18,8 +19,8 @@ struct Row {
     created_at: String,
 }
 
-async fn rows(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Row>> {
-    Ok(sqlx::query_as(
+async fn rows(c: &mut Conn, issue_id: &str) -> ApiResult<Vec<Row>> {
+    Ok(backend::query_as(
         "SELECT round, verdict, feedback, author_id, created_at FROM reviews
          WHERE issue_id = ? ORDER BY round",
     )
@@ -29,7 +30,7 @@ async fn rows(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Row>> {
 }
 
 /// Every answer of one issue, oldest first.
-pub async fn for_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<ReviewAnswer>> {
+pub async fn for_issue(c: &mut Conn, issue_id: &str) -> ApiResult<Vec<ReviewAnswer>> {
     let rows = rows(c, issue_id).await?;
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -40,7 +41,7 @@ pub async fn for_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Ve
 
 /// Every answer of one issue, oldest first, with the actors given.
 pub async fn for_issue_with(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     all: &HashMap<String, Actor>,
 ) -> ApiResult<Vec<ReviewAnswer>> {
@@ -60,9 +61,9 @@ fn answers(rows: Vec<Row>, all: &HashMap<String, Actor>) -> Vec<ReviewAnswer> {
 }
 
 /// The highest round of an issue, or 0.
-pub async fn last_round(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<i64> {
+pub async fn last_round(c: &mut Conn, issue_id: &str) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT coalesce(max(round), 0) FROM reviews WHERE issue_id = ?")
+        backend::query_scalar("SELECT coalesce(max(round), 0) FROM reviews WHERE issue_id = ?")
             .bind(issue_id)
             .fetch_one(&mut *c)
             .await?,
@@ -70,14 +71,14 @@ pub async fn last_round(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<i
 }
 
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     round: i64,
     verdict: ReviewVerdict,
     feedback: &str,
     author_id: &str,
 ) -> ApiResult<()> {
-    sqlx::query(
+    backend::query(
         "INSERT INTO reviews (id, issue_id, round, verdict, feedback, author_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
@@ -96,12 +97,12 @@ pub async fn insert(
 /// The seq of the newest event that moved the issue into status `name`,
 /// and of the newest review answer. Either is None when it never happened.
 pub async fn entry_and_answer_seqs(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     name: &str,
 ) -> ApiResult<(Option<i64>, Option<i64>)> {
     let status_json = serde_json::to_string(name)?;
-    Ok(sqlx::query_as(
+    Ok(backend::query_as(
         "SELECT
             (SELECT max(seq) FROM activity WHERE issue_id = ?1 AND field = 'status' AND new = ?2),
             (SELECT max(seq) FROM activity WHERE issue_id = ?1 AND field = 'review')",

@@ -1,8 +1,9 @@
+use crate::store::backend::Conn;
 use llmtodo_api_types::Label;
-use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct LabelRow {
@@ -39,8 +40,8 @@ impl LabelRow {
 const COLS: &str =
     "l.id, l.name, l.group_id, g.name AS group_name, l.is_group, l.color, l.description";
 
-pub async fn all(conn: &mut SqliteConnection) -> ApiResult<Vec<LabelRow>> {
-    Ok(sqlx::query_as::<_, LabelRow>(crate::sql!(
+pub async fn all(conn: &mut Conn) -> ApiResult<Vec<LabelRow>> {
+    Ok(backend::query_as::<LabelRow>(crate::sql!(
         "SELECT {COLS} FROM labels l LEFT JOIN labels g ON g.id = l.group_id ORDER BY coalesce(g.name, l.name) COLLATE NOCASE, l.is_group DESC, l.name COLLATE NOCASE"
     ))
     .fetch_all(&mut *conn)
@@ -49,7 +50,7 @@ pub async fn all(conn: &mut SqliteConnection) -> ApiResult<Vec<LabelRow>> {
 
 /// Resolves an ID, `Group/name`, or a name. A bare name must match exactly
 /// one label. Groups never match: they cannot go on an issue.
-pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<LabelRow> {
+pub async fn resolve(conn: &mut Conn, r: &str) -> ApiResult<LabelRow> {
     let r = r.trim();
     let labels = all(conn).await?;
     if let Some(l) = labels.iter().find(|l| l.id == r && l.is_group == 0) {
@@ -79,7 +80,7 @@ pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<LabelRow
 }
 
 /// Resolves any label or group, for updates and deletes.
-pub async fn resolve_any(conn: &mut SqliteConnection, r: &str) -> ApiResult<LabelRow> {
+pub async fn resolve_any(conn: &mut Conn, r: &str) -> ApiResult<LabelRow> {
     let r = r.trim();
     let labels = all(conn).await?;
     if let Some(l) = labels
@@ -101,8 +102,8 @@ pub async fn resolve_any(conn: &mut SqliteConnection, r: &str) -> ApiResult<Labe
     }
 }
 
-pub async fn for_issue(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<LabelRow>> {
-    Ok(sqlx::query_as::<_, LabelRow>(crate::sql!(
+pub async fn for_issue(conn: &mut Conn, issue_id: &str) -> ApiResult<Vec<LabelRow>> {
+    Ok(backend::query_as::<LabelRow>(crate::sql!(
         "SELECT {COLS} FROM issue_labels il JOIN labels l ON l.id = il.label_id LEFT JOIN labels g ON g.id = l.group_id WHERE il.issue_id = ?"
     ))
     .bind(issue_id)
@@ -130,12 +131,8 @@ pub fn check_groups(labels: &[LabelRow]) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn remove_from_issue(
-    c: &mut SqliteConnection,
-    issue_id: &str,
-    label_id: &str,
-) -> ApiResult<()> {
-    sqlx::query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id = ?")
+pub async fn remove_from_issue(c: &mut Conn, issue_id: &str, label_id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id = ?")
         .bind(issue_id)
         .bind(label_id)
         .execute(&mut *c)
@@ -143,12 +140,8 @@ pub async fn remove_from_issue(
     Ok(())
 }
 
-pub async fn add_to_issue(
-    c: &mut SqliteConnection,
-    issue_id: &str,
-    label_id: &str,
-) -> ApiResult<()> {
-    sqlx::query("INSERT INTO issue_labels (issue_id, label_id) VALUES (?, ?)")
+pub async fn add_to_issue(c: &mut Conn, issue_id: &str, label_id: &str) -> ApiResult<()> {
+    backend::query("INSERT INTO issue_labels (issue_id, label_id) VALUES (?, ?)")
         .bind(issue_id)
         .bind(label_id)
         .execute(&mut *c)
@@ -157,7 +150,7 @@ pub async fn add_to_issue(
 }
 
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     name: &str,
     group_id: Option<String>,
@@ -165,7 +158,7 @@ pub async fn insert(
     color: &str,
     description: &Option<String>,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO labels (id, name, group_id, is_group, color, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO labels (id, name, group_id, is_group, color, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(name)
         .bind(group_id)
@@ -178,8 +171,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE labels SET name = ? WHERE id = ?")
+pub async fn set_name(c: &mut Conn, name: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE labels SET name = ? WHERE id = ?")
         .bind(name)
         .bind(id)
         .execute(&mut *c)
@@ -187,8 +180,8 @@ pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResu
     Ok(())
 }
 
-pub async fn set_color(c: &mut SqliteConnection, color: String, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE labels SET color = ? WHERE id = ?")
+pub async fn set_color(c: &mut Conn, color: String, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE labels SET color = ? WHERE id = ?")
         .bind(color)
         .bind(id)
         .execute(&mut *c)
@@ -196,12 +189,8 @@ pub async fn set_color(c: &mut SqliteConnection, color: String, id: &str) -> Api
     Ok(())
 }
 
-pub async fn set_description(
-    c: &mut SqliteConnection,
-    description: &str,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE labels SET description = ? WHERE id = ?")
+pub async fn set_description(c: &mut Conn, description: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE labels SET description = ? WHERE id = ?")
         .bind(description)
         .bind(id)
         .execute(&mut *c)
@@ -209,16 +198,16 @@ pub async fn set_description(
     Ok(())
 }
 
-pub async fn issues_with(c: &mut SqliteConnection, id: &str) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar("SELECT issue_id FROM issue_labels WHERE label_id = ? OR label_id IN (SELECT id FROM labels WHERE group_id = ?)")
+pub async fn issues_with(c: &mut Conn, id: &str) -> ApiResult<Vec<String>> {
+    Ok(backend::query_scalar("SELECT issue_id FROM issue_labels WHERE label_id = ? OR label_id IN (SELECT id FROM labels WHERE group_id = ?)")
         .bind(id)
         .bind(id)
         .fetch_all(&mut *c)
         .await?)
 }
 
-pub async fn delete(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM labels WHERE id = ?")
+pub async fn delete(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM labels WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;
