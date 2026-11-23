@@ -104,6 +104,13 @@ impl Connection {
         })
     }
 
+    /// Whether the server has sent nothing for two pings. After an error
+    /// from [`Connection::next`], it tells a silent server from a socket
+    /// that closed.
+    pub fn is_silent(&self) -> bool {
+        self.heard.elapsed() > self.ping_every * 2
+    }
+
     /// The next signal. It pings the server while it waits. An error is
     /// the reason the connection dropped.
     ///

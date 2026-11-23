@@ -514,15 +514,22 @@ struct Proxy {
     port: u16,
     frozen: Arc<AtomicBool>,
     http_down: tokio::sync::watch::Sender<bool>,
+    trap: Trap,
 }
+
+/// Request bytes that freeze the proxy when the app sends them. The proxy
+/// keeps that request from the server, so the server never acts on it.
+type Trap = Arc<std::sync::Mutex<Option<&'static [u8]>>>;
 
 impl Proxy {
     async fn start(target: u16) -> Self {
         let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = first.local_addr().unwrap().port();
         let frozen = Arc::new(AtomicBool::new(false));
+        let trap = Trap::default();
         let (http_down, mut down) = tokio::sync::watch::channel(false);
         let flag = frozen.clone();
+        let traps = trap.clone();
         let pipe_down = down.clone();
         tokio::spawn(async move {
             let mut listener = Some(first);
@@ -542,7 +549,13 @@ impl Proxy {
                     tokio::select! {
                         accepted = l.accept() => {
                             let Ok((inbound, _)) = accepted else { return };
-                            tokio::spawn(pipe(inbound, target, flag.clone(), pipe_down.clone()));
+                            tokio::spawn(pipe(
+                                inbound,
+                                target,
+                                flag.clone(),
+                                traps.clone(),
+                                pipe_down.clone(),
+                            ));
                         }
                         changed = down.wait_for(|d| *d) => {
                             if changed.is_err() {
@@ -558,11 +571,19 @@ impl Proxy {
             port,
             frozen,
             http_down,
+            trap,
         }
     }
 
     fn freeze(&self, on: bool) {
         self.frozen.store(on, Ordering::SeqCst);
+    }
+
+    /// Freezes the proxy once the app sends a request that holds `needle`,
+    /// such as `b"PATCH /v1/issues/LLM-1"`, so the server goes silent while
+    /// that request runs. `freeze(false)` thaws it.
+    fn freeze_on(&self, needle: &'static [u8]) {
+        *self.trap.lock().unwrap() = Some(needle);
     }
 
     fn http_down(&self, on: bool) {
@@ -575,15 +596,32 @@ async fn pipe(
     mut inbound: tokio::net::TcpStream,
     target: u16,
     frozen: Arc<AtomicBool>,
+    trap: Trap,
     down: tokio::sync::watch::Receiver<bool>,
 ) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    // Whether `bytes` from the app spring the trap. Then the proxy freezes
+    // and drops them.
+    let freeze = frozen.clone();
+    let sprung = move |bytes: &[u8]| {
+        let mut trap = trap.lock().unwrap();
+        let hit = trap.is_some_and(|needle| bytes.windows(needle.len()).any(|w| w == needle));
+        if hit {
+            *trap = None;
+            freeze.store(true, Ordering::SeqCst);
+        }
+        hit
+    };
     let mut first = vec![0u8; 16 * 1024];
     let n = match inbound.read(&mut first).await {
         Ok(0) | Err(_) => return,
         Ok(n) => n,
     };
     let is_ws = first[..n].starts_with(b"GET /v1/ws");
+    if sprung(&first[..n]) {
+        // Hold the connection open and send nothing, like a stuck server.
+        std::future::pending::<()>().await;
+    }
     let Ok(mut outbound) = tokio::net::TcpStream::connect(("127.0.0.1", target)).await else {
         return;
     };
@@ -596,8 +634,9 @@ async fn pipe(
     type Writer = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
     let halves: [(Reader, Writer); 2] =
         [(Box::new(ri), Box::new(wo)), (Box::new(ro), Box::new(wi))];
-    for (mut r, mut w) in halves {
+    for (from_app, (mut r, mut w)) in [true, false].into_iter().zip(halves) {
         let frozen = frozen.clone();
+        let sprung = sprung.clone();
         let mut down = down.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 16 * 1024];
@@ -609,6 +648,9 @@ async fn pipe(
                     },
                     _ = down.wait_for(|d| *d), if !is_ws => return,
                 };
+                if from_app && sprung(&buf[..n]) {
+                    continue;
+                }
                 while frozen.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -643,10 +685,8 @@ fn backend_notices_a_silent_server() {
     let live = Live::new();
     let proxy = live.proxy();
     let (_backend, mut events) = live.backend();
-    // The first snapshot arrives while the rest of the load and the primary
-    // check are still in flight, and the thread watches the ping only once
-    // the whole load is done. A freeze before that holds a request until its
-    // HTTP timeout (LLM-473), so wait for both.
+    // A freeze while the first load runs has its own test below (LLM-475).
+    // This one freezes an idle session, so it waits for the whole load.
     let (mut rest, mut primary) = (false, false);
     live.wait(&mut events, "the whole first load", |e| {
         match e {
@@ -668,6 +708,72 @@ fn backend_notices_a_silent_server() {
     live.wait(&mut events, "reconnect", |e| {
         matches!(e, Event::Connected { .. }).then_some(())
     });
+}
+
+/// LLM-475: the server goes silent while the first load runs. The thread
+/// still watches the ping, so the app shows Offline within the ping window,
+/// not after the request's 60 s timeout. The wait in `Live::wait` is 10 s.
+#[test]
+fn backend_notices_a_server_that_goes_silent_during_the_first_load() {
+    let live = Live::new();
+    let proxy = live.proxy();
+    proxy.freeze_on(b"POST /v1/issues/query");
+    let (_backend, mut events) = live.backend();
+    let reason = live.wait(&mut events, "offline", |e| match e {
+        Event::Offline { reason } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(reason.contains("stopped answering"), "{reason}");
+
+    proxy.freeze(false);
+    live.wait(&mut events, "reconnect", |e| {
+        matches!(e, Event::Connected { .. }).then_some(())
+    });
+    live.wait(&mut events, "the whole load", |e| {
+        matches!(e, Event::SnapshotRest(_)).then_some(())
+    });
+}
+
+/// LLM-475: the server goes silent while a save runs. The save fails within
+/// the ping window and is owed, so the reconnect fetches the issue again.
+/// The proxy kept the save from the server, so the server's copy is the
+/// first text.
+#[test]
+fn backend_fails_a_save_when_the_server_goes_silent_and_refetches() {
+    let live = Live::new();
+    let proxy = live.proxy();
+    let (backend, mut events) = live.backend();
+    let (_, version) = live.wait(&mut events, "snapshot", llm_1_text);
+
+    proxy.freeze_on(b"PATCH /v1/issues/LLM-1");
+    backend.write(
+        "LLM-1",
+        save("Owner text.\n", version),
+        WriteKind::Description,
+    );
+    let (message, stale) = live.wait(&mut events, "the failed save", |e| match e {
+        Event::WriteFailed {
+            kind: WriteKind::Description,
+            message,
+            stale,
+            ..
+        } => Some((message.clone(), *stale)),
+        _ => None,
+    });
+    assert!(!stale);
+    assert!(message.contains("offline"), "{message}");
+    let reason = live.wait(&mut events, "offline", |e| match e {
+        Event::Offline { reason } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(reason.contains("stopped answering"), "{reason}");
+
+    proxy.freeze(false);
+    live.wait(&mut events, "reconnect", |e| {
+        matches!(e, Event::Connected { .. }).then_some(())
+    });
+    let (text, _) = live.wait(&mut events, "the server's copy", llm_1_fetched_text);
+    assert_eq!(text, "First text.\n");
 }
 
 /// A claim event arrives, but the fetch it starts fails and the session
