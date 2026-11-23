@@ -5,7 +5,7 @@
 //! - Each row turns one filter word on or off in the `/` filter text, and
 //!   reads its check from that text. Typed words and clicks always agree,
 //!   because the text is the only place the filter lives.
-//! - Save filter… makes a saved view, as `:view save` does.
+//! - Save… makes a saved view, as `:view save` does.
 //! - `j` / `k` and `Ctrl-N` / `Ctrl-P` move, Enter or Space toggles the
 //!   row, and Esc closes the panel.
 //!
@@ -602,10 +602,12 @@ impl Render for FilterPanelView {
         let clear = panel.clear.clone();
         let clear_events = self.events.clone();
         let save_events = self.events.clone();
-        let footer = v_flex()
+        // One row: Clear on the left, Save on the right (LLM-468).
+        let footer = h_flex()
             .flex_none()
             .p_1()
-            .gap_px()
+            .gap_1()
+            .justify_between()
             .border_t_1()
             .border_color(theme.border)
             .child(with_card(
@@ -613,27 +615,23 @@ impl Render for FilterPanelView {
                 Button::new("clear-filters")
                     .ghost()
                     .small()
-                    .w_full()
-                    .justify_start()
                     .icon(IconName::X)
-                    .label("Clear filters")
+                    .label("Clear")
                     .disabled(clear.is_none())
                     .on_click(move |_, window, cx| {
                         if let Some(text) = clear.clone() {
                             clear_events.emit(ViewEvent::SetFilter(text), window, cx);
                         }
                     }),
-                Card::text("Remove the filter words, keep the typed text"),
+                Card::text("Clear filters: remove the filter words, keep the typed text"),
             ))
             .child(with_card(
                 "save-filter-tip",
                 Button::new("save-filter")
                     .ghost()
                     .small()
-                    .w_full()
-                    .justify_start()
                     .icon(IconName::Bookmark)
-                    .label("Save filter…")
+                    .label("Save…")
                     .disabled(!saves_from(&self.list.read(cx).scope))
                     .on_click(move |_, window, cx| {
                         // The palette asks for the name, as `:view save` does.
@@ -643,7 +641,7 @@ impl Render for FilterPanelView {
                             cx,
                         );
                     }),
-                Card::text("Save as a view (:view save <name>)"),
+                Card::text("Save the filter as a view (:view save <name>)"),
             ));
 
         v_flex()

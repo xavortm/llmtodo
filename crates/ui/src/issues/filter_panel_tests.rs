@@ -188,3 +188,51 @@ fn no_saved_view_hides_the_saved_filter_button(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-467: with animations on, the panel slides out as it closes, as it
+/// slides in as it opens, and then leaves the window.
+#[gpui_kit::test]
+fn the_panel_animates_as_it_closes(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    let frame = |ms: u64, cx: &mut TestAppContext| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(ms));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("filter-side-panel")
+                .map(|panel| f32::from(panel.bounds().origin.x))
+        })
+        .unwrap()
+    };
+    click(handle, "filter-panel", cx);
+    frame(1000, cx);
+    let open_x = frame(0, cx).expect("the panel shows once it is open");
+    command(handle, &view, "filters", cx);
+    assert!(!panel_open(&view, cx));
+    let closing_x = frame(80, cx).expect("the panel still shows as it closes");
+    assert!(
+        closing_x > open_x + 1.,
+        "it slides to the right: {open_x} then {closing_x}"
+    );
+    frame(1000, cx);
+    assert_eq!(frame(0, cx), None, "it leaves the window once closed");
+}
+
+/// LLM-468: Clear and Save sit on one line, inside the panel.
+#[gpui_kit::test]
+fn clear_and_save_sit_on_one_line(cx: &mut TestAppContext) {
+    let (handle, _view) = open(cx);
+    click(handle, "filter-panel", cx);
+    cx.update_window(handle, |_, window, _| {
+        let clear = window.find("clear-filters").bounds();
+        let save = window.find("save-filter").bounds();
+        assert_eq!(clear.origin.y, save.origin.y);
+        assert!(clear.origin.x + clear.size.width <= save.origin.x);
+        let panel = window.find("filter-side-panel").bounds();
+        assert!(save.origin.x + save.size.width <= panel.origin.x + panel.size.width);
+    })
+    .unwrap();
+}

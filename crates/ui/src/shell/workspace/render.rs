@@ -76,7 +76,13 @@ impl Workspace {
 
     /// The list and the task view, side by side or stacked. Drag the
     /// divider to resize the task view. Each layout keeps its own size.
-    fn render_split(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `filters_open` runs from 0 to 1: how far the filter panel is open.
+    fn render_split(
+        &self,
+        filters_open: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let stacked = self.stacked(window);
         let rem = window.rem_size();
         let viewport = window.viewport_size();
@@ -122,9 +128,9 @@ impl Workspace {
         let open = self.detail(cx).is_some();
         // The filter panel sits at the right of the list and pushes it
         // narrower. Nothing covers the list, so it takes clicks and shows
-        // each filter change at once. With animations on, the panel fades
-        // in and slides a short way from the right.
-        let filters_open = self.filter_panel.read(cx).is_open();
+        // each filter change at once. With animations on, its column grows
+        // and shrinks as the sidebar's does, both ways, and the panel fades
+        // with it (LLM-467).
         let list = h_flex()
             .size_full()
             .overflow_hidden()
@@ -138,23 +144,33 @@ impl Workspace {
                     .child(self.list.read(cx).fill_layer.clone())
                     .child(cached(&self.list)),
             )
-            .when(filters_open, |this| {
+            .when(filters_open > 0., |this| {
                 // Cached, over its background and its rows' hover fills,
                 // so a hover or a list change does not draw it (LLM-345).
+                // The panel keeps its full width and rides the column's
+                // left edge, so it slides out to the right as it shrinks.
                 let fills = self.filter_panel.read(cx).fill_layer.clone();
-                this.child(crate::shell::motion::slide_in(
+                let panel_rem = crate::issues::filter_panel::PANEL_REM;
+                this.child(
                     div()
                         .h_full()
                         .flex_none()
-                        .w(gpui_kit::rems(crate::issues::filter_panel::PANEL_REM))
-                        .bg(cx.theme().background)
-                        .child(fills)
-                        .child(cached(&self.filter_panel)),
-                    "filter-panel-slide",
-                    1.5,
-                    true,
-                    cx,
-                ))
+                        .w(gpui_kit::rems(panel_rem * filters_open))
+                        .relative()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left_0()
+                                .w(gpui_kit::rems(panel_rem))
+                                .opacity(filters_open)
+                                .bg(cx.theme().background)
+                                .child(fills)
+                                .child(cached(&self.filter_panel)),
+                        ),
+                )
             });
         group
             .with_handle_appearance(std::rc::Rc::new(Self::divider))
@@ -411,6 +427,12 @@ impl Render for Workspace {
         let claims_open = self.claims.read(cx).is_open();
         let sidebar_open =
             crate::shell::motion::panel_open("sidebar-open", self.sidebar_shown(), window, cx);
+        let filters_open = crate::shell::motion::panel_open(
+            "filter-panel-open",
+            self.filter_panel.read(cx).is_open(),
+            window,
+            cx,
+        );
         self.sync_bars(window, cx);
         let status_height = self.status_bar_height(window, cx);
         let theme = cx.theme();
@@ -526,7 +548,7 @@ impl Render for Workspace {
                         } else if self.doc_shown(cx) {
                             this.child(cached(&self.doc_view))
                         } else {
-                            this.child(self.render_split(window, cx))
+                            this.child(self.render_split(filters_open, window, cx))
                         }
                     }),
             )
