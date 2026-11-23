@@ -185,6 +185,10 @@ pub fn router(state: AppState) -> Router {
             )
         })
         .layer(middleware::from_fn_with_state(state.clone(), record_route))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            name_lost_database,
+        ))
         .layer(middleware::from_fn(guard))
         .with_state(state)
 }
@@ -201,6 +205,38 @@ async fn record_route(
         log.push(format!("{} {}", req.method(), path.as_str()));
     }
     next.run(req).await
+}
+
+/// Names the shared database's host in a lost-database error, so the CLI
+/// and the app can say which one (LLM-470). The SQLite file has no host and
+/// no network, so on SQLite the same error is an internal one.
+async fn name_lost_database(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let res = next.run(req).await;
+    let Some(lost) = res
+        .extensions()
+        .get::<crate::error::LostDatabase>()
+        .cloned()
+    else {
+        return res;
+    };
+    match &st.database_host {
+        None => ApiError::internal(format!("database error: {}", lost.reason)).into_response(),
+        Some(host) => {
+            let mut res = ApiError::new(
+                ErrorCode::DatabaseUnreachable,
+                format!("Shared database unreachable at {host}: {}", lost.reason),
+            )
+            .with_details(serde_json::json!({ "database_host": host, "reason": lost.reason }))
+            .into_response();
+            // The new response must not be named again.
+            res.extensions_mut().remove::<crate::error::LostDatabase>();
+            res
+        }
+    }
 }
 
 /// Rejects requests a web page could make, and stamps the version header.

@@ -272,7 +272,11 @@ pub async fn list(c: &mut Conn, q: &QuestionQuery) -> ApiResult<Page<QuestionEnt
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
-    Ok(Page { items, next_cursor })
+    Ok(Page {
+        items,
+        next_cursor,
+        total: None,
+    })
 }
 
 /// The first write to the issue by another actor after revision `version`,

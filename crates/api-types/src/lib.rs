@@ -53,6 +53,11 @@ pub enum ErrorCode {
     /// The client could not reach the server and could not start one.
     /// Only clients report it.
     Unreachable,
+    /// The server runs, or tried to start, but cannot reach its shared
+    /// Postgres database: no network, a wrong URL, or no URL stored
+    /// (LLM-470). `details.database_host` names the host when known. It
+    /// shares exit code 7 with `unreachable`: both mean "try again later".
+    DatabaseUnreachable,
     /// The command needs an answer, but `--no-input` is set or there is no
     /// terminal. Only the CLI reports it.
     InputNeeded,
@@ -60,7 +65,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in exit code order.
-    pub const ALL: [ErrorCode; 12] = [
+    pub const ALL: [ErrorCode; 13] = [
         ErrorCode::Internal,
         ErrorCode::BadRequest,
         ErrorCode::NotFound,
@@ -69,6 +74,7 @@ impl ErrorCode {
         ErrorCode::Validation,
         ErrorCode::Conflict,
         ErrorCode::Unreachable,
+        ErrorCode::DatabaseUnreachable,
         ErrorCode::InputNeeded,
         ErrorCode::NotPrimary,
         ErrorCode::PatchMismatch,
@@ -92,7 +98,7 @@ impl ErrorCode {
             ErrorCode::ClaimHeld => 4,
             ErrorCode::StaleVersion => 5,
             ErrorCode::Validation | ErrorCode::Conflict => 6,
-            ErrorCode::Unreachable => 7,
+            ErrorCode::Unreachable | ErrorCode::DatabaseUnreachable => 7,
             ErrorCode::InputNeeded => 8,
             ErrorCode::NotPrimary => 9,
             ErrorCode::PatchMismatch => 10,
@@ -107,7 +113,7 @@ impl ErrorCode {
             ErrorCode::NotFound => 404,
             ErrorCode::ClaimHeld | ErrorCode::StaleVersion | ErrorCode::Conflict => 409,
             ErrorCode::Validation | ErrorCode::PatchMismatch => 422,
-            ErrorCode::NotPrimary | ErrorCode::Unreachable => 503,
+            ErrorCode::NotPrimary | ErrorCode::Unreachable | ErrorCode::DatabaseUnreachable => 503,
             ErrorCode::Forbidden => 403,
         }
     }
@@ -205,6 +211,10 @@ pub const MAX_ISSUE_PAGE: u32 = 5000;
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
+    /// How many items all pages hold together. Only an issue query's first
+    /// page carries it, and only when the query sets `with_total`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -243,6 +253,11 @@ pub struct DatabaseInfo {
     /// milliseconds.
     #[serde(default)]
     pub round_trip_ms: f64,
+    /// Why the server cannot reach its database now, or `None` when the
+    /// health check's query worked (LLM-470). The server keeps running and
+    /// retries on each request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreachable: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1081,6 +1096,10 @@ pub struct IssueQuery {
     pub order: Option<IssueOrder>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    /// Count every issue the query matches, and send the count as `total`
+    /// on the first page. The app shows it while the first load runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_total: bool,
 }
 
 /// The order of an issue query.
@@ -1369,6 +1388,11 @@ mod tests {
     #[test]
     fn error_codes_are_stable() {
         assert_eq!(ErrorCode::ClaimHeld.exit_code(), 4);
+        assert_eq!(ErrorCode::DatabaseUnreachable.exit_code(), 7);
+        assert_eq!(
+            ErrorCode::DatabaseUnreachable.name(),
+            "database_unreachable"
+        );
         assert_eq!(
             serde_json::to_string(&ErrorCode::PatchMismatch).unwrap(),
             "\"patch_mismatch\""

@@ -10,11 +10,30 @@ use crate::error::ApiResult;
 use crate::state::AppState;
 use crate::store::backend::Backend;
 
+/// How long the health check waits for the database. Clients find the
+/// server through the health check, so it answers even while the shared
+/// database is away, and says so (LLM-470).
+const HEALTH_DATABASE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub async fn health(State(st): State<AppState>) -> ApiResult<Json<Health>> {
     let pool = st.pool();
     let start = std::time::Instant::now();
-    let schema_version = db::schema_version(&pool).await;
+    let checked = tokio::time::timeout(HEALTH_DATABASE_WAIT, db::try_schema_version(&pool)).await;
     let round_trip_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let (schema_version, unreachable) = match checked {
+        Ok(Ok(v)) => (v, None),
+        Ok(Err(e)) => (
+            0,
+            Some(crate::error::lost_database(&e).unwrap_or_else(|| e.to_string())),
+        ),
+        Err(_) => (
+            0,
+            Some(format!(
+                "no answer within {} seconds",
+                HEALTH_DATABASE_WAIT.as_secs()
+            )),
+        ),
+    };
     Ok(Json(Health {
         version: VERSION.to_string(),
         pid: std::process::id(),
@@ -29,6 +48,7 @@ pub async fn health(State(st): State<AppState>) -> ApiResult<Json<Health>> {
             },
             host: st.database_host.clone(),
             round_trip_ms,
+            unreachable,
         },
     }))
 }

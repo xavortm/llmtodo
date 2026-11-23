@@ -301,6 +301,7 @@ impl QueryArgs {
             order: None,
             cursor: None,
             limit: self.limit,
+            with_total: false,
         }
     }
 }

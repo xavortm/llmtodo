@@ -47,9 +47,11 @@ pub async fn run(app: &App, cmd: ServerCmd) -> CliResult {
             let _guard = llmtodo_server::init_logging(&app.data_dir);
             // The server never falls back to SQLite when the config asks
             // for Postgres and no connection string is stored.
-            let database = match llmtodo_client::database::choose(&app.data_dir)
-                .map_err(CliError::Validation)?
-            {
+            // Exit code 7, like a client that cannot reach the server: the
+            // owner can fix it, and the command can then run again.
+            let database = match llmtodo_client::database::choose(&app.data_dir).map_err(|e| {
+                CliError::Client(llmtodo_client::ClientError::database_unreachable(None, &e))
+            })? {
                 llmtodo_client::database::Choice::Sqlite => llmtodo_server::Database::Sqlite,
                 llmtodo_client::database::Choice::Postgres { url } => {
                     llmtodo_server::Database::Postgres { url }
@@ -62,7 +64,16 @@ pub async fn run(app: &App, cmd: ServerCmd) -> CliResult {
                 github_poll: !no_github,
                 database,
             })
-            .await?;
+            .await
+            .map_err(|e| {
+                match e.downcast_ref::<llmtodo_server::db::Unreachable>() {
+                    Some(u) => CliError::Client(llmtodo_client::ClientError::database_unreachable(
+                        Some(&u.host),
+                        &u.reason,
+                    )),
+                    None => e.into(),
+                }
+            })?;
         }
         ServerCmd::Stop => {
             // Only stop the server that wrote this folder's server.json, never
