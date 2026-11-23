@@ -6,19 +6,22 @@ use llmtodo_api_types::*;
 use serde_json::json;
 
 use super::analyzing::end_analyzing;
-use super::issues::{set_assignee, set_status, touch_updated};
+use super::issues::{
+    is_duplicate_status, set_assignee, set_status, set_status_fresh, touch_updated,
+};
 use super::j;
 use crate::db::new_id;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{Ctx, Write};
+use crate::store::backend::Pool;
 use crate::store::issues::{self, IssueRow};
 use crate::store::{self, actors, deps, teams};
 
 /// What a claim did, for the response.
 pub struct Claimed {
     pub id: String,
+    pub key: String,
     pub changed: bool,
-    pub open_blockers: Vec<IssueLink>,
     pub warnings: Vec<String>,
     pub stolen_from: Option<ClaimSummary>,
 }
@@ -119,7 +122,7 @@ pub async fn claim(w: &mut Write<'_>, r: &str, req: ClaimRequest) -> ApiResult<C
     };
 
     let row = issues::resolve_live(w.c(), r).await?;
-    let status = teams::status_by_id(w.c(), &row.status_id).await?;
+    let status = w.status(&row.status_id).await?;
     if !status.kind().is_open() {
         return Err(ApiError::validation(format!(
             "{} is {} ({}); it cannot be claimed",
@@ -132,24 +135,26 @@ pub async fn claim(w: &mut Write<'_>, r: &str, req: ClaimRequest) -> ApiResult<C
     if ctx.client.session_generated {
         warnings.push("the session ID was generated for this one call, so a later release cannot match it; set LLMTODO_SESSION".to_string());
     }
-    let all_actors = actors::all(w.c()).await?;
-    let check = check_holder(w, ctx, &row, &session, req.steal, &all_actors).await?;
+    let catalog = w.actors(&[]).await?;
+    let all_actors = &catalog.lookup.actors;
+    let (live, marked) = store::claims::live_and_marked(w.c(), &row.id).await?;
+    let check = check_holder(w, ctx, &row, live, &session, req.steal, all_actors).await?;
     // Tasks that a session already holds are not affected.
     if check.new_claim && check.stolen_from.is_none() {
         require_estimates(&row)?;
     }
     // A claim ends any Analyzing mark: Locked replaces it.
-    end_analyzing(w, &row.id, "claimed").await?;
+    if marked {
+        end_analyzing(w, &row.id, "claimed").await?;
+    }
     if check.new_claim {
         let stolen = check.stolen_from.as_ref().map(|(id, _)| id.as_str());
-        add_claim(w, ctx, &row, &session, &status, stolen, &all_actors).await?;
+        add_claim(w, ctx, &row, &session, &status, stolen, all_actors).await?;
     }
-    let open_blockers = open_blockers_warning(w, &row, &mut warnings).await?;
-
     Ok(Claimed {
         id: row.id,
+        key: row.key,
         changed: check.changed,
-        open_blockers,
         warnings,
         stolen_from: check.stolen_from.map(|(_, s)| s),
     })
@@ -191,10 +196,12 @@ fn require_estimates(row: &IssueRow) -> ApiResult<()> {
 
 /// Decides what a claim does about the current holder. It refuses an issue
 /// another session or assignee holds, unless the caller steals it.
+#[allow(clippy::too_many_arguments)]
 async fn check_holder(
     w: &mut Write<'_>,
     ctx: &Ctx,
     row: &IssueRow,
+    live: Option<(String, String, String)>,
     session: &str,
     steal: bool,
     all_actors: &HashMap<String, Actor>,
@@ -205,7 +212,7 @@ async fn check_holder(
         changed: true,
         stolen_from: None,
     };
-    if let Some((claim_id, holder, holder_session)) = live_claim(w, &row.id).await? {
+    if let Some((claim_id, holder, holder_session)) = live {
         if holder_session == session {
             check.new_claim = false;
             check.changed =
@@ -342,10 +349,34 @@ async fn add_claim(
         )
         .await?;
     }
-    // Set the assignee without ending the claim we just made.
-    let cur: Option<String> = store::issues::assignee(w.c(), &row.id).await?;
-    if cur.as_deref() != Some(actor_id.as_str()) {
-        store::issues::set_assignee(w.c(), Some(actor_id.as_str()), &row.id).await?;
+    // Set the assignee without ending the claim we just made, and take a
+    // ticket back from review into work, so it never stays locked in a
+    // review status. The row was read in this write, and nothing since
+    // changed its assignee or status, so one statement does both (LLM-469).
+    let cur: Option<String> = row.assignee_id.clone();
+    let assignee = (cur.as_deref() != Some(actor_id.as_str())).then_some(actor_id.as_str());
+    let started = if status.kind() != StatusType::Started || status.review {
+        w.first_work_status(&row.team_id)
+            .await?
+            .filter(|s| s.id != row.status_id)
+    } else {
+        None
+    };
+    // A status with a rule of its own takes the full path.
+    let plain = started.as_ref().is_none_or(|s| {
+        s.team_id == row.team_id && s.kind().is_open() && !s.review && !is_duplicate_status(s)
+    });
+    let one_step = started.as_ref().filter(|_| plain);
+    if assignee.is_some() || one_step.is_some() {
+        store::issues::set_assignee_and_status(
+            w.c(),
+            assignee,
+            one_step.map(|s| s.id.as_str()),
+            &row.id,
+        )
+        .await?;
+    }
+    if assignee.is_some() {
         let name = |id: &Option<String>| {
             id.as_ref()
                 .and_then(|i| all_actors.get(i))
@@ -361,42 +392,75 @@ async fn add_claim(
         )
         .await?;
     }
-    // A claim takes a ticket back from review into work, so it never stays
-    // locked in a review status.
-    if (status.kind() != StatusType::Started || status.review)
-        && let Some(started) = teams::first_work_status(w.c(), &row.team_id).await?
-    {
-        set_status(w, row, &started).await?;
+    if let Some(s) = one_step {
+        w.event(
+            EntityType::Issue,
+            &row.id,
+            Some(&row.id),
+            ActivityField::Status,
+            j(&status.name),
+            j(&s.name),
+        )
+        .await?;
+    } else if let Some(s) = &started {
+        set_status_fresh(w, row, s).await?;
     }
     touch_updated(w, &row.id).await?;
     Ok(())
 }
 
-/// Loads the open blockers, and adds a warning when there are any.
-async fn open_blockers_warning(
-    w: &mut Write<'_>,
-    row: &IssueRow,
-    warnings: &mut Vec<String>,
-) -> ApiResult<Vec<IssueLink>> {
-    let statuses: HashMap<String, teams::StatusRow> = teams::status_map(w.c()).await?;
-    let blockers = deps::Blockers::load(w.c(), std::slice::from_ref(&row.id), &statuses).await?;
-    let open_blockers = blockers.open_blockers(&row.id);
-    if !open_blockers.is_empty() {
-        let keys: Vec<String> = open_blockers.iter().map(|b| b.key.to_string()).collect();
-        let chain: Vec<String> = blockers
-            .longest_chain(w.c(), &row.id, &statuses)
-            .await?
+/// The response to a claim, read after it commits: the issue, and a
+/// warning when the issue has open blockers. Reading after the commit
+/// keeps the write short (LLM-469). On Postgres the issue and the longest
+/// chain of blockers load at once, on their own connections.
+pub async fn response(
+    pool: &Pool,
+    claimed: Claimed,
+    lookup: Option<&issues::Lookup>,
+) -> ApiResult<ClaimResponse> {
+    let mut c = pool.acquire().await?;
+    let owned;
+    let lookup = match lookup {
+        Some(l) => l,
+        None => {
+            owned = issues::Lookup::load(&mut c).await?;
+            &owned
+        }
+    };
+    let (issue, chain) = match c.read_pool() {
+        Some(p) => tokio::try_join!(
+            async { issues::load_one_with(&mut c, &claimed.id, false, lookup).await },
+            async {
+                deps::longest_chain_of(&mut p.acquire().await?, &claimed.id, &lookup.statuses).await
+            },
+        )?,
+        None => (
+            issues::load_one_with(&mut c, &claimed.id, false, lookup).await?,
+            deps::longest_chain_of(&mut c, &claimed.id, &lookup.statuses).await?,
+        ),
+    };
+    let mut warnings = claimed.warnings;
+    if !issue.open_blockers.is_empty() {
+        let keys: Vec<String> = issue
+            .open_blockers
             .iter()
-            .map(ToString::to_string)
+            .map(|b| b.key.to_string())
             .collect();
+        let chain: Vec<String> = chain.iter().map(ToString::to_string).collect();
         warnings.push(format!(
             "{} has open blockers: {}. Longest chain: {}",
-            row.key,
+            claimed.key,
             keys.join(", "),
             chain.join(" waits for ")
         ));
     }
-    Ok(open_blockers)
+    Ok(ClaimResponse {
+        open_blockers: issue.open_blockers.clone(),
+        issue,
+        changed: claimed.changed,
+        warnings,
+        stolen_from: claimed.stolen_from,
+    })
 }
 
 pub async fn release(w: &mut Write<'_>, r: &str, req: ReleaseRequest) -> ApiResult<String> {
@@ -418,11 +482,11 @@ pub async fn release(w: &mut Write<'_>, r: &str, req: ReleaseRequest) -> ApiResu
     end_claim(w, &row.id, &claim_id, "released").await?;
     set_assignee(w, &row, None).await?;
     let status = match &req.status {
-        Some(s) => Some(teams::status_by_name(w.c(), &row.team_id, s).await?),
+        Some(s) => Some(w.status_by_name(&row.team_id, s).await?),
         None => {
-            let cur = teams::status_by_id(w.c(), &row.status_id).await?;
+            let cur = w.status(&row.status_id).await?;
             if cur.kind() == StatusType::Started {
-                teams::first_of_type(w.c(), &row.team_id, StatusType::Unstarted).await?
+                w.first_of_type(&row.team_id, StatusType::Unstarted).await?
             } else {
                 None
             }

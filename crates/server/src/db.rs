@@ -38,6 +38,9 @@ pub fn url_host(url: &str) -> String {
     rest.split('?').next().unwrap_or(rest).to_string()
 }
 
+/// The main Postgres pool's size.
+const MAX_CONNECTIONS: u32 = 16;
+
 /// Connects to a shared Postgres database and runs pending migrations.
 ///
 /// With a data folder, a backup goes there before a migration of a database
@@ -49,24 +52,36 @@ pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result
     // connection idle for 30 seconds gets one, because a laptop that slept,
     // or a host such as Neon that suspended an idle database, may have
     // dropped it. One idle for 4 minutes is closed: Neon suspends after 5.
-    let pg = PgPoolOptions::new()
-        .max_connections(16)
-        .test_before_acquire(false)
-        .before_acquire(|conn, meta| {
-            Box::pin(async move {
-                if meta.idle_for < Duration::from_secs(30) {
-                    return Ok(true);
-                }
-                use sqlx::Connection as _;
-                Ok(conn.ping().await.is_ok())
+    let options = || {
+        PgPoolOptions::new()
+            .test_before_acquire(false)
+            .before_acquire(|conn, meta| {
+                Box::pin(async move {
+                    if meta.idle_for < Duration::from_secs(30) {
+                        return Ok(true);
+                    }
+                    use sqlx::Connection as _;
+                    Ok(conn.ping().await.is_ok())
+                })
             })
-        })
-        .idle_timeout(Duration::from_secs(4 * 60))
-        .acquire_timeout(Duration::from_secs(30))
+            .idle_timeout(Duration::from_secs(4 * 60))
+            .acquire_timeout(Duration::from_secs(30))
+    };
+    // Writes have a pool of their own, of one connection (LLM-469). It
+    // connects on the first write.
+    let writer = options()
+        .max_connections(1)
+        .connect_lazy(url)
+        .map_err(|e| anyhow::anyhow!("connect to Postgres at {shown}: {}", pg_error(&e)))?;
+    let pg = options()
+        .max_connections(MAX_CONNECTIONS)
         .connect(url)
         .await
         .map_err(|e| anyhow::anyhow!("connect to Postgres at {shown}: {}", pg_error(&e)))?;
-    let pool = Pool::Postgres(pg.clone());
+    let pool = Pool::Postgres(
+        pg.clone(),
+        crate::store::backend::PgSide::new(writer, MAX_CONNECTIONS),
+    );
     let newest_known = PG_MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0);
     let has_table: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
         .fetch_one(&pg)
@@ -277,7 +292,7 @@ pub async fn backup(pool: &Pool, data_dir: &Path, reason: &str) -> anyhow::Resul
     let partial = path.with_extension("db.partial");
     match pool {
         Pool::Sqlite(_) => vacuum_into(pool, &partial).await?,
-        Pool::Postgres(_) => {
+        Pool::Postgres(..) => {
             if let Err(e) = export_to_sqlite(pool, &partial).await {
                 std::fs::remove_file(&partial).ok();
                 return Err(e);

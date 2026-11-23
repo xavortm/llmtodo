@@ -31,7 +31,15 @@ fn count_statement(sql: &Sql) {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        eprintln!("SQL {}", one_line.chars().take(150).collect::<String>());
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let ms = START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis();
+        eprintln!(
+            "SQL {ms:>7} {}",
+            one_line.chars().take(150).collect::<String>()
+        );
     }
 }
 
@@ -54,20 +62,55 @@ impl Backend {
 /// Postgres serializes all writes with this transaction-scoped advisory
 /// lock, the way SQLite's `BEGIN IMMEDIATE` does. Every server on one
 /// database takes it, so claims, keys and activity seqs stay in order.
+#[cfg_attr(not(test), allow(dead_code))]
 const PG_WRITE_LOCK: i64 = 0x6c6c_6d74_6f64_6f01;
 
+/// Begins a write on Postgres and takes [`PG_WRITE_LOCK`] in the same
+/// message.
+const PG_BEGIN_WRITE: &str = "BEGIN; SELECT pg_advisory_xact_lock(7812739800433454849)";
+
 /// A connection pool on one backend.
+///
+/// On Postgres, writes take their connection from a second pool of one
+/// connection. Writes run one at a time anyway, and on one connection
+/// their statements stay prepared, which saves a round trip per statement
+/// (LLM-469). The main pool hands out its connections in turn, so a write
+/// there would often find its statements unprepared.
 #[derive(Clone, Debug)]
 pub enum Pool {
     Sqlite(SqlitePool),
-    Postgres(PgPool),
+    Postgres(PgPool, PgSide),
+}
+
+/// What a Postgres pool keeps beside its main pool.
+#[derive(Clone, Debug)]
+pub struct PgSide {
+    /// The one connection writes use.
+    writer: PgPool,
+    /// Permits to read beside a connection on others. A connection that
+    /// reads beside itself holds itself while it waits for the others. If
+    /// every connection did, none would be left, and each would wait for
+    /// the acquire timeout. Half the pool may, so the other half always
+    /// serves the reads they wait for.
+    fan_out: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl PgSide {
+    pub fn new(writer: PgPool, max_connections: u32) -> Self {
+        PgSide {
+            writer,
+            fan_out: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                (max_connections as usize / 2).max(1),
+            )),
+        }
+    }
 }
 
 impl Pool {
     pub fn backend(&self) -> Backend {
         match self {
             Pool::Sqlite(_) => Backend::Sqlite,
-            Pool::Postgres(_) => Backend::Postgres,
+            Pool::Postgres(..) => Backend::Postgres,
         }
     }
 
@@ -75,10 +118,10 @@ impl Pool {
     pub async fn acquire(&self) -> Result<Conn, sqlx::Error> {
         let inner = match self {
             Pool::Sqlite(p) => ConnInner::SqlitePooled(p.acquire().await?),
-            Pool::Postgres(p) => ConnInner::PgPooled(p.acquire().await?),
+            Pool::Postgres(p, _) => ConnInner::PgPooled(p.acquire().await?),
         };
         let mut c = Conn::new(inner);
-        if let Pool::Postgres(_) = self {
+        if let Pool::Postgres(..) = self {
             c.read_pool = Some(self.clone());
         }
         Ok(c)
@@ -88,7 +131,7 @@ impl Pool {
     pub async fn begin(&self) -> Result<Conn, sqlx::Error> {
         let inner = match self {
             Pool::Sqlite(p) => ConnInner::SqliteTx(p.begin().await?),
-            Pool::Postgres(p) => ConnInner::PgTx(p.begin().await?),
+            Pool::Postgres(p, _) => ConnInner::PgTx(p.begin().await?),
         };
         Ok(Conn::new(inner))
     }
@@ -99,13 +142,10 @@ impl Pool {
     pub async fn begin_write(&self) -> Result<Conn, sqlx::Error> {
         let inner = match self {
             Pool::Sqlite(p) => ConnInner::SqliteTx(p.begin_with("BEGIN IMMEDIATE").await?),
-            Pool::Postgres(p) => {
-                let mut tx = p.begin().await?;
-                sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                    .bind(PG_WRITE_LOCK)
-                    .execute(&mut *tx)
-                    .await?;
-                ConnInner::PgTx(tx)
+            // One message begins and takes the lock, so the two cost one
+            // round trip (LLM-469). The key is a constant.
+            Pool::Postgres(_, side) => {
+                ConnInner::PgTx(side.writer.begin_with(PG_BEGIN_WRITE).await?)
             }
         };
         Ok(Conn::new(inner))
@@ -120,7 +160,7 @@ impl Pool {
     pub async fn try_job_lock(&self, key: i64) -> Result<Option<JobLock>, sqlx::Error> {
         match self {
             Pool::Sqlite(_) => Ok(Some(JobLock { _conn: None })),
-            Pool::Postgres(p) => {
+            Pool::Postgres(p, _) => {
                 // Detached, so dropping the guard closes the connection and
                 // frees the lock, instead of handing a locked session back
                 // to the pool.
@@ -137,14 +177,17 @@ impl Pool {
     pub async fn close(&self) {
         match self {
             Pool::Sqlite(p) => p.close().await,
-            Pool::Postgres(p) => p.close().await,
+            Pool::Postgres(p, side) => {
+                side.writer.close().await;
+                p.close().await;
+            }
         }
     }
 
     pub fn is_closed(&self) -> bool {
         match self {
             Pool::Sqlite(p) => p.is_closed(),
-            Pool::Postgres(p) => p.is_closed(),
+            Pool::Postgres(p, _) => p.is_closed(),
         }
     }
 
@@ -152,14 +195,14 @@ impl Pool {
     pub fn sqlite(&self) -> Option<&SqlitePool> {
         match self {
             Pool::Sqlite(p) => Some(p),
-            Pool::Postgres(_) => None,
+            Pool::Postgres(..) => None,
         }
     }
 
     /// The Postgres pool, for the Postgres-only parts: the event listener.
     pub fn postgres(&self) -> Option<&PgPool> {
         match self {
-            Pool::Postgres(p) => Some(p),
+            Pool::Postgres(p, _) => Some(p),
             Pool::Sqlite(_) => None,
         }
     }
@@ -199,6 +242,8 @@ pub struct Conn {
     /// that do not depend on each other may then run at once on other
     /// connections of this pool, so their round trips overlap (LLM-465).
     read_pool: Option<Pool>,
+    /// Held once this connection reads beside itself. See [`PgSide`].
+    fan_out: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub(crate) enum Raw<'a> {
@@ -212,6 +257,7 @@ impl Conn {
             inner,
             changes: 0,
             read_pool: None,
+            fan_out: None,
         }
     }
 
@@ -219,8 +265,19 @@ impl Conn {
     /// helps: a pooled Postgres connection outside a transaction. `None` on
     /// SQLite, where a query costs no round trip, and inside a transaction,
     /// whose writes other connections cannot see yet.
-    pub fn read_pool(&self) -> Option<&Pool> {
-        self.read_pool.as_ref()
+    ///
+    /// The first call takes a permit that the connection holds until it
+    /// returns to the pool. With no permit free it returns `None`, and the
+    /// caller reads on this connection alone (see [`PgSide`]).
+    pub fn read_pool(&mut self) -> Option<Pool> {
+        let pool = self.read_pool.as_ref()?;
+        if self.fan_out.is_none() {
+            let Pool::Postgres(_, side) = pool else {
+                return None;
+            };
+            self.fan_out = Some(side.fan_out.clone().try_acquire_owned().ok()?);
+        }
+        Some(pool.clone())
     }
 
     /// Wraps a connection opened outside a pool, such as a second database
@@ -877,6 +934,14 @@ impl QueryBuilder {
         &self.sql
     }
 
+    /// Appends a whole statement with its bound values, such as a part of
+    /// a `WITH` query. Its placeholders must be plain `?`, not numbered.
+    pub fn push_query(&mut self, q: Query) -> &mut Self {
+        self.sql.push_str(q.sql.as_str());
+        self.args.extend(q.args);
+        self
+    }
+
     fn parts(&mut self) -> (Sql, Vec<Arg>) {
         (
             Sql::assert_safe(self.sql.clone()),
@@ -911,6 +976,17 @@ impl QueryBuilder {
 #[cfg(test)]
 mod tests {
     use super::pg_placeholders;
+
+    #[test]
+    fn the_write_lock_key_matches_its_constant() {
+        assert_eq!(
+            super::PG_BEGIN_WRITE,
+            format!(
+                "BEGIN; SELECT pg_advisory_xact_lock({})",
+                super::PG_WRITE_LOCK
+            )
+        );
+    }
 
     #[test]
     fn placeholders_skip_quotes() {

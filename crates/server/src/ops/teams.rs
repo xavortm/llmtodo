@@ -11,6 +11,8 @@ use super::check_color;
 use crate::db::new_id;
 
 pub async fn create(w: &mut Write<'_>, req: CreateTeam) -> ApiResult<String> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     let id = teams::create(w.c(), &req.key, &req.name, None).await?;
     w.event(
         EntityType::Team,
@@ -26,6 +28,8 @@ pub async fn create(w: &mut Write<'_>, req: CreateTeam) -> ApiResult<String> {
 }
 
 pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateTeam) -> ApiResult<String> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     let t = teams::team_row(w.c(), r).await?;
     if let Some(name) = req.name.as_deref().map(str::trim) {
         if name.is_empty() {
@@ -70,6 +74,8 @@ pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateTeam) -> ApiResult<St
 }
 
 pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> ApiResult<String> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     let t = teams::team_row(w.c(), r).await?;
     let name = req.name.trim();
     if name.is_empty() {
@@ -107,6 +113,8 @@ pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> Api
 }
 
 pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> ApiResult<()> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     let s = teams::status_by_id(w.c(), id).await?;
     if let Some(name) = req.name.as_deref().map(str::trim) {
         if name.is_empty() {
@@ -152,6 +160,8 @@ pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> Ap
 }
 
 pub async fn delete_status(w: &mut Write<'_>, id: &str) -> ApiResult<()> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     let s = teams::status_by_id(w.c(), id).await?;
     let used: i64 = store::teams::count_issues_with_status(w.c(), id).await?;
     if used > 0 {

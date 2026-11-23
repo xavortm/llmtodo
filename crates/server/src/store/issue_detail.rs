@@ -9,8 +9,25 @@ use crate::store::{attachments, comments, issues, relations, reviews, sessions, 
 
 /// One issue with everything an agent needs.
 pub async fn load(conn: &mut Conn, issue_id: &str) -> ApiResult<IssueDetail> {
+    load_with(conn, issue_id, None).await
+}
+
+/// [`load`], with statuses and actors given when the caller has them, such
+/// as a write that just loaded them (LLM-469).
+pub async fn load_with(
+    conn: &mut Conn,
+    issue_id: &str,
+    lookup: Option<&issues::Lookup>,
+) -> ApiResult<IssueDetail> {
     // One lookup of statuses and actors serves every part below.
-    let lookup = issues::Lookup::load(conn).await?;
+    let owned;
+    let lookup = match lookup {
+        Some(l) => l,
+        None => {
+            owned = issues::Lookup::load(conn).await?;
+            &owned
+        }
+    };
     let actors = &lookup.actors;
     let statuses = &lookup.statuses;
     // The parts read only by the issue's ID. On Postgres, outside a
@@ -19,22 +36,20 @@ pub async fn load(conn: &mut Conn, issue_id: &str) -> ApiResult<IssueDetail> {
         issue,
         aliases,
         children,
-        sessions,
-        prices,
+        (sessions, prices),
         attachments,
         git_row,
         relations,
         comments,
         reviews,
-    ) = match conn.read_pool().cloned() {
+    ) = match conn.read_pool() {
         Some(pool) => {
             let c = || async { pool.acquire().await.map_err(crate::error::ApiError::from) };
             tokio::try_join!(
-                async { issues::load_one_with(&mut c().await?, issue_id, true, &lookup).await },
+                async { issues::load_one_with(&mut c().await?, issue_id, true, lookup).await },
                 async { aliases(&mut c().await?, issue_id).await },
                 async { children(&mut c().await?, issue_id, statuses).await },
                 async { sessions::for_issue(&mut c().await?, issue_id, actors).await },
-                async { usage::prices(&mut c().await?).await },
                 async { attachments::attachments(&mut c().await?, issue_id).await },
                 async { git_row(&mut c().await?, issue_id).await },
                 async { relations::relations(&mut c().await?, issue_id, statuses).await },
@@ -43,11 +58,10 @@ pub async fn load(conn: &mut Conn, issue_id: &str) -> ApiResult<IssueDetail> {
             )?
         }
         None => (
-            issues::load_one_with(conn, issue_id, true, &lookup).await?,
+            issues::load_one_with(conn, issue_id, true, lookup).await?,
             aliases(conn, issue_id).await?,
             children(conn, issue_id, statuses).await?,
             sessions::for_issue(conn, issue_id, actors).await?,
-            usage::prices(conn).await?,
             attachments::attachments(conn, issue_id).await?,
             git_row(conn, issue_id).await?,
             relations::relations(conn, issue_id, statuses).await?,

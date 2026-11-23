@@ -14,6 +14,30 @@ pub async fn live(c: &mut Conn, issue_id: &str) -> ApiResult<Option<(String, Str
     .await?)
 }
 
+/// The live claim on an issue, as [`live`] gives it, and whether the issue
+/// has an Analyzing mark, in one statement for a claim (LLM-469).
+pub async fn live_and_marked(
+    c: &mut Conn,
+    issue_id: &str,
+) -> ApiResult<(Option<(String, String, String)>, bool)> {
+    let (id, actor, session, marks): (Option<String>, Option<String>, Option<String>, i64) =
+        backend::query_as(
+            "SELECT c.id, c.actor_id, c.session_id,
+                CAST((SELECT count(*) FROM analyzing a WHERE a.issue_id = ?) AS BIGINT)
+             FROM (SELECT 1 AS one) base
+             LEFT JOIN claims c ON c.issue_id = ? AND c.ended_at IS NULL",
+        )
+        .bind(issue_id)
+        .bind(issue_id)
+        .fetch_one(&mut *c)
+        .await?;
+    let live = match (id, actor, session) {
+        (Some(id), Some(actor), Some(session)) => Some((id, actor, session)),
+        _ => None,
+    };
+    Ok((live, marks > 0))
+}
+
 /// The live claims on issues in a review status, as (claim, issue) pairs.
 /// With `status_id`, only issues in that status.
 pub async fn live_in_review(

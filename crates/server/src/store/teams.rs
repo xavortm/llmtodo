@@ -237,14 +237,37 @@ pub async fn create(
 /// The team to use when a request names none: the default team setting, or
 /// the only team.
 pub async fn default_team(conn: &mut Conn) -> ApiResult<TeamRow> {
-    let setting: Option<String> =
-        backend::query_scalar("SELECT value FROM settings WHERE key = 'default_team'")
-            .fetch_optional(&mut *conn)
-            .await?;
+    let setting = default_team_setting(conn).await?;
     if let Some(key) = setting.filter(|k| !k.is_empty()) {
         return team_row(conn, &key).await;
     }
     let teams = team_rows(conn).await?;
+    pick_default_team(None, teams)
+}
+
+/// The `default_team` setting, a team key or ID.
+pub async fn default_team_setting(conn: &mut Conn) -> ApiResult<Option<String>> {
+    Ok(
+        backend::query_scalar("SELECT value FROM settings WHERE key = 'default_team'")
+            .fetch_optional(&mut *conn)
+            .await?,
+    )
+}
+
+/// The team of [`team_row`] among `teams`.
+pub fn find_team<'a>(teams: &'a [TeamRow], r: &str) -> ApiResult<&'a TeamRow> {
+    let r = r.trim();
+    teams
+        .iter()
+        .find(|t| t.id == r || t.key.eq_ignore_ascii_case(r))
+        .ok_or_else(|| ApiError::not_found("team", r))
+}
+
+/// The default team of [`default_team`], from the setting and every team.
+pub fn pick_default_team(setting: Option<String>, teams: Vec<TeamRow>) -> ApiResult<TeamRow> {
+    if let Some(key) = setting.filter(|k| !k.is_empty()) {
+        return find_team(&teams, &key).cloned();
+    }
     match teams.len() {
         1 => Ok(teams.into_iter().next().unwrap()),
         0 => Err(ApiError::validation(

@@ -63,6 +63,13 @@ fn to_usage(r: &Row) -> TokenUsage {
 
 /// Adds what is new in the caller's cumulative usage to `issue_id`'s work
 /// session, and marks it as seen.
+/// True when the caller reported token usage or active time, so
+/// [`attribute`] or [`attribute_time`] has something to record.
+pub fn reported(ctx: &Ctx) -> bool {
+    ctx.client.transcript_path.is_some()
+        && (ctx.client.usage.is_some() || ctx.client.active_seconds.is_some())
+}
+
 pub async fn attribute(conn: &mut Conn, ctx: &Ctx, session: &str, issue_id: &str) -> ApiResult<()> {
     let (Some(cumulative), Some(transcript)) = (&ctx.client.usage, &ctx.client.transcript_path)
     else {
@@ -181,7 +188,6 @@ pub async fn by_work_session(
     conn: &mut Conn,
     ids: &[String],
 ) -> ApiResult<BTreeMap<String, BTreeMap<String, TokenUsage>>> {
-    type WsRow = (String, String, i64, i64, i64, i64, i64, i64);
     let rows: Vec<WsRow> = backend::query_as(
         "SELECT work_session_id, model, requests, input, output, cache_write_5m, cache_write_1h, cache_read FROM work_session_usage
          WHERE work_session_id IN (SELECT value FROM json_each(?))",
@@ -189,13 +195,35 @@ pub async fn by_work_session(
     .bind(serde_json::to_string(ids)?)
     .fetch_all(&mut *conn)
     .await?;
+    Ok(by_work_session_rows(rows))
+}
+
+/// The usage of each work session on one issue, as [`by_work_session`]
+/// gives it, with no list of sessions needed first.
+pub async fn by_issue_sessions(
+    conn: &mut Conn,
+    issue_id: &str,
+) -> ApiResult<BTreeMap<String, BTreeMap<String, TokenUsage>>> {
+    let rows: Vec<WsRow> = backend::query_as(
+        "SELECT work_session_id, model, requests, input, output, cache_write_5m, cache_write_1h, cache_read FROM work_session_usage
+         WHERE work_session_id IN (SELECT id FROM work_sessions WHERE issue_id = ?)",
+    )
+    .bind(issue_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(by_work_session_rows(rows))
+}
+
+type WsRow = (String, String, i64, i64, i64, i64, i64, i64);
+
+fn by_work_session_rows(rows: Vec<WsRow>) -> BTreeMap<String, BTreeMap<String, TokenUsage>> {
     let mut out: BTreeMap<String, BTreeMap<String, TokenUsage>> = BTreeMap::new();
     for (ws, model, a, b, c, d, e, f) in rows {
         out.entry(ws)
             .or_default()
             .insert(model.clone(), to_usage(&(model, a, b, c, d, e, f)));
     }
-    Ok(out)
+    out
 }
 
 /// The cost of each issue in USD, in one query for the whole page. An issue

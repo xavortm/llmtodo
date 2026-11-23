@@ -178,7 +178,12 @@ async fn save(c: &mut Conn, issue_id: &str, derived: &[Derived]) -> ApiResult<()
 
 /// Stores the questions of a new issue's first description.
 pub async fn record_created(c: &mut Conn, issue_id: &str, body: &str) -> ApiResult<()> {
-    save(c, issue_id, &derive(None, body, None)).await
+    let derived = derive(None, body, None);
+    // A new issue has no rows to replace.
+    if derived.is_empty() {
+        return Ok(());
+    }
+    save(c, issue_id, &derived).await
 }
 
 /// Stores the questions after a description change. The caller runs this in
@@ -283,6 +288,8 @@ async fn later_write(
     version: i64,
     answerer: &str,
 ) -> ApiResult<Option<(String, String)>> {
+    // The activity table must hold this write's events too.
+    w.flush_events().await?;
     let answered_at: Option<i64> =
         store::activity::description_seq(w.c(), issue_id, version.to_string()).await?;
     let later: Option<(String, String)> =

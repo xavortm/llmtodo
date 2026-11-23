@@ -103,6 +103,8 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             ),
         ));
     }
+    // The activity table must hold this write's events too.
+    w.flush_events().await?;
     let (entered, answered) =
         store::reviews::entry_and_answer_seqs(w.c(), &row.id, &status.name).await?;
     if answered.is_some_and(|a| entered.is_none_or(|e| a > e)) {

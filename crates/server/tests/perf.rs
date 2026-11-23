@@ -15,12 +15,13 @@ const ISSUES: i64 = 50_000;
 /// the most a write that rebuilds the dependency graph may take (LLM-216).
 const CHAIN_LIMIT: Duration = Duration::from_millis(200);
 
-/// Changes one issue's status, which makes the server build its dependency
-/// graph again. The reply to the write already builds it. Returns the
-/// slowest write and the slowest first page of 1000 after one.
+/// Closes one issue and opens it again, which makes the server build its
+/// dependency graph again each time. A move between two open statuses no
+/// longer does (LLM-469). The reply to the write already builds it.
+/// Returns the slowest write and the slowest first page of 1000 after one.
 async fn timed_after_write(url: &str, http: &reqwest::Client, key: &str) -> (Duration, Duration) {
     let (mut write, mut read) = (Duration::ZERO, Duration::ZERO);
-    for status in ["In Progress", "Todo"] {
+    for status in ["Done", "Todo"] {
         let start = Instant::now();
         let res = http
             .patch(format!("{url}/v1/issues/{key}"))

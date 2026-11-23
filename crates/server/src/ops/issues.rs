@@ -110,14 +110,15 @@ pub async fn create(
         return Err(ApiError::validation("title is empty"));
     }
     let team = match &req.team {
-        Some(t) => teams::team_row(w.c(), t).await?,
-        None => teams::default_team(w.c()).await?,
+        Some(t) => w.team(t).await?,
+        None => w.default_team().await?,
     };
     let status = match &req.status {
-        Some(s) => teams::status_by_name(w.c(), &team.id, s).await?,
-        None => match teams::first_of_type(w.c(), &team.id, StatusType::Unstarted).await? {
+        Some(s) => w.status_by_name(&team.id, s).await?,
+        None => match w.first_of_type(&team.id, StatusType::Unstarted).await? {
             Some(s) => s,
-            None => teams::statuses(w.c(), Some(&team.id))
+            None => w
+                .team_statuses(&team.id)
                 .await?
                 .into_iter()
                 .next()
@@ -140,6 +141,8 @@ pub async fn create(
     let id = new_id();
     let t = now();
     let completed = (!status.kind().is_open()).then(|| t.clone());
+    let priority = req.priority.unwrap_or(Priority::None).as_number() as i64;
+    let wanted_executor = serde_json::to_string(&req.wanted_executor.clone().unwrap_or_default())?;
     store::issues::insert(
         w.c(),
         &id,
@@ -149,25 +152,32 @@ pub async fn create(
         &title,
         &req.description,
         &status.id,
-        req.priority.unwrap_or(Priority::None).as_number() as i64,
+        priority,
         ctx.actor_id(),
         &t,
-        completed,
-        serde_json::to_string(&req.wanted_executor.clone().unwrap_or_default())?,
+        completed.clone(),
+        wanted_executor.clone(),
+        // The insert writes the estimates, and `apply_fields` below checks
+        // them and records their events. A bad one fails the write there.
+        (
+            req.estimate_minutes.filter(|m| *m > 0),
+            req.estimate_cost_usd.filter(|c| c.is_finite() && *c > 0.0),
+        ),
     )
     .await?;
-    store::issues::add_key(w.c(), &key, &id).await?;
+    // Nothing later in this write reads the key or the revision, so both
+    // inserts wait for the end of the write (LLM-469).
+    w.defer_insert(store::issues::add_key_query(&key, &id))
+        .await?;
     let actor = w.ctx.actor_id();
     let session = w.ctx.session().map(str::to_string);
-    add_revision(
-        w.c(),
+    w.defer_insert(revisions::first_revision_query(
         "issue",
         &id,
-        1,
         &req.description,
         &actor,
         session.as_deref(),
-    )
+    ))
     .await?;
     super::questions::record_created(w.c(), &id, &req.description).await?;
     w.event(
@@ -180,7 +190,37 @@ pub async fn create(
     )
     .await?;
 
-    let row = issues::row(w.c(), &id).await?;
+    // The row as the insert wrote it, with no read. A new issue has no
+    // project, milestone, parent, step or assignee yet.
+    let row = IssueRow {
+        id: id.clone(),
+        key,
+        team_id: team.id.clone(),
+        team_key: team.key.clone(),
+        number,
+        title,
+        description: Some(req.description.clone()),
+        description_version: 1,
+        status_id: status.id.clone(),
+        priority,
+        assignee_id: None,
+        project_id: None,
+        project_slug: None,
+        milestone_id: None,
+        milestone_name: None,
+        parent_id: None,
+        parent_key: None,
+        order_step: None,
+        wanted_executor,
+        waiting_on: None,
+        estimate_minutes: None,
+        estimate_cost_usd: None,
+        created_by: Some(ctx.actor_id()),
+        created_at: t.clone(),
+        updated_at: t,
+        completed_at: completed,
+        deleted_at: None,
+    };
     let update = UpdateIssue {
         assignee: Change::text(req.assignee),
         labels: (!req.labels.is_empty()).then_some(req.labels),
@@ -310,8 +350,7 @@ fn merge_query(mut base: IssueQuery, extra: IssueQuery) -> IssueQuery {
 }
 
 pub(super) async fn touch_updated(w: &mut Write<'_>, issue_id: &str) -> ApiResult<()> {
-    store::issues::touch_updated(w.c(), issue_id).await?;
-    w.touch(issue_id);
+    w.touch_updated(issue_id);
     Ok(())
 }
 
@@ -424,7 +463,7 @@ pub async fn apply_fields(
     if !(req.branch.is_keep() && req.worktree.is_keep() && req.pr.is_keep()) {
         changed |= apply_git(w, &row.id, &req).await?;
     }
-    changed |= apply_estimates(w, &row, &req).await?;
+    changed |= apply_estimates(w, &row, &req, creating).await?;
     if let Some(we) = &req.wanted_executor {
         changed |= apply_executor(w, &row, we).await?;
     }
@@ -454,8 +493,10 @@ pub async fn apply_fields(
         changed |= apply_description(w, &row, &req).await?;
     }
     if let Some(s) = &req.status {
-        let status = teams::status_by_name(w.c(), &row.team_id, s).await?;
-        let moved = set_status(w, &row, &status).await?;
+        let status = w.status_by_name(&row.team_id, s).await?;
+        // No step above changes the status, and a team move reads the row
+        // again, so `row` holds the current one.
+        let moved = set_status_fresh(w, &row, &status).await?;
         // An issue in a review status waits on the owner, unless the update
         // says otherwise.
         if moved && waiting_on_kept && status.review {
@@ -473,7 +514,12 @@ pub async fn apply_fields(
 /// Sets the estimates of an update. Filling in an empty estimate is free.
 /// Changing one that is set needs a reason, and the activity log records
 /// the old value, the new value and that reason.
-async fn apply_estimates(w: &mut Write<'_>, row: &IssueRow, req: &UpdateIssue) -> ApiResult<bool> {
+async fn apply_estimates(
+    w: &mut Write<'_>,
+    row: &IssueRow,
+    req: &UpdateIssue,
+    creating: bool,
+) -> ApiResult<bool> {
     let reason = req
         .estimate_reason
         .as_deref()
@@ -515,8 +561,11 @@ async fn apply_estimates(w: &mut Write<'_>, row: &IssueRow, req: &UpdateIssue) -
             "estimate_cost_usd": row.estimate_cost_usd,
         })));
     }
+    // A new issue's insert wrote them already.
+    if (new_minutes.is_some() || new_cost.is_some()) && !creating {
+        store::issues::set_estimates(w.c(), new_minutes, new_cost, &row.id).await?;
+    }
     if let Some(m) = new_minutes {
-        store::issues::set_estimate_minutes(w.c(), m, &row.id).await?;
         w.event(
             EntityType::Issue,
             &row.id,
@@ -528,7 +577,6 @@ async fn apply_estimates(w: &mut Write<'_>, row: &IssueRow, req: &UpdateIssue) -
         .await?;
     }
     if let Some(usd) = new_cost {
-        store::issues::set_estimate_cost(w.c(), usd, &row.id).await?;
         w.event(
             EntityType::Issue,
             &row.id,
@@ -846,7 +894,13 @@ pub(super) async fn set_assignee(
         return Ok(false);
     }
     store::issues::set_assignee(w.c(), new.as_deref(), &row.id).await?;
-    let all = actors::all(w.c()).await?;
+    let ids: Vec<&str> = [&cur, &new]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let catalog = w.actors(&ids).await?;
+    let all = &catalog.lookup.actors;
     let name = |id: &Option<String>| id.as_ref().and_then(|i| all.get(i)).map(|a| a.name.clone());
     w.event(
         EntityType::Issue,
@@ -875,6 +929,25 @@ pub(crate) async fn set_status(
     status: &teams::StatusRow,
 ) -> ApiResult<bool> {
     let cur_id: String = store::issues::status_id(w.c(), &row.id).await?;
+    set_status_from(w, row, &cur_id, status).await
+}
+
+/// Like [`set_status`], for a caller that read `row` in this write and
+/// changed no status since, so `row.status_id` is current. It saves a read.
+pub(crate) async fn set_status_fresh(
+    w: &mut Write<'_>,
+    row: &IssueRow,
+    status: &teams::StatusRow,
+) -> ApiResult<bool> {
+    set_status_from(w, row, &row.status_id.clone(), status).await
+}
+
+async fn set_status_from(
+    w: &mut Write<'_>,
+    row: &IssueRow,
+    cur_id: &str,
+    status: &teams::StatusRow,
+) -> ApiResult<bool> {
     if cur_id == status.id {
         return Ok(false);
     }
@@ -899,7 +972,7 @@ pub(crate) async fn set_status(
             return Err(e);
         }
     }
-    let cur = teams::status_by_id(w.c(), &cur_id).await?;
+    let cur = w.status(cur_id).await?;
     let completed = (!status.kind().is_open()).then(now);
     if !status.kind().is_open() {
         // A finished issue waits on no one.

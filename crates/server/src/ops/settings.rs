@@ -27,6 +27,8 @@ pub async fn read(st: &AppState) -> ApiResult<Settings> {
 }
 
 pub async fn update(w: &mut Write<'_>, req: UpdateSettings) -> ApiResult<()> {
+    // Statuses, teams and the default team are cached per write.
+    w.catalog_changed();
     if let Some(v) = &req.workspace_name {
         db::set_setting(w.c(), "workspace_name", v.trim()).await?;
     }
