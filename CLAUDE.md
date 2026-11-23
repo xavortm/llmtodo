@@ -15,7 +15,7 @@ A Linear-style task tracker: a GPUI desktop app for people, and a CLI with full 
 - `crates/app`: the `llmtodo-app` binary. It holds `main.rs` and start-up only
 - `crates/ui-bench`: GPU frame benchmarks for `ui`, in their own package
 
-`core`, `api-types`, `client`, `server` and `cli` are built and tested. `ui` and `app` are the GPUI app. It reads and writes through the client crate; `crates/ui/src/model/backend.rs` runs the client on its own tokio thread. App tests run with `cargo test -p llmtodo-ui`. The server tests also run on a shared Postgres database (LLM-450): `docker compose up -d --wait postgres`, then `LLMTODO_TEST_POSTGRES_URL=postgres://llmtodo:llmtodo@127.0.0.1:54329/llmtodo cargo test -p llmtodo-server`. CI runs both. Any schema change needs a migration in `crates/server/migrations` and in `crates/server/migrations-postgres`. `SPIKE.md` records what the spike proved and its open risks.
+`core`, `api-types`, `client`, `server` and `cli` are built and tested. `ui` and `app` are the GPUI app. It reads and writes through the client crate; `crates/ui/src/model/backend.rs` runs the client on its own tokio thread. App tests run with `cargo test -p llmtodo-ui`. The server tests also run on a shared Postgres database (LLM-450): `docker compose up -d --wait postgres`, then `LLMTODO_TEST_POSTGRES_URL=postgres://llmtodo:llmtodo@127.0.0.1:54329/llmtodo cargo test -p llmtodo-server`. The same variable runs `cargo test -p llmtodo-cli --test db_migrate_restart`. CI runs both. Any schema change needs a migration in `crates/server/migrations` and in `crates/server/migrations-postgres`. `SPIKE.md` records what the spike proved and its open risks.
 
 ## Issue tracking
 

@@ -205,32 +205,49 @@ fn stored_url() -> CliResult<String> {
         })
 }
 
-/// Stops this folder's server and waits until it has let go of the
-/// database.
-async fn stop_server(app: &App) -> CliResult {
-    if let Some((c, _)) =
-        llmtodo_client::find_server(&app.data_dir, &app.detected.identity.context).await
-    {
-        let _ = c.stop_server().await;
-    }
-    for _ in 0..100 {
+/// Stops this folder's server, waits until it has let go of the database,
+/// and returns its lock, still held (LLM-477).
+///
+/// Hold the lock until the config names the new database. The app starts a
+/// server as soon as the old one stops. Without the lock held, that server
+/// would read the old config and serve the old database during the copy.
+/// While this command holds the lock, such a server exits at once, and the
+/// app tries again later.
+async fn stop_server(app: &App) -> CliResult<ServerLock> {
+    let path = app.data_dir.join("server.lock");
+    // Look often: once the old server lets go, the lock goes to whoever
+    // tries first.
+    for _ in 0..500 {
+        // Ask again on each round: a server another client started after
+        // the first stop holds the lock too.
+        if let Some((c, _)) =
+            llmtodo_client::find_server(&app.data_dir, &app.detected.identity.context).await
+        {
+            let _ = c.stop_server().await;
+        }
         let lock = std::fs::File::options()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(app.data_dir.join("server.lock"))?;
+            .open(&path)?;
         if lock.try_lock().is_ok() {
-            return Ok(());
+            return Ok(ServerLock(lock));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     Err(CliError::Other(
         "the server did not stop within 10 seconds; run `llmtodo server stop` and try again".into(),
     ))
 }
 
-/// Starts the server on the new choice and returns what it opened.
-async fn start_server(app: &App) -> CliResult<serde_json::Value> {
+/// The data folder's `server.lock`, held by this command. Dropping it lets
+/// a server start again.
+struct ServerLock(#[allow(dead_code)] std::fs::File);
+
+/// Lets go of `lock`, then starts the server on the new choice and returns
+/// what it opened.
+async fn start_server(app: &App, lock: ServerLock) -> CliResult<serde_json::Value> {
+    drop(lock);
     let c = app.connect().await?;
     let h = c.health().await?;
     Ok(serde_json::to_value(h.database).unwrap_or_default())
@@ -294,6 +311,7 @@ async fn use_backend(app: &App, to: Backend) -> CliResult {
     check_main_folder(app)?;
     check_online(app).await?;
     let mut moved = None;
+    let lock;
     if to == Backend::Postgres {
         let url = stored_url()?;
         // Fails early on a wrong URL, before anything changes.
@@ -301,7 +319,7 @@ async fn use_backend(app: &App, to: Backend) -> CliResult {
             .await
             .map_err(|e| CliError::Other(format!("{e:#}")))?;
         pg.close().await;
-        stop_server(app).await?;
+        lock = stop_server(app).await?;
         let local = local_issue_count(&app.data_dir).await?;
         if local > 0 {
             app.confirm(&format!(
@@ -310,10 +328,10 @@ async fn use_backend(app: &App, to: Backend) -> CliResult {
         }
         moved = set_aside(&app.data_dir, "before-postgres")?;
     } else {
-        stop_server(app).await?;
+        lock = stop_server(app).await?;
     }
     let config = dbcfg::set_configured_backend(to).map_err(CliError::Other)?;
-    let server = start_server(app).await?;
+    let server = start_server(app, lock).await?;
     app.out.value(json!({
         "backend": to.as_str(),
         "config": config,
@@ -339,7 +357,7 @@ async fn migrate(app: &App, to: Backend, replace: bool) -> CliResult {
         from.as_str(),
         to.as_str()
     ))?;
-    stop_server(app).await?;
+    let lock = stop_server(app).await?;
     let data_dir = &app.data_dir;
     let err = |e: anyhow::Error| CliError::Other(format!("{e:#}"));
     let report = match to {
@@ -398,7 +416,7 @@ async fn migrate(app: &App, to: Backend, replace: bool) -> CliResult {
         None
     };
     let config = dbcfg::set_configured_backend(to).map_err(CliError::Other)?;
-    let server = start_server(app).await?;
+    let server = start_server(app, lock).await?;
     app.out.value(json!({
         "from": from.as_str(),
         "to": to.as_str(),

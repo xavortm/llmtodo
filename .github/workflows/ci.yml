@@ -69,7 +69,9 @@ jobs:
           "$PG/createdb" -h 127.0.0.1 -p 54329 -U llmtodo llmtodo
 
       - name: Test on Postgres
-        run: cargo test -p llmtodo-server --locked
+        run: |
+          cargo test -p llmtodo-server --locked
+          cargo test -p llmtodo-cli --locked --test db_migrate_restart
         env:
           LLMTODO_DATA_DIR: ${{ runner.temp }}/llmtodo-data-pg
           LLMTODO_TEST_POSTGRES_URL: postgres://llmtodo@127.0.0.1:54329/llmtodo
