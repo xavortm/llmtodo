@@ -78,9 +78,9 @@ mod view_events;
 
 pub use bars::{StatusBarView, TitleBarView};
 pub use keys::*;
-pub use update::UpdateButton;
 #[cfg(test)]
-pub(crate) use update::{CHECK_EVERY, GRADIENT_FPS};
+pub(crate) use update::CHECK_EVERY;
+pub use update::UpdateButton;
 
 pub use crate::issues::list::Row;
 pub use crate::task::task_view::Detail;

@@ -155,30 +155,27 @@ fn open_with_update(
     (handle, view, dir)
 }
 
-/// The time between two gradient frames, and a little more.
-fn gradient_frame() -> std::time::Duration {
-    std::time::Duration::from_secs_f32(1. / crate::shell::workspace::GRADIENT_FPS + 0.002)
-}
-
+/// The button is solid, with no animation: while it shows, an idle window
+/// asks for no frames and draws nothing.
 #[gpui_kit::test]
-fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut TestAppContext) {
+fn the_update_button_draws_no_frames_while_it_waits(cx: &mut TestAppContext) {
     let (handle, view, _dir) = open_with_update(cx);
     activate(handle, cx);
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    for _ in 0..3 {
-        // The gradient's timer asks for the next frame, and the platform
-        // draws it.
-        render_count::reset();
-        cx.executor().advance_clock(gradient_frame());
+    let vsync_frames = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.simulate_next_frame(cx)
+        })
+        .unwrap()
+    };
+    assert_eq!(vsync_frames(cx), 0, "no frame on every vsync");
+    render_count::reset();
+    for _ in 0..100 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
         cx.run_until_parked();
-        // Another timer, such as a cursor blink, can land in the same step
-        // and draw the button once more. The list and task view stay at 0.
-        let button = render_count::of::<UpdateButton>();
-        assert!((1..=2).contains(&button), "button drew {button} times");
-        assert_eq!(render_count::of::<IssueList>(), 0);
-        assert_eq!(render_count::of::<TaskView>(), 0);
     }
+    assert_eq!(render_count::of::<UpdateButton>(), 0, "it holds still");
 
     // The button still follows its state: a click says it restarts.
     view.update(cx, |this, cx| {
@@ -193,61 +190,6 @@ fn an_update_button_frame_draws_neither_the_list_nor_the_task_view(cx: &mut Test
     assert!(cx.read(|cx| view.read(cx).update_restarting()));
     assert_eq!(render_count::of::<UpdateButton>(), 1);
     assert_eq!(frame_renders::<UpdateButton>(handle, cx), 0);
-}
-
-/// LLM-344: the gradient draws at most `GRADIENT_FPS` times a second, and
-/// not at all while the window is in the background. It asks for no
-/// frame on vsync.
-#[gpui_kit::test]
-fn the_update_gradient_is_capped_and_rests_in_the_background(cx: &mut TestAppContext) {
-    let (handle, _view, _dir) = open_with_update(cx);
-    activate(handle, cx);
-    let vsync_frames = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            window.simulate_next_frame(cx)
-        })
-        .unwrap()
-    };
-    assert_eq!(vsync_frames(cx), 0, "no frame on every vsync");
-
-    render_count::reset();
-    for _ in 0..100 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(10));
-        cx.run_until_parked();
-    }
-    // Other timers, such as a caret blink, draw the window too, so the
-    // count has room above the cap. Without the cap the gradient would ask
-    // for every vsync, as `vsync_frames` checks.
-    let second = render_count::of::<UpdateButton>();
-    let cap = crate::shell::workspace::GRADIENT_FPS as usize;
-    assert!(
-        (cap / 2..=cap * 2).contains(&second),
-        "{second} gradient frames in a second"
-    );
-
-    deactivate(handle, cx);
-    settle(handle, cx);
-    assert_eq!(vsync_frames(cx), 0);
-    render_count::reset();
-    for _ in 0..200 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(10));
-        cx.run_until_parked();
-    }
-    assert_eq!(render_count::of::<UpdateButton>(), 0, "it holds still");
-
-    // Back in front, it turns again.
-    activate(handle, cx);
-    render_count::reset();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(500));
-    cx.run_until_parked();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(500));
-    cx.run_until_parked();
-    assert!(render_count::of::<UpdateButton>() > 0);
 }
 
 /// The task view's slide-in moves the cached view, so it draws again on

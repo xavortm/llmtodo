@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonCustomVariant;
-use gpui_kit::{
-    Animation, AnimationExt as _, EventEmitter, Hsla, hsla, linear_color_stop, linear_gradient,
-};
+use gpui_kit::{EventEmitter, Hsla, hsla};
 
 use super::*;
 use crate::model::update::{Restart, UpdateWatch};
@@ -18,27 +16,10 @@ pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(30);
 /// How long a restart waits for saves on their way, in steps of 100 ms.
 /// Saves still out after that stay as kept text.
 const SAVE_WAIT_STEPS: u32 = 50;
-/// One full turn of the button's gradient. Slow, so it draws the eye
-/// without looking busy.
-const GRADIENT_TURN: Duration = Duration::from_secs(6);
-/// How often the gradient redraws. At one turn in 6 s it moves 2 degrees a
-/// frame, which still looks smooth, and costs a quarter of a 120 Hz display.
-pub(crate) const GRADIENT_FPS: f32 = 30.;
-
-/// The button is bright yellow in both themes: the one exception to the
+/// The button is solid gold in both themes: the one exception to the
 /// monochrome rule. The text stays dark on it.
-fn yellow(lightness: f32) -> Hsla {
-    hsla(48. / 360., 0.96, lightness, 1.)
-}
-const AMBER_HUE: f32 = 40. / 360.;
-
-/// The gradient at `delta` of a turn: its angle goes once around.
-fn update_gradient(delta: f32) -> gpui_kit::Background {
-    linear_gradient(
-        90. + 360. * delta,
-        linear_color_stop(yellow(0.62), 0.),
-        linear_color_stop(hsla(AMBER_HUE, 0.96, 0.53, 1.), 1.),
-    )
+fn gold(lightness: f32) -> Hsla {
+    hsla(45. / 360., 0.92, lightness, 1.)
 }
 
 pub struct UpdateState {
@@ -52,8 +33,8 @@ pub struct UpdateState {
     restarting: bool,
     /// Starts the helper. Tests record the restart instead.
     launch: fn(&Restart) -> std::io::Result<()>,
-    /// The title bar button, as its own view, so a frame of its gradient
-    /// draws only the button and the workspace, not the cached views.
+    /// The title bar button, as its own view, so a change to it draws
+    /// only the button and the workspace, not the cached views.
     button: Entity<UpdateButton>,
     _poll: gpui_kit::Task<()>,
     _click: gpui_kit::Subscription,
@@ -64,14 +45,6 @@ pub struct UpdateState {
 pub struct UpdateButton {
     commit: Option<String>,
     restarting: bool,
-    /// Where the gradient was in the last animated frame. While the window
-    /// is in the background, the button holds it still.
-    turn: std::rc::Rc<std::cell::Cell<f32>>,
-    /// Where the running animation started. Back in front, the gradient
-    /// goes on from where it stopped.
-    turn_from: f32,
-    /// The window was in front in the last render.
-    animating: bool,
 }
 
 pub struct RestartClicked;
@@ -125,9 +98,6 @@ impl Workspace {
         let button = cx.new(|_| UpdateButton {
             commit: None,
             restarting: false,
-            turn: Default::default(),
-            turn_from: 0.,
-            animating: false,
         });
         let click = cx.subscribe(&button, |this, _, _: &RestartClicked, cx| {
             this.restart_to_update(cx)
@@ -282,7 +252,7 @@ impl Workspace {
 }
 
 impl Render for UpdateButton {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::render_count::bump::<Self>();
         let Some(commit) = &self.commit else {
@@ -293,10 +263,10 @@ impl Render for UpdateButton {
         let button = Button::new("restart-update")
             .custom(
                 ButtonCustomVariant::new(cx)
-                    .color(yellow(0.55))
+                    .color(gold(0.55))
                     .foreground(hsla(0., 0., 0.1, 1.))
-                    .hover(yellow(0.68))
-                    .active(hsla(AMBER_HUE, 0.96, 0.45, 1.)),
+                    .hover(gold(0.63))
+                    .active(gold(0.47)),
             )
             .xsmall()
             .icon(IconName::RefreshCw)
@@ -307,39 +277,6 @@ impl Render for UpdateButton {
             })
             .disabled(self.restarting)
             .on_click(cx.listener(|_, _, _, cx| cx.emit(RestartClicked)));
-        // The animation runs only while the button renders, so it costs
-        // nothing when no update is ready. Each frame notifies this view
-        // only, and the workspace draws its cached views from their cache.
-        // It runs at `GRADIENT_FPS`, and only while the window is in front:
-        // in the background the gradient holds still and asks for no
-        // frames. A change of window activation draws the window again.
-        let active = window.is_window_active();
-        if active && !self.animating {
-            // The animation starts again from 0, as its element state went
-            // with the frames that did not draw it.
-            self.turn_from = self.turn.get();
-        }
-        self.animating = active;
-        let button = if active {
-            let (turn, from) = (self.turn.clone(), self.turn_from);
-            button
-                .with_animation(
-                    "restart-update-gradient",
-                    Animation::new(GRADIENT_TURN)
-                        .repeat()
-                        .with_max_fps(GRADIENT_FPS),
-                    move |button, delta| {
-                        let at = (from + delta).fract();
-                        turn.set(at);
-                        button.bg(update_gradient(at))
-                    },
-                )
-                .into_any_element()
-        } else {
-            button
-                .bg(update_gradient(self.turn.get()))
-                .into_any_element()
-        };
         crate::shell::tooltip::with_card(
             "restart-update-tip",
             button,
