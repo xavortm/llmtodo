@@ -1118,3 +1118,28 @@ async fn projects_have_an_icon_and_a_color() {
     assert!(names.iter().all(|n| n.contains("rocket")));
     t.stop().await;
 }
+
+/// LLM-461: the database choice belongs to the main data folder. A test or
+/// preview folder reports SQLite and refuses to switch, so it can never
+/// write to a shared database by mistake.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_of_its_own_keeps_its_sqlite_file() {
+    let t = T::new().await;
+    let s = t.json("s1", &["db", "status"]);
+    assert_eq!(s["configured"], "sqlite");
+    assert_eq!(s["applies_here"], false);
+    assert_eq!(s["server"]["backend"], "sqlite");
+    assert_eq!(t.code("s1", &["-y", "db", "use", "postgres"]), 6);
+    assert_eq!(
+        t.code("s1", &["-y", "db", "migrate", "--to", "postgres"]),
+        6
+    );
+    // The URL check runs before the Keychain.
+    let out = t
+        .bare_cmd("s1", &["db", "set-url"])
+        .write_stdin("mysql://user@host/db\n")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6));
+    t.stop().await;
+}

@@ -28,6 +28,8 @@ use gpui_kit::{
     prelude::FluentBuilder as _, rems,
 };
 
+use llmtodo_api_types::{DatabaseBackend, DatabaseInfo};
+
 use crate::model::data::hide_cutoff;
 use crate::model::store::IssueStore;
 use crate::settings::{MAX_HIDE_DAYS, UiSettings};
@@ -203,6 +205,7 @@ pub struct SettingsView {
     scroll: ScrollHandle,
     /// Why changes do not reach `config.toml`, such as a read-only file.
     config_note: Option<SharedString>,
+    database: Option<DatabaseInfo>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -298,6 +301,7 @@ impl SettingsView {
             zoom,
             scroll: ScrollHandle::new(),
             config_note: None,
+            database: None,
             _subscriptions: subscriptions,
         }
     }
@@ -321,6 +325,19 @@ impl SettingsView {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn zoom_input(&self) -> &Entity<InputState> {
         &self.zoom
+    }
+
+    /// The database the server opened, shown at the end of the form.
+    pub fn set_database(&mut self, database: Option<DatabaseInfo>, cx: &mut Context<Self>) {
+        if self.database != database {
+            self.database = database;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn database_line(&self) -> Option<SharedString> {
+        self.database.as_ref().map(database_line)
     }
 
     /// Shows `note` under the heading, or nothing for `None`.
@@ -877,10 +894,51 @@ impl Render for SettingsView {
                                     .child(note),
                             )
                         })
-                        .children(rows),
+                        .children(rows)
+                        .when_some(self.database.as_ref(), |el, db| {
+                            el.child(render_database(db, cx))
+                        }),
                 ),
             )
     }
+}
+
+/// What the Database section says about the server's database.
+fn database_line(db: &DatabaseInfo) -> SharedString {
+    match (db.backend, db.host.as_deref()) {
+        (DatabaseBackend::Postgres, Some(host)) => format!("Shared Postgres: {host}").into(),
+        (DatabaseBackend::Postgres, None) => "Shared Postgres".into(),
+        (DatabaseBackend::Sqlite, _) => "Local SQLite file".into(),
+    }
+}
+
+/// The read-only Database section. The choice changes in the terminal,
+/// because it moves data and stores a password.
+fn render_database(db: &DatabaseInfo, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    v_flex()
+        .id("settings-database")
+        .mt_4()
+        .px_3()
+        .pt_4()
+        .gap_1()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(div().text_sm().child("Database"))
+        .child(
+            div()
+                .id("settings-database-line")
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(database_line(db)),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child("Change it with llmtodo db in a terminal."),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

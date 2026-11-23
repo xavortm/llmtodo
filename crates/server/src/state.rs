@@ -26,6 +26,9 @@ pub struct Inner {
     pub pool_slot: std::sync::RwLock<Pool>,
     /// This machine's name, as the sync manifest records it.
     pub host: String,
+    /// The shared database's host, port and name, with no credentials.
+    /// `None` on SQLite.
+    pub database_host: Option<String>,
     pub data_dir: PathBuf,
     pub events: broadcast::Sender<WsMessage>,
     /// The highest activity seq sent on `events`. A commit holds this lock

@@ -2,6 +2,7 @@ pub mod activity;
 pub mod actors;
 pub mod api;
 pub mod app;
+pub mod db;
 pub mod documents;
 pub mod files;
 pub mod github;

@@ -45,12 +45,22 @@ pub async fn run(app: &App, cmd: ServerCmd) -> CliResult {
     match cmd {
         ServerCmd::Run { port, no_github } => {
             let _guard = llmtodo_server::init_logging(&app.data_dir);
+            // The server never falls back to SQLite when the config asks
+            // for Postgres and no connection string is stored.
+            let database = match llmtodo_client::database::choose(&app.data_dir)
+                .map_err(CliError::Validation)?
+            {
+                llmtodo_client::database::Choice::Sqlite => llmtodo_server::Database::Sqlite,
+                llmtodo_client::database::Choice::Postgres { url } => {
+                    llmtodo_server::Database::Postgres { url }
+                }
+            };
             llmtodo_server::run(llmtodo_server::Config {
                 data_dir: app.data_dir.clone(),
                 port,
                 host: None,
                 github_poll: !no_github,
-                database: llmtodo_server::Database::Sqlite,
+                database,
             })
             .await?;
         }

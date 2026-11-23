@@ -227,7 +227,19 @@ async fn set_state(st: &AppState, generation: i64, primary: bool, clear: Clear) 
     Ok(())
 }
 
+/// Laptop handoff moves a SQLite file. A shared database needs none, so the
+/// sync commands refuse there (LLM-461).
+fn only_sqlite(st: &AppState) -> ApiResult<()> {
+    if st.pool().backend() == crate::store::backend::Backend::Postgres {
+        return Err(ApiError::validation(
+            "this server uses a shared Postgres database, so every laptop already sees the same data; `llmtodo sync` is only for the local SQLite file",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn status(st: &AppState) -> ApiResult<SyncStatus> {
+    only_sqlite(st)?;
     let f = folder(st, None).await.ok();
     let remote = match &f {
         Some(f) => read_manifest_bounded(f.clone()).await?,
@@ -244,6 +256,7 @@ pub async fn status(st: &AppState) -> ApiResult<SyncStatus> {
 }
 
 pub async fn push(st: &AppState, req: SyncPushRequest) -> ApiResult<SyncReport> {
+    only_sqlite(st)?;
     let f = folder(st, req.folder.as_deref()).await?;
     std::fs::create_dir_all(&f)
         .map_err(|e| ApiError::internal(format!("create {}: {e}", f.display())))?;
@@ -370,6 +383,7 @@ async fn swap_in(st: &AppState, staging: &Path) -> ApiResult<PathBuf> {
 }
 
 pub async fn pull(st: &AppState, req: SyncPullRequest) -> ApiResult<SyncReport> {
+    only_sqlite(st)?;
     let f = folder(st, req.folder.as_deref()).await?;
     let mut manifest = read_manifest(&f)?
         .ok_or_else(|| ApiError::not_found("sync copy", &f.display().to_string()))?;

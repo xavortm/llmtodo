@@ -104,6 +104,10 @@ pub enum Cmd {
     /// Hand the database to another laptop through a shared folder.
     #[command(subcommand)]
     Sync(commands::sync::SyncCmd),
+    /// Choose the database: the local SQLite file, or a shared Postgres
+    /// database such as Neon, for several laptops at once.
+    #[command(subcommand)]
+    Db(commands::db::DbCmd),
     /// GitHub sync: PRs and commits on linked repos.
     #[command(subcommand)]
     Github(commands::github::GithubCmd),
@@ -450,6 +454,7 @@ async fn run(cli: Cli, out: Out) -> CliResult {
         Cmd::App => commands::app::run(&app),
         Cmd::Server(c) => commands::server::run(&app, c).await,
         Cmd::Sync(c) => commands::sync::run(&app, c).await,
+        Cmd::Db(c) => commands::db::run(&app, c).await,
         Cmd::Github(c) => commands::github::run(&app, c).await,
         Cmd::Import(c) => commands::import::run(&app, c).await,
         Cmd::File(c) => commands::files::run(&app, c).await,

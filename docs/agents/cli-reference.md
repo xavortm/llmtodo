@@ -753,6 +753,34 @@ Replace the local database with the sync copy and become the primary. A backup i
 - `--force` (one of: true, false): Drop this machine's unpushed writes
 - `--folder <folder>`
 
+### `llmtodo db status`
+
+Show the configured database and the one the server opened
+
+
+### `llmtodo db set-url`
+
+Store the shared database's connection string in the macOS Keychain. It reads the string from stdin, so it never shows in the shell history: `op read op://vault/item/url | llmtodo db set-url`
+
+
+### `llmtodo db clear-url`
+
+Remove the stored connection string
+
+
+### `llmtodo db use`
+
+Switch to a database without copying data. `postgres` joins a shared database that already holds the workspace: the local SQLite file moves to `backups/`, untouched
+
+- `<backend>` (one of: sqlite, postgres)
+
+### `llmtodo db migrate`
+
+Copy the whole workspace to the other database, then switch to it. A backup is written first. The source stays as it is, except that a local SQLite file moves to `backups/` after a move to Postgres
+
+- `--to <to>` (required; one of: sqlite, postgres): The database to copy to
+- `--replace` (one of: true, false): Write over a target that already holds issues
+
 ### `llmtodo github sync`
 
 Poll linked repos now, instead of waiting for the next poll

@@ -10,7 +10,9 @@ impl Workspace {
     /// Applies one message from the API thread.
     pub fn apply_event(&mut self, event: backend::Event, cx: &mut Context<Self>) {
         match event {
-            backend::Event::Connected { url } => {
+            backend::Event::Connected { url, database } => {
+                let view = self.settings_view.clone();
+                cx.defer(move |cx| view.update(cx, |view, cx| view.set_database(database, cx)));
                 self.store.update(cx, |store, _| {
                     store.touch_all();
                     store.server_url = Some(url.clone().into());

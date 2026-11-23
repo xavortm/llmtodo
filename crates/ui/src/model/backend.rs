@@ -220,6 +220,9 @@ pub enum Request {
 pub enum Event {
     Connected {
         url: String,
+        /// The database the server opened, for Settings (LLM-461). `None`
+        /// when the health check failed right after connecting.
+        database: Option<llmtodo_api_types::DatabaseInfo>,
     },
     /// The server cannot be reached. The thread keeps retrying.
     Offline {
@@ -689,10 +692,12 @@ async fn session(
     // hello and the snapshot below is lost.
     let hello_seq = live.hello_seq;
 
+    let database = client.health().await.ok().map(|h| h.database);
     send(
         events,
         Event::Connected {
             url: client.base_url().to_string(),
+            database,
         },
     );
     state.connected_once = true;

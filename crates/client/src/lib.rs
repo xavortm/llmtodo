@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod data_dir;
+pub mod database;
 pub mod git;
 pub mod identity;
 pub mod live;
