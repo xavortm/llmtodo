@@ -158,7 +158,7 @@ pub enum Write {
     SetOrder(llmtodo_api_types::SetOrder),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Request {
     Write {
         key: String,
@@ -676,56 +676,86 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                 _ = &mut sleep => break,
                 r = requests.recv() => match r {
                     None => return,
-                    Some(Request::Write { key, kind, .. }) => {
-                        send(&events, Event::WriteFailed {
-                            key: key.clone(),
-                            kind,
-                            message: state.nothing_saved().into(),
-                            stale: false,
-                            summary: None,
-                        });
-                        state.pending.owe(key);
-                    }
-                    Some(Request::Fetch { key }) => {
-                        state.pending.owe(key);
-                    }
-                    Some(Request::Open { id }) => state.open = id,
-                    Some(Request::ViewIssues { name } | Request::DeleteView { name }) => {
-                        send(&events, Event::ViewFailed {
-                            name,
-                            message: "the server is offline".into(),
-                        });
-                    }
-                    Some(Request::SyncStatus | Request::History { .. } | Request::Document { .. }) => {}
-                    Some(Request::ProbeTeams { data_dir }) => probe_teams(data_dir, &events),
-                    Some(Request::SaveDocument { id, .. }) => {
-                        send(&events, Event::DocumentFailed {
-                            id,
-                            message: state.nothing_saved().into(),
-                            stale: false,
-                        });
-                    }
-                    Some(Request::Create(c)) => {
-                        send(&events, Event::CreateFailed {
-                            title: c.title,
-                            message: "the server is offline, so nothing was created".into(),
-                        });
-                    }
-                    Some(Request::CreateView(c)) => {
-                        send(&events, Event::ViewFailed {
-                            name: c.name,
-                            message: state.nothing_saved().into(),
-                        });
-                    }
-                    Some(Request::SetProjectColor { slug, .. }) => {
-                        send(&events, Event::ProjectFailed {
-                            slug,
-                            message: state.nothing_saved().into(),
-                        });
-                    }
                     Some(Request::Reload) => break,
+                    Some(request) => refuse(request, &mut state, &events),
                 },
             }
+        }
+    }
+}
+
+/// Answers a request the thread cannot send, because the server is offline
+/// or stopped answering while the request ran. A write fails, so the owner
+/// sees it, and its issue is owed: the next connect fetches it again, which
+/// undoes the app's early change or shows a change the server did save. A
+/// reload is the caller's to handle.
+fn refuse(request: Request, state: &mut State, events: &Events) {
+    match request {
+        Request::Write { key, kind, .. } => {
+            send(
+                events,
+                Event::WriteFailed {
+                    key: key.clone(),
+                    kind,
+                    message: state.nothing_saved().into(),
+                    stale: false,
+                    summary: None,
+                },
+            );
+            state.pending.owe(key);
+        }
+        Request::Fetch { key } => state.pending.owe(key),
+        Request::Open { id } => state.open = id,
+        Request::ViewIssues { name } | Request::DeleteView { name } => {
+            send(
+                events,
+                Event::ViewFailed {
+                    name,
+                    message: "the server is offline".into(),
+                },
+            );
+        }
+        Request::Reload
+        | Request::SyncStatus
+        | Request::History { .. }
+        | Request::Document { .. } => {}
+        Request::ProbeTeams { data_dir } => probe_teams(data_dir, events),
+        Request::SaveDocument { id, .. } => {
+            send(
+                events,
+                Event::DocumentFailed {
+                    id,
+                    message: state.nothing_saved().into(),
+                    stale: false,
+                },
+            );
+        }
+        Request::Create(c) => {
+            send(
+                events,
+                Event::CreateFailed {
+                    title: c.title,
+                    message: "the server is offline, so nothing was created".into(),
+                },
+            );
+        }
+        Request::CreateView(c) => {
+            send(
+                events,
+                Event::ViewFailed {
+                    name: c.name,
+                    message: state.nothing_saved().into(),
+                },
+            );
+        }
+        Request::SetProjectColor { slug, .. } => {
+            send(
+                events,
+                Event::ProjectFailed {
+                    slug,
+                    message: state.nothing_saved().into(),
+                },
+            );
         }
     }
 }
@@ -853,6 +883,9 @@ async fn session(
     );
     state.connected_once = true;
     state.connected = true;
+    // The reason the last session ended no longer holds. A request cut in
+    // this session says it from scratch.
+    state.offline_reason = None;
     state.spawned_at = None;
     // A pull or push on this machine reopens the database, which drops the
     // live connection, so a reconnect is the moment the role can change.
@@ -868,7 +901,16 @@ async fn session(
         }
         flush(&client, &mut state.pending, open, events).await
     };
-    tokio::try_join!(primary(&client, events), load).map_err(Lost::from)?;
+    // The live socket is watched while the first load runs, so a server
+    // that stops answering ends the session within the ping window, not
+    // after the client's request timeout (LLM-475). Work the load did not
+    // finish stays in `pending` for the next connect.
+    let mut held = Held::default();
+    watched(&mut live, &mut held, async {
+        tokio::try_join!(primary(&client, events), load)
+    })
+    .await?
+    .map_err(Lost::from)?;
     state.last_seq = Some(hello_seq);
 
     // Refreshes run on their own task, so the owner's writes never wait
@@ -878,6 +920,13 @@ async fn session(
     // arrives and never moved, so a steady stream of events still flushes.
     let mut due: Option<tokio::time::Instant> = None;
     loop {
+        // Signals that arrived while a request ran, in order.
+        while let Some(signal) = held.signals.pop_front() {
+            on_signal(signal, &mut live, &mut held, &client, state, events).await?;
+        }
+        if let Some(reason) = held.lost.take() {
+            return Err(reason.into());
+        }
         if state.pending.is_empty() {
             due = None;
         } else if due.is_none() {
@@ -887,123 +936,34 @@ async fn session(
         tokio::select! {
             // The owner's requests come first.
             biased;
-            r = requests.recv() => match r {
-                None => return Ok(()),
-                Some(Request::Reload) => snapshot(&client, events).await?,
-                Some(Request::Fetch { key }) => {
-                    if let Err(e) = refresh(&client, &key, events).await {
-                        state.pending.owe(key);
-                        return Err(e.into());
-                    }
-                }
-                Some(Request::Open { id }) => state.open = id,
-                Some(Request::Write { key, write, kind }) => {
-                    let open = state.open;
-                    if let Err(e) = apply_write(&client, &key, write, kind, open, events).await {
-                        state.pending.owe(key);
-                        return Err(e.into());
-                    }
-                }
-                Some(Request::ViewIssues { name }) => view_issues(&client, name, events).await?,
-                Some(Request::ProbeTeams { data_dir }) => probe_teams(data_dir, events),
-                Some(Request::SyncStatus) => primary(&client, events).await?,
-                Some(Request::Document { id }) => match client.document(&id.to_string()).await {
-                    Ok(doc) => send(events, Event::Document(Box::new(doc))),
-                    Err(e) if fatal(&e) => return Err(lost(e).into()),
-                    Err(e) => send(events, Event::DocumentFailed {
-                        id,
-                        message: e.to_string(),
-                        stale: false,
-                    }),
-                },
-                Some(Request::SaveDocument { id, body, base, force }) => {
-                    let update = UpdateDocument {
-                        title: None,
-                        body: BodyChange {
-                            body: Some(body),
-                            base_version: (!force).then_some(base),
-                            force,
-                            patches: Vec::new(),
-                        },
-                    };
-                    match client.update_document(&id.to_string(), &update).await {
-                        Ok(doc) => send(events, Event::DocumentSaved(Box::new(doc))),
-                        Err(e) if fatal(&e) => {
-                            let e = lost(e);
-                            send(events, Event::DocumentFailed {
-                                id,
-                                message: "the server is offline, so nothing was saved".into(),
-                                stale: false,
-                            });
-                            return Err(e.into());
+            r = requests.recv() => {
+                let Some(request) = r else { return Ok(()) };
+                // A copy, to answer the request when the server stops
+                // answering before it does.
+                let copy = request.clone();
+                let mut settled = false;
+                let ran = watched(
+                    &mut live,
+                    &mut held,
+                    handle(request, &client, state, events, &mut settled),
+                )
+                .await;
+                match ran {
+                    Ok(done) => done?,
+                    Err(lost) => {
+                        // A write that was cut fails and is owed, so it is
+                        // never lost without a word. A cut reload runs on
+                        // the next connect.
+                        if !settled {
+                            match copy {
+                                Request::Reload => state.pending.reload = true,
+                                request => refuse(request, state, events),
+                            }
                         }
-                        Err(e) => send(events, Event::DocumentFailed {
-                            id,
-                            stale: e.code() == ErrorCode::StaleVersion,
-                            message: e.to_string(),
-                        }),
+                        return Err(lost);
                     }
                 }
-                Some(Request::History { key }) => {
-                    let (client, events) = (client.clone(), events.clone());
-                    // Its own task, like a flush. A lost connection ends
-                    // the session through the live socket.
-                    tokio::spawn(async move { history(&client, key, &events).await });
-                }
-                Some(Request::Create(c)) => match client.create_issue(&c).await {
-                    Ok(detail) => {
-                        let (id, key) = (detail.issue.id, detail.issue.key.to_string());
-                        send_detail(&client, detail, events).await;
-                        send(events, Event::Created { id, key });
-                    }
-                    Err(e) if fatal(&e) => {
-                            let e = lost(e);
-                        send(events, Event::CreateFailed {
-                            title: c.title.clone(),
-                            message: "the server is offline, so nothing was created".into(),
-                        });
-                        return Err(e.into());
-                    }
-                    Err(e) => {
-                        let not_primary = e.code() == ErrorCode::NotPrimary;
-                        send(events, Event::CreateFailed {
-                            title: c.title.clone(),
-                            message: e.to_string(),
-                        });
-                        if not_primary {
-                            primary(&client, events).await?;
-                        }
-                    }
-                },
-                Some(Request::CreateView(c)) => {
-                    let name = c.name.clone();
-                    let event = match client.create_view(&c).await {
-                        Ok(_) => Event::ViewSaved { name },
-                        Err(e) if fatal(&e) => return Err(lost(e).into()),
-                        Err(e) => Event::ViewFailed { name, message: e.to_string() },
-                    };
-                    send(events, event);
-                }
-                Some(Request::DeleteView { name }) => {
-                    let event = match client.delete_view(&name).await {
-                        Ok(_) => Event::ViewDeleted { name },
-                        Err(e) if fatal(&e) => return Err(lost(e).into()),
-                        Err(e) => Event::ViewFailed { name, message: e.to_string() },
-                    };
-                    send(events, event);
-                }
-                Some(Request::SetProjectColor { slug, color }) => {
-                    let update = llmtodo_client::types::UpdateProject {
-                        color: Some(color.unwrap_or_default()),
-                        ..Default::default()
-                    };
-                    match client.update_project(&slug, &update).await {
-                        Ok(_) => {}
-                        Err(e) if fatal(&e) => return Err(lost(e).into()),
-                        Err(e) => send(events, Event::ProjectFailed { slug, message: e.to_string() }),
-                    }
-                }
-            },
+            }
             done = async { (&mut flushing.as_mut().expect("a running flush").0).await },
                 if flushing.is_some() =>
             {
@@ -1016,25 +976,9 @@ async fn session(
                     Err(e) => return Err(format!("refresh task: {e}").into()),
                 }
             }
-            signal = live.next() => match signal? {
-                live::Signal::Event(event) => {
-                    state.last_seq = Some(event.seq);
-                    state.pending.add(&event);
-                }
-                live::Signal::Reload => state.pending.reload = true,
-                live::Signal::Sync(sync) => send(events, Event::Sync(sync)),
-                // The server dropped some events for this socket. Read them
-                // from the activity log, which costs far less than a full
-                // snapshot. Later events on the socket may repeat some of
-                // them, and `pending` holds each issue once.
-                live::Signal::Lagged => match state.last_seq {
-                    Some(after) => {
-                        let last = catch_up(&client, after, &mut state.pending).await?;
-                        state.last_seq = Some(last.max(after));
-                    }
-                    None => state.pending.reload = true,
-                },
-            },
+            signal = live.next() => {
+                on_signal(signal?, &mut live, &mut held, &client, state, events).await?;
+            }
             _ = settle, if due.is_some() && flushing.is_none() => {
                 due = None;
                 let mut work = std::mem::take(&mut state.pending);
@@ -1050,6 +994,254 @@ async fn session(
             }
         }
     }
+}
+
+/// What the live socket said while the thread waited for a request.
+#[derive(Default)]
+struct Held {
+    /// Signals, in order.
+    signals: std::collections::VecDeque<live::Signal>,
+    /// Why the socket closed, when the request still finished after it.
+    /// The session ends with it once the signals before it are handled.
+    lost: Option<String>,
+}
+
+/// Runs `work` while it reads the live socket, so its ping goes on. The
+/// signals that arrive meanwhile wait in `held`. When the server stops
+/// answering the ping, the work is cut at once and the reason comes back.
+/// Without this, a silent server holds a request until the client's
+/// request timeout (LLM-475).
+///
+/// A socket that closes, such as on a server's restart, gives the work one
+/// ping window more: a server that stops gracefully still answers the
+/// requests it holds. The reason then waits in `held.lost`.
+async fn watched<T>(
+    live: &mut live::Connection,
+    held: &mut Held,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, Lost> {
+    if let Some(reason) = held.lost.take() {
+        return Err(reason.into());
+    }
+    tokio::pin!(work);
+    let reason = loop {
+        tokio::select! {
+            // Work that is done wins over a ping that fails at the same time.
+            biased;
+            out = &mut work => return Ok(out),
+            signal = live.next() => match signal {
+                Ok(signal) => held.signals.push_back(signal),
+                Err(reason) => break reason,
+            },
+        }
+    };
+    if live.is_silent() {
+        return Err(reason.into());
+    }
+    match tokio::time::timeout(PING_EVERY * 2, work).await {
+        Ok(out) => {
+            held.lost = Some(reason);
+            Ok(out)
+        }
+        Err(_) => Err(reason.into()),
+    }
+}
+
+/// Acts on one live signal. A catch-up read watches the socket too.
+async fn on_signal(
+    signal: live::Signal,
+    live: &mut live::Connection,
+    held: &mut Held,
+    client: &Client,
+    state: &mut State,
+    events: &Events,
+) -> Result<(), Lost> {
+    match signal {
+        live::Signal::Event(event) => {
+            state.last_seq = Some(event.seq);
+            state.pending.add(&event);
+        }
+        live::Signal::Reload => state.pending.reload = true,
+        live::Signal::Sync(sync) => send(events, Event::Sync(sync)),
+        // The server dropped some events for this socket. Read them from
+        // the activity log, which costs far less than a full snapshot.
+        // Later events on the socket may repeat some of them, and `pending`
+        // holds each issue once.
+        live::Signal::Lagged => match state.last_seq {
+            Some(after) => {
+                let last =
+                    watched(live, held, catch_up(client, after, &mut state.pending)).await??;
+                state.last_seq = Some(last.max(after));
+            }
+            None => state.pending.reload = true,
+        },
+    }
+    Ok(())
+}
+
+/// Sends one of the owner's requests. `settled` turns true once the app
+/// has heard how a write or a create ended, so a cut after that point
+/// does not report it again.
+async fn handle(
+    request: Request,
+    client: &Client,
+    state: &mut State,
+    events: &Events,
+    settled: &mut bool,
+) -> Result<(), Lost> {
+    match request {
+        Request::Reload => snapshot(client, events).await?,
+        Request::Fetch { key } => {
+            if let Err(e) = refresh(client, &key, events).await {
+                state.pending.owe(key);
+                return Err(e.into());
+            }
+        }
+        Request::Open { id } => state.open = id,
+        Request::Write { key, write, kind } => {
+            let open = state.open;
+            if let Err(e) = apply_write(client, &key, write, kind, open, events, settled).await {
+                state.pending.owe(key);
+                return Err(e.into());
+            }
+        }
+        Request::ViewIssues { name } => view_issues(client, name, events).await?,
+        Request::ProbeTeams { data_dir } => probe_teams(data_dir, events),
+        Request::SyncStatus => primary(client, events).await?,
+        Request::Document { id } => match client.document(&id.to_string()).await {
+            Ok(doc) => send(events, Event::Document(Box::new(doc))),
+            Err(e) if fatal(&e) => return Err(lost(e).into()),
+            Err(e) => send(
+                events,
+                Event::DocumentFailed {
+                    id,
+                    message: e.to_string(),
+                    stale: false,
+                },
+            ),
+        },
+        Request::SaveDocument {
+            id,
+            body,
+            base,
+            force,
+        } => {
+            let update = UpdateDocument {
+                title: None,
+                body: BodyChange {
+                    body: Some(body),
+                    base_version: (!force).then_some(base),
+                    force,
+                    patches: Vec::new(),
+                },
+            };
+            match client.update_document(&id.to_string(), &update).await {
+                Ok(doc) => send(events, Event::DocumentSaved(Box::new(doc))),
+                Err(e) if fatal(&e) => {
+                    let e = lost(e);
+                    send(
+                        events,
+                        Event::DocumentFailed {
+                            id,
+                            message: "the server is offline, so nothing was saved".into(),
+                            stale: false,
+                        },
+                    );
+                    return Err(e.into());
+                }
+                Err(e) => send(
+                    events,
+                    Event::DocumentFailed {
+                        id,
+                        stale: e.code() == ErrorCode::StaleVersion,
+                        message: e.to_string(),
+                    },
+                ),
+            }
+        }
+        Request::History { key } => {
+            let (client, events) = (client.clone(), events.clone());
+            // Its own task, like a flush. A lost connection ends
+            // the session through the live socket.
+            tokio::spawn(async move { history(&client, key, &events).await });
+        }
+        Request::Create(c) => {
+            let created = client.create_issue(&c).await;
+            *settled = true;
+            match created {
+                Ok(detail) => {
+                    let (id, key) = (detail.issue.id, detail.issue.key.to_string());
+                    send_detail(client, detail, events).await;
+                    send(events, Event::Created { id, key });
+                }
+                Err(e) if fatal(&e) => {
+                    let e = lost(e);
+                    send(
+                        events,
+                        Event::CreateFailed {
+                            title: c.title.clone(),
+                            message: "the server is offline, so nothing was created".into(),
+                        },
+                    );
+                    return Err(e.into());
+                }
+                Err(e) => {
+                    let not_primary = e.code() == ErrorCode::NotPrimary;
+                    send(
+                        events,
+                        Event::CreateFailed {
+                            title: c.title.clone(),
+                            message: e.to_string(),
+                        },
+                    );
+                    if not_primary {
+                        primary(client, events).await?;
+                    }
+                }
+            }
+        }
+        Request::CreateView(c) => {
+            let name = c.name.clone();
+            let event = match client.create_view(&c).await {
+                Ok(_) => Event::ViewSaved { name },
+                Err(e) if fatal(&e) => return Err(lost(e).into()),
+                Err(e) => Event::ViewFailed {
+                    name,
+                    message: e.to_string(),
+                },
+            };
+            send(events, event);
+        }
+        Request::DeleteView { name } => {
+            let event = match client.delete_view(&name).await {
+                Ok(_) => Event::ViewDeleted { name },
+                Err(e) if fatal(&e) => return Err(lost(e).into()),
+                Err(e) => Event::ViewFailed {
+                    name,
+                    message: e.to_string(),
+                },
+            };
+            send(events, event);
+        }
+        Request::SetProjectColor { slug, color } => {
+            let update = llmtodo_client::types::UpdateProject {
+                color: Some(color.unwrap_or_default()),
+                ..Default::default()
+            };
+            match client.update_project(&slug, &update).await {
+                Ok(_) => {}
+                Err(e) if fatal(&e) => return Err(lost(e).into()),
+                Err(e) => send(
+                    events,
+                    Event::ProjectFailed {
+                        slug,
+                        message: e.to_string(),
+                    },
+                ),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Sends an issue's field changes and description versions, without the
@@ -1701,6 +1893,7 @@ async fn apply_write(
     kind: WriteKind,
     open: Option<IssueId>,
     events: &Events,
+    settled: &mut bool,
 ) -> Result<(), String> {
     // A failed order write undoes the app's early steps on every task in it.
     let mut undo = vec![key.to_string()];
@@ -1757,6 +1950,7 @@ async fn apply_write(
                 Some(d) if Some(d.issue.id) == open => send_detail(client, d, events).await,
                 _ => send(events, Event::Issue(Box::new(issue))),
             }
+            *settled = true;
             send(
                 events,
                 Event::WriteDone {
@@ -1769,6 +1963,7 @@ async fn apply_write(
         }
         Err(err) => {
             let unreachable = fatal(&err);
+            *settled = true;
             send(
                 events,
                 Event::WriteFailed {
