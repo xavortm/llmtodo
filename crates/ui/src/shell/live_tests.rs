@@ -642,8 +642,18 @@ fn backend_notices_a_silent_server() {
     let live = Live::new();
     let proxy = live.proxy();
     let (_backend, mut events) = live.backend();
-    live.wait(&mut events, "snapshot", |e| {
-        matches!(e, Event::Snapshot(_)).then_some(())
+    // The first snapshot arrives while the rest of the load and the primary
+    // check are still in flight, and the thread watches the ping only once
+    // the whole load is done. A freeze before that holds a request until its
+    // HTTP timeout (LLM-473), so wait for both.
+    let (mut rest, mut primary) = (false, false);
+    live.wait(&mut events, "the whole first load", |e| {
+        match e {
+            Event::SnapshotRest(_) => rest = true,
+            Event::Primary { .. } => primary = true,
+            _ => {}
+        }
+        (rest && primary).then_some(())
     });
 
     proxy.freeze(true);
