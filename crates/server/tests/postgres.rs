@@ -192,7 +192,7 @@ async fn both_schemas_have_the_same_tables_and_columns() {
     let url = llmtodo_server::db::create_test_database(&admin)
         .await
         .unwrap();
-    let pg = llmtodo_server::db::open_postgres(&url).await.unwrap();
+    let pg = llmtodo_server::db::open_postgres(&url, None).await.unwrap();
     assert_eq!(tables(&sqlite).await, tables(&pg).await);
 }
 
@@ -402,4 +402,196 @@ async fn one_server_holds_a_job_lock_at_a_time() {
     drop(taken);
     a.stop().await;
     b.stop().await;
+}
+
+/// Every row of every table on a SQLite pool, as text, sorted, without the
+/// laptop handoff settings, which stay with their file.
+async fn sqlite_rows(pool: &Pool) -> BTreeMap<String, Vec<String>> {
+    let tables: Vec<String> = backend::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+         AND name NOT LIKE 'search_fts%' AND name NOT LIKE 'issues_trgm%'
+         AND name NOT IN ('_sqlx_migrations', 'search_rows', 'dep_graph_token')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut out = BTreeMap::new();
+    for t in tables {
+        let cols: Vec<String> = backend::query_scalar("SELECT name FROM pragma_table_info(?)")
+            .bind(&t)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let expr = cols
+            .iter()
+            .map(|c| format!("quote({c})"))
+            .collect::<Vec<_>>()
+            .join(" || '|' || ");
+        let filter = if t == "settings" {
+            " WHERE key NOT LIKE 'sync%'"
+        } else {
+            ""
+        };
+        let mut rows: Vec<String> =
+            backend::query_scalar(llmtodo_server::sql!("SELECT {expr} FROM {t}{filter}"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        rows.sort();
+        out.insert(t, rows);
+    }
+    out
+}
+
+/// LLM-462: a workspace copied from SQLite to Postgres and back keeps every
+/// row of every table, with the same IDs, keys and seqs, and the copy on
+/// Postgres keeps working: new seqs follow the copied ones, and search
+/// finds the copied text.
+#[tokio::test]
+async fn a_round_trip_through_postgres_keeps_every_row() {
+    needs_postgres!(admin);
+    // A SQLite server with a bit of everything.
+    let dir = tempfile::tempdir().unwrap();
+    let running = llmtodo_server::start(llmtodo_server::Config {
+        data_dir: dir.path().to_path_buf(),
+        port: 0,
+        host: None,
+        github_poll: false,
+        database: llmtodo_server::Database::Sqlite,
+    })
+    .await
+    .unwrap();
+    let s = Server {
+        url: running.url(),
+        http: reqwest::Client::new(),
+        running,
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    s.ok(
+        "POST",
+        "/v1/teams",
+        json!({ "key": "LLM", "name": "llmtodo" }),
+    )
+    .await;
+    s.ok(
+        "POST",
+        "/v1/labels",
+        json!({ "name": "Area", "is_group": true }),
+    )
+    .await;
+    s.ok(
+        "POST",
+        "/v1/labels",
+        json!({ "name": "server", "group": "Area" }),
+    )
+    .await;
+    let parent = s.issue("Parent epic").await;
+    let child = s
+        .ok(
+            "POST",
+            "/v1/issues",
+            json!({ "title": "Child task", "description": "Searchable zebra text.",
+                    "estimate_minutes": 5, "estimate_cost_usd": 1.0 }),
+        )
+        .await["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.ok(
+        "PATCH",
+        &format!("/v1/issues/{child}"),
+        json!({ "parent": parent, "labels": ["Area/server"] }),
+    )
+    .await;
+    // The parent points at a later issue, so the copy needs its second pass.
+    let later = s.issue("Made later").await;
+    s.ok(
+        "PATCH",
+        &format!("/v1/issues/{parent}"),
+        json!({ "parent": later }),
+    )
+    .await;
+    s.ok(
+        "POST",
+        &format!("/v1/issues/{child}/relations"),
+        json!({ "type": "blocked-by", "issue": parent }),
+    )
+    .await;
+    s.ok(
+        "POST",
+        &format!("/v1/issues/{child}/comments"),
+        json!({ "body": "A comment." }),
+    )
+    .await;
+    let (code, v) = s
+        .call(
+            &agent("copy-agent"),
+            "POST",
+            &format!("/v1/issues/{child}/claim"),
+            json!({}),
+        )
+        .await;
+    assert!(code < 300, "{v}");
+    let src = s.running.state.pool();
+    let before = sqlite_rows(&src).await;
+    let max_seq: i64 = backend::query_scalar("SELECT max(seq) FROM activity")
+        .fetch_one(&src)
+        .await
+        .unwrap();
+    s.stop().await;
+
+    // SQLite to Postgres.
+    let src = llmtodo_server::db::open(dir.path()).await.unwrap();
+    let url = llmtodo_server::db::create_test_database(&admin)
+        .await
+        .unwrap();
+    let pg = llmtodo_server::db::open_postgres(&url, None).await.unwrap();
+    llmtodo_server::db::copy_database(&src, &pg, Some(&dir.path().join("files")), false)
+        .await
+        .unwrap();
+    let again = llmtodo_server::db::copy_database(&src, &pg, None, false).await;
+    assert!(
+        again.unwrap_err().to_string().contains("--replace"),
+        "a second copy needs --replace"
+    );
+    src.close().await;
+    pg.close().await;
+
+    // The Postgres copy works as a server.
+    let b = Server::start(&url, "laptop-b").await;
+    let found = b
+        .ok("POST", "/v1/issues/query", json!({ "text": "zebra" }))
+        .await;
+    assert_eq!(found["items"][0]["key"], child, "{found}");
+    // Back into a new SQLite file, before anything else writes.
+    let back_dir = tempfile::tempdir().unwrap();
+    let back = llmtodo_server::db::open_sqlite_file(&back_dir.path().join("llmtodo.db"))
+        .await
+        .unwrap();
+    llmtodo_server::db::copy_database(&b.running.state.pool(), &back, None, false)
+        .await
+        .unwrap();
+    // New seqs follow the copied ones.
+    let k = b.issue("After the move").await;
+    let page = b
+        .ok(
+            "GET",
+            &format!("/v1/activity?after_seq={max_seq}"),
+            Value::Null,
+        )
+        .await;
+    assert!(
+        page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["issue"] == k.as_str()),
+        "new seqs follow the copied ones: {page}"
+    );
+    b.stop().await;
+    let after = sqlite_rows(&back).await;
+    for (table, rows) in &before {
+        assert_eq!(after.get(table), Some(rows), "table {table} changed");
+    }
+    back.close().await;
 }

@@ -3245,6 +3245,7 @@ fn the_server_address_reaches_the_preview(cx: &mut TestAppContext) {
         this.apply_event(
             crate::model::backend::Event::Connected {
                 url: "http://127.0.0.1:4567".into(),
+                database: None,
             },
             cx,
         )
@@ -4378,6 +4379,7 @@ fn a_connection_leaves_the_status_message_empty(cx: &mut TestAppContext) {
     let (_handle, view) = open(cx);
     let connected = || Event::Connected {
         url: "http://127.0.0.1:7777".into(),
+        database: None,
     };
     view.update(cx, |this, cx| this.apply_event(connected(), cx));
     cx.read(|cx| assert_eq!(view.read(cx).message(), ""));
@@ -4666,4 +4668,50 @@ fn a_partial_snapshot_keeps_closed_tasks_until_the_rest_arrives(cx: &mut TestApp
         assert!(store.get(closed_id).is_some());
     });
     assert_eq!(open_task(cx), Some(closed_id));
+}
+
+/// LLM-461: Settings names the database the server opened.
+#[gpui_kit::test]
+fn settings_name_the_database(cx: &mut TestAppContext) {
+    use llmtodo_api_types::{DatabaseBackend, DatabaseInfo};
+    let (_, view) = open(cx);
+    let line = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .settings_view()
+                .read(cx)
+                .database_line()
+                .map(|s| s.to_string())
+        })
+    };
+    assert_eq!(line(cx), None, "nothing before the first connect");
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            crate::model::backend::Event::Connected {
+                url: "http://127.0.0.1:4567".into(),
+                database: Some(DatabaseInfo {
+                    backend: DatabaseBackend::Postgres,
+                    host: Some("ep-calm.neon.tech/neondb".into()),
+                    round_trip_ms: 40.0,
+                }),
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        line(cx).as_deref(),
+        Some("Shared Postgres: ep-calm.neon.tech/neondb")
+    );
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            crate::model::backend::Event::Connected {
+                url: "http://127.0.0.1:4567".into(),
+                database: Some(DatabaseInfo::default()),
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(line(cx).as_deref(), Some("Local SQLite file"));
 }

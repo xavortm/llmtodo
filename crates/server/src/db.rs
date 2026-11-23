@@ -30,8 +30,19 @@ pub fn redact_url(url: &str) -> String {
     format!("{scheme}://{user}:***@{host}")
 }
 
+/// The host, port and database name of a Postgres URL, with no user,
+/// password or options.
+pub fn url_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+    rest.split('?').next().unwrap_or(rest).to_string()
+}
+
 /// Connects to a shared Postgres database and runs pending migrations.
-pub async fn open_postgres(url: &str) -> anyhow::Result<Pool> {
+///
+/// With a data folder, a backup goes there before a migration of a database
+/// that already has a schema, as on SQLite.
+pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result<Pool> {
     use sqlx::postgres::PgPoolOptions;
     let shown = redact_url(url);
     let pg = PgPoolOptions::new()
@@ -55,6 +66,12 @@ pub async fn open_postgres(url: &str) -> anyhow::Result<Pool> {
                 "the Postgres schema {newest_applied} is newer than this build supports ({newest_known}); upgrade llmtodo"
             );
         }
+        if let Some(dir) = data_dir
+            && newest_applied > 0
+            && newest_applied < newest_known
+        {
+            backup(&pool, dir, "pre-migrate").await?;
+        }
     }
     PG_MIGRATOR
         .run(&pg)
@@ -76,7 +93,9 @@ fn pg_error(e: &sqlx::Error) -> String {
         sqlx::Error::Io(e) => e.to_string(),
         sqlx::Error::Tls(e) => format!("TLS: {e}"),
         sqlx::Error::PoolTimedOut => "timed out".into(),
-        sqlx::Error::Configuration(e) => format!("bad connection string: {e}"),
+        // sqlx can quote the URL in a configuration error, so the message
+        // stays generic.
+        sqlx::Error::Configuration(_) => "the connection string is not a valid Postgres URL".into(),
         other => other.to_string(),
     }
 }
@@ -278,7 +297,7 @@ pub async fn export_to_sqlite(pool: &Pool, path: &Path) -> anyhow::Result<()> {
     let copied = async {
         let mut from = pool.begin().await?;
         let mut to = file.begin_write().await?;
-        crate::store::transfer::copy_workspace(&mut from, &mut to)
+        crate::store::transfer::copy_workspace(&mut from, &mut to, None)
             .await
             .map_err(|e| anyhow::anyhow!("copy the database: {}", e.message))?;
         to.commit().await?;
@@ -288,6 +307,54 @@ pub async fn export_to_sqlite(pool: &Pool, path: &Path) -> anyhow::Result<()> {
     .await;
     file.close().await;
     copied
+}
+
+/// Copies a whole workspace from `from` to `to` for `llmtodo db migrate`
+/// (LLM-462), then checks that every table holds as many rows as the copy
+/// wrote. No server may write to either database meanwhile.
+///
+/// `to` must hold no issues unless `replace` is set; its rows go first
+/// either way. `files_dir` is the source's `files/` folder.
+pub async fn copy_database(
+    from: &Pool,
+    to: &Pool,
+    files_dir: Option<&Path>,
+    replace: bool,
+) -> anyhow::Result<crate::store::transfer::Report> {
+    use crate::store::transfer;
+    let mut tx = to.begin_write().await?;
+    let existing = transfer::issue_count(&mut tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    if existing > 0 && !replace {
+        anyhow::bail!(
+            "the target database already holds {existing} issues; pass --replace to write over them"
+        );
+    }
+    if existing > 0 {
+        // copy_workspace refuses a target with issues, so they go first.
+        crate::store::backend::query("DELETE FROM issues")
+            .execute(&mut tx)
+            .await?;
+    }
+    let mut src = from.begin().await?;
+    let report = transfer::copy_workspace(&mut src, &mut tx, files_dir)
+        .await
+        .map_err(|e| anyhow::anyhow!("copy the database: {}", e.message))?;
+    src.rollback().await?;
+    let counts = transfer::counts(&mut tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    for (table, n) in &counts {
+        let copied = report.rows(table);
+        if *n != copied {
+            anyhow::bail!(
+                "{table}: copied {copied} rows but the target holds {n}; nothing was changed"
+            );
+        }
+    }
+    tx.commit().await?;
+    Ok(report)
 }
 
 pub async fn vacuum_into(pool: &Pool, path: &Path) -> anyhow::Result<()> {

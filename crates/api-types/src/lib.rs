@@ -221,6 +221,43 @@ pub struct Health {
     pub schema_version: i64,
     pub is_primary: bool,
     pub started_at: Timestamp,
+    /// The database this server opened (LLM-461). Older servers leave it
+    /// out, which reads as the SQLite file.
+    #[serde(default)]
+    pub database: DatabaseInfo,
+}
+
+/// Which database a server opened.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct DatabaseInfo {
+    /// `sqlite`, the file in the data folder, or `postgres`, a shared
+    /// database.
+    pub backend: DatabaseBackend,
+    /// For Postgres: the host, port and database name, never the user or
+    /// the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// How long one small query took when the server answered, in
+    /// milliseconds.
+    #[serde(default)]
+    pub round_trip_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseBackend {
+    #[default]
+    Sqlite,
+    Postgres,
+}
+
+impl DatabaseBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DatabaseBackend::Sqlite => "sqlite",
+            DatabaseBackend::Postgres => "postgres",
+        }
+    }
 }
 
 /// Contents of `server.json` in the data folder.

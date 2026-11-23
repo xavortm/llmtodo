@@ -8,15 +8,28 @@ use serde_json::json;
 use crate::db;
 use crate::error::ApiResult;
 use crate::state::AppState;
+use crate::store::backend::Backend;
 
 pub async fn health(State(st): State<AppState>) -> ApiResult<Json<Health>> {
+    let pool = st.pool();
+    let start = std::time::Instant::now();
+    let schema_version = db::schema_version(&pool).await;
+    let round_trip_ms = start.elapsed().as_secs_f64() * 1000.0;
     Ok(Json(Health {
         version: VERSION.to_string(),
         pid: std::process::id(),
         data_dir: st.data_dir.display().to_string(),
-        schema_version: db::schema_version(&st.pool()).await,
+        schema_version,
         is_primary: st.primary(),
         started_at: st.started_at,
+        database: DatabaseInfo {
+            backend: match pool.backend() {
+                Backend::Sqlite => DatabaseBackend::Sqlite,
+                Backend::Postgres => DatabaseBackend::Postgres,
+            },
+            host: st.database_host.clone(),
+            round_trip_ms,
+        },
     }))
 }
 

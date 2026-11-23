@@ -160,7 +160,14 @@ pub async fn issue_count(c: &mut Conn) -> ApiResult<i64> {
 /// rows the target's start-up wrote, such as the seeded actors, go first.
 /// Both connections should be transactions: `from` reads one snapshot, and
 /// `to` commits all or nothing.
-pub async fn copy_workspace(from: &mut Conn, to: &mut Conn) -> ApiResult<Report> {
+///
+/// `files_dir` is the source's `files/` folder. Copying into Postgres reads
+/// a file's bytes from there when its row holds none (LLM-458).
+pub async fn copy_workspace(
+    from: &mut Conn,
+    to: &mut Conn,
+    files_dir: Option<&std::path::Path>,
+) -> ApiResult<Report> {
     if from.is_postgres() {
         backend::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *from)
@@ -228,7 +235,17 @@ pub async fn copy_workspace(from: &mut Conn, to: &mut Conn) -> ApiResult<Report>
                     if j > 0 {
                         insert.push(", ");
                     }
-                    let v = read(row, col, *kind)?;
+                    let mut v = read(row, col, *kind)?;
+                    if table.name == "files"
+                        && col == "content"
+                        && is_null(&v)
+                        && to.is_postgres()
+                        && let (Some(dir), Arg::Text(Some(hash))) =
+                            (files_dir, read(row, "hash", Kind::Text)?)
+                        && let Ok(bytes) = std::fs::read(dir.join(&hash))
+                    {
+                        v = Arg::Blob(Some(bytes));
+                    }
                     if table.late.contains(&col.as_str()) {
                         if !is_null(&v) {
                             late.push((table.name, col.clone(), v, id.clone().expect("late id")));
@@ -264,4 +281,22 @@ pub async fn copy_workspace(from: &mut Conn, to: &mut Conn) -> ApiResult<Report>
         .await?;
     }
     Ok(report)
+}
+
+/// Row counts of every copied table, to check a copy against its report.
+pub async fn counts(c: &mut Conn) -> ApiResult<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    for table in TABLES {
+        let filter = if table.name == "settings" {
+            format!(" WHERE {LOCAL_SETTINGS}")
+        } else {
+            String::new()
+        };
+        let n: i64 =
+            backend::query_scalar(crate::sql!("SELECT count(*) FROM {}{filter}", table.name))
+                .fetch_one(&mut *c)
+                .await?;
+        out.push((table.name.to_string(), n as u64));
+    }
+    Ok(out)
 }

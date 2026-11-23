@@ -205,7 +205,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
 
     let pool = match &config.database {
         Database::Sqlite => db::open(&data_dir).await?,
-        Database::Postgres { url } => db::open_postgres(url).await?,
+        Database::Postgres { url } => db::open_postgres(url, Some(&data_dir)).await?,
     };
     store::actors::seed(&pool).await?;
     // A shared database has no primary: every server on it writes. The
@@ -221,6 +221,10 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
     let state = AppState(Arc::new(Inner {
         pool_slot: std::sync::RwLock::new(pool),
         host: config.host.clone().unwrap_or_else(default_host),
+        database_host: match &config.database {
+            Database::Sqlite => None,
+            Database::Postgres { url } => Some(db::url_host(url)),
+        },
         data_dir: data_dir.clone(),
         events,
         sent_seq: tokio::sync::Mutex::new(sent_seq),
