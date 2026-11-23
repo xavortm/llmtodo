@@ -348,9 +348,9 @@ pub struct IssueList {
     /// and its narrow width (LLM-236). 1 is the full width.
     llm_width: crate::shell::motion::Presence<()>,
     /// What the titles and labels of `visible` ask of the columns. The
-    /// workspace asks on each frame, and the answer changes only when
-    /// `visible` is computed again.
-    demand: Cell<Option<columns::Demand>>,
+    /// row build measures it with `visible`, off the main thread for a
+    /// large list (LLM-350).
+    demand: columns::Demand,
     /// From this many issues, builds run on a background task.
     background_from: usize,
     /// The build on a background task, if one is on its way. Dropping it
@@ -458,7 +458,7 @@ impl IssueList {
             column_fades: Default::default(),
             planned_llm_compact: None,
             llm_width: Default::default(),
-            demand: Cell::new(None),
+            demand: columns::Demand::default(),
             background_from: rows::BACKGROUND_FROM,
             build_task: None,
             pending_keep: None,
@@ -636,7 +636,7 @@ impl IssueList {
         self.schedule_hide(built.next_hide, cx);
         self.rows = built.rows;
         self.order = built.order;
-        self.demand.set(None);
+        self.demand = built.demand;
         let kept_row = |list: &Self, cx: &App| match &held {
             Some(Row::Issue(id)) => list.row_of(*id).or_else(|| list.header_of_issue(*id, cx)),
             Some(Row::Header { title, .. }) => list.header_row(title),
@@ -1189,34 +1189,20 @@ impl IssueList {
 
     /// The width at which this list shows every column and fits most of
     /// its titles. The task view beside it grows only past this width.
-    pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
+    pub fn comfortable_width(&self, rem_size: Pixels, _cx: &App) -> Pixels {
         // The project column takes no room from the task view: when room is
         // short, the less useful columns hide before it does.
         let mut hidden = self.layout_hidden();
         if !hidden.contains(&Column::Project) {
             hidden.push(Column::Project);
         }
-        columns::comfortable_width_for(&self.demand(cx), rem_size, &hidden)
+        columns::comfortable_width_for(&self.demand, rem_size, &hidden)
     }
 
     /// What the titles and labels on the list ask of the columns.
-    pub(crate) fn demand(&self, cx: &App) -> columns::Demand {
-        self.demand.get().unwrap_or_else(|| {
-            let store = self.store.read(cx);
-            let rows: Vec<(usize, Vec<usize>)> = self
-                .visible
-                .iter()
-                .filter_map(|id| store.get(*id))
-                .map(|issue| {
-                    let names = issue.labels.iter().map(|l| l.name.chars().count());
-                    (issue.title.chars().count(), names.collect())
-                })
-                .collect();
-            let demand =
-                columns::Demand::measure(rows.iter().map(|(t, names)| (*t, names.as_slice())));
-            self.demand.set(Some(demand));
-            demand
-        })
+    #[cfg(test)]
+    pub(crate) fn demand(&self) -> columns::Demand {
+        self.demand
     }
 
     /// Marks `id`, or clears its mark, and makes it the range anchor.
@@ -2141,7 +2127,7 @@ impl IssueList {
         let width = self.width.clone();
         let entity = cx.entity_id();
         let hidden = self.layout_hidden();
-        let demand = self.demand(cx);
+        let demand = self.demand;
         gpui_kit::canvas(
             move |bounds, _, cx| {
                 let old = width.replace(Some(bounds.size.width));
@@ -2626,7 +2612,7 @@ impl Render for IssueList {
             }
         }
         let rem_size = window.rem_size();
-        let demand = self.demand(cx);
+        let demand = self.demand;
         let mut layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
         self.fade_columns(&mut layout, window, cx);
         if *self.layout != layout {

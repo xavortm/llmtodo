@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui_shared_string::SharedString;
 
+use crate::issues::columns::Demand;
 use crate::issues::filter::ResolvedFilter;
 use crate::issues::list::{GroupBy, Row, SortKey};
 use crate::model::data::{
@@ -89,6 +90,10 @@ pub struct BuiltRows {
     /// When the next shown task gets old enough for "Hide old closed
     /// tasks" to hide it. The list builds again then.
     pub next_hide: Option<jiff::Timestamp>,
+    /// What the shown titles and labels ask of the columns. The build
+    /// measures it, so the main thread does not walk every shown issue
+    /// when the result lands (LLM-350).
+    pub demand: Demand,
 }
 
 /// The title of the group of issues with no parent.
@@ -219,12 +224,17 @@ fn build_with<'i>(
         Some(parents) => parent_groups(&kept, input, parents),
         None => (group(&kept, input), Vec::new()),
     };
+    let demand = Demand::measure(kept.iter().map(|i| {
+        let names = i.labels.iter().map(|l| l.name.chars().count());
+        (i.title.chars().count(), names)
+    }));
     BuiltRows {
         visible: kept.iter().map(|i| i.id).collect(),
         hidden_closed: hidden,
         rows,
         order,
         next_hide,
+        demand,
     }
 }
 
