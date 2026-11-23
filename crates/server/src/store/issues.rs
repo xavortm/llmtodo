@@ -198,6 +198,21 @@ pub async fn live_analyzing(
         .collect())
 }
 
+/// The labels of each issue in `ids`, as `(issue, name, group)`, by group
+/// and name.
+async fn label_rows(
+    conn: &mut Conn,
+    ids: &[String],
+) -> ApiResult<Vec<(String, String, Option<String>)>> {
+    Ok(backend::query_as(
+        "SELECT il.issue_id, l.name, g.name FROM issue_labels il JOIN labels l ON l.id = il.label_id LEFT JOIN labels g ON g.id = l.group_id
+         WHERE il.issue_id IN (SELECT value FROM json_each(?)) ORDER BY coalesce(g.name, l.name) COLLATE NOCASE, l.name COLLATE NOCASE",
+    )
+    .bind(serde_json::to_string(ids)?)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 /// The statuses and actors that issue rows point at. A request that builds
 /// issues in several steps loads them once and passes them down.
 pub struct Lookup {
@@ -207,6 +222,13 @@ pub struct Lookup {
 
 impl Lookup {
     pub async fn load(conn: &mut Conn) -> ApiResult<Self> {
+        if let Some(pool) = conn.read_pool().cloned() {
+            let (statuses, actors) = tokio::try_join!(
+                async { teams::status_map(&mut pool.acquire().await?).await },
+                async { actors::all(&mut pool.acquire().await?).await },
+            )?;
+            return Ok(Self { statuses, actors });
+        }
         Ok(Self {
             statuses: teams::status_map(conn).await?,
             actors: actors::all(conn).await?,
@@ -237,23 +259,39 @@ pub async fn load_with(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = rows(conn, ids, with_description).await?;
     let statuses = &lookup.statuses;
     let actors = &lookup.actors;
-    let claims = live_claims(conn, ids, actors).await?;
-    let analyzing = live_analyzing(conn, ids, actors).await?;
-    let blockers = deps::Blockers::load(conn, ids, statuses).await?;
-    let mut costs = crate::store::usage::cost_by_issue(conn, ids).await?;
-    let open_questions = crate::store::questions::open_counts(conn, ids).await?;
-    let mut times = crate::store::usage::active_seconds_by_issue(conn, ids).await?;
-    let json = serde_json::to_string(ids)?;
-    let label_rows: Vec<(String, String, Option<String>)> = backend::query_as(
-        "SELECT il.issue_id, l.name, g.name FROM issue_labels il JOIN labels l ON l.id = il.label_id LEFT JOIN labels g ON g.id = l.group_id
-         WHERE il.issue_id IN (SELECT value FROM json_each(?)) ORDER BY coalesce(g.name, l.name) COLLATE NOCASE, l.name COLLATE NOCASE",
-    )
-    .bind(json)
-    .fetch_all(&mut *conn)
-    .await?;
+    // Each part reads only by `ids`. On Postgres, outside a transaction,
+    // they run at once on their own connections, so a page costs about
+    // one round trip instead of eight (LLM-465).
+    let (rows, claims, analyzing, blockers, mut costs, open_questions, mut times, label_rows) =
+        match conn.read_pool().cloned() {
+            Some(pool) => {
+                let c = || async { pool.acquire().await.map_err(ApiError::from) };
+                tokio::try_join!(
+                    async { rows(&mut c().await?, ids, with_description).await },
+                    async { live_claims(&mut c().await?, ids, actors).await },
+                    async { live_analyzing(&mut c().await?, ids, actors).await },
+                    async { deps::Blockers::load(&mut c().await?, ids, statuses).await },
+                    async { crate::store::usage::cost_by_issue(&mut c().await?, ids).await },
+                    async { crate::store::questions::open_counts(&mut c().await?, ids).await },
+                    async {
+                        crate::store::usage::active_seconds_by_issue(&mut c().await?, ids).await
+                    },
+                    async { label_rows(&mut c().await?, ids).await },
+                )?
+            }
+            None => (
+                rows(conn, ids, with_description).await?,
+                live_claims(conn, ids, actors).await?,
+                live_analyzing(conn, ids, actors).await?,
+                deps::Blockers::load(conn, ids, statuses).await?,
+                crate::store::usage::cost_by_issue(conn, ids).await?,
+                crate::store::questions::open_counts(conn, ids).await?,
+                crate::store::usage::active_seconds_by_issue(conn, ids).await?,
+                label_rows(conn, ids).await?,
+            ),
+        };
     let mut labels_by: HashMap<String, Vec<String>> = HashMap::new();
     for (issue, name, group) in label_rows {
         labels_by.entry(issue).or_default().push(match group {

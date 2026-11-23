@@ -44,6 +44,10 @@ async fn ws_loop(st: AppState, mut socket: WebSocket) {
             }
             msg = rx.recv() => {
                 let msg = match msg {
+                    // The hello told the client it holds everything up to
+                    // `last_seq`. A catch-up after the shared database's
+                    // listener paused can resend older events (LLM-465).
+                    Ok(WsMessage::Event { event }) if event.seq <= last_seq => continue,
                     Ok(m) => m,
                     // The client fell behind; tell it to catch up from its
                     // last seq. Closing the socket instead would make the

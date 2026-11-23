@@ -234,6 +234,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         writes: Default::default(),
         write_queue: Default::default(),
         route_log: Default::default(),
+        last_request: std::sync::atomic::AtomicI64::new(Timestamp::now().as_second()),
     }));
 
     ops::claims::sweep_review_claims(&state)

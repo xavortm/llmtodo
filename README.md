@@ -60,6 +60,9 @@ The app keeps its preferences in `~/.config/llmtodo/config.toml`. Set `XDG_CONFI
 ```toml
 # data_dir = "/somewhere/else"   # the data folder, if not the standard one
 
+[database]
+backend = "sqlite"        # or "postgres", see "Share the data between laptops"
+
 [app]
 theme = "auto"            # dark, light or auto
 color_theme = "catppuccin"
@@ -70,6 +73,29 @@ hide_closed_days = 14
 ```
 
 Window size, pane sizes, open tabs, sort and grouping change all the time, so they live apart, in `ui-state.json` in the data folder.
+
+### Share the data between laptops
+
+By default the data stays in a SQLite file on this Mac. To use the same issues on several laptops at once, point each laptop's server at one shared Postgres database. Neon's free tier works:
+
+1. Sign up at [neon.tech](https://neon.tech) and create a project. Pick the region nearest to you.
+2. In the project, open **Connect**. Turn off **Connection pooling**, so the host has no `-pooler` in it. Copy the connection string. It starts with `postgresql://` and ends with `?sslmode=require`.
+3. On the first laptop, store the string and move the data:
+
+   ```sh
+   pbpaste | llmtodo db set-url    # into the macOS Keychain, never into a file
+   llmtodo db migrate --to postgres
+   llmtodo db status
+   ```
+
+4. On each other laptop, install llmtodo, then join:
+
+   ```sh
+   pbpaste | llmtodo db set-url
+   llmtodo db use postgres         # the local SQLite file moves to backups/
+   ```
+
+`config.toml` now holds `[database] backend = "postgres"`. The connection string lives in the Keychain item `llmtodo-database`, or in `LLMTODO_DATABASE_URL`. On Postgres a laptop with no network has no tracker. `llmtodo db migrate --to sqlite` copies everything back into a local file. Each laptop still writes daily backups to its own data folder, as SQLite files.
 
 ### Set up a repo for agents
 

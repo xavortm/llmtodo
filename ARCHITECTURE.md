@@ -25,7 +25,7 @@ The workspace has eight crates. The last column lists the only workspace crates 
 
 Cargo enforces the table above, because a crate cannot import a dependency it does not declare. These rules follow from it or come from the code:
 
-- `cli` uses `server` for one thing: to run `llmtodo server run`.
+- `cli` uses `server` for two things: to run `llmtodo server run`, and for `llmtodo db migrate` and `db use`, which open both databases while the server is stopped.
 - Only `server` uses sqlx. No client opens the database file.
 - Only `ui`, `app` and `ui-bench` use GPUI.
 - `ui-bench` never turns on GPUI's `test-support` feature, because GPUI's benchmarks refuse it. `ui` turns it on only for its own tests, so the benchmarks need their own package.
@@ -35,6 +35,7 @@ Cargo enforces the table above, because a crate cannot import a dependency it do
 - A CLI test runs the command named for each route and checks that the command calls that route. The Linear import route is exempt, because it needs a Linear key.
 - `ErrorCode` in `api-types` is the one list of error codes and exit codes.
 - `client::live` holds the one copy of the live protocol: the hello, the catch-up, the ping, the reload and the lag notice. The app's API thread, `activity --follow` and `review wait` use it.
+- `client::database::choose` is the one place that picks the database for a data folder.
 - `client::data_dir::resolve` is the one place that picks a data folder, and the CLI and the app both call it. The folder is an input everywhere after that, so one process can open several. `core` names the standard folder's path, so the server and the app's tracker list can mark it.
 - `client::identity` finds the actor, the session, git details and the agent's usage. Each harness, such as Claude Code, implements the `Harness` trait. The CLI adds only the repo's `.llmtodo.toml`.
 - An update field that can be cleared is a `Change<T>`: Keep, Clear or Set. On the wire, a missing field or `null` keeps the value and an empty string clears it.
@@ -68,16 +69,17 @@ A domain noun has the same module name in every layer: `issues`, `claims`, `rela
 
 The other findings of LLM-122 add more targets, and this page gains each one when its work lands.
 
-## The database backend layer (target, LLM-450)
+## The database backend layer (LLM-450)
 
-The server runs on SQLite or on a shared Postgres database (decision 50 in `SPEC.md`). These rules are targets until LLM-452 and the Postgres tasks land:
+The server runs on SQLite or on a shared Postgres database (decision 50 in `SPEC.md`). These rules hold, and `layers.rs` checks the first:
 
-- One backend layer in `store` owns the pool and the connection types. Nothing outside it names a sqlx driver type, such as `SqliteConnection` or `PgConnection`. `layers.rs` checks this.
-- `ops` and `routes` take our own connection and transaction types, and never know which backend runs.
-- SQL that differs by backend sits next to its twin in the same `store` module, so a reader sees both forms of a query in one place. Most SQL is the same on both.
-- Each backend has its own migration folder. A test checks that both schemas have the same tables and columns.
-- `Write` stays the one write path on both backends. On Postgres it also sends the `NOTIFY` for live events.
-- Outside the backend layer, nothing branches on the backend, except for features that exist on one side only: laptop sync (SQLite) and the cross-server event listener and job locks (Postgres).
+- `store/backend.rs` owns the pool, connection and query types. Only it, `db.rs` (opening, migrations, backups, the event listener) and `ops/sync.rs` (laptop handoff reads SQLite files) name a sqlx driver type.
+- `ops` and `routes` take `backend::Conn` and `backend::Pool`, and never know which backend runs.
+- SQL is written once. Where the backends differ, the query picks its form by `conn.backend()` in the same `store` module, so both forms sit side by side. Search and the dependency graph's string aggregate are the main cases.
+- Each backend has its own migration folder, and a test checks that both schemas have the same tables and columns.
+- `Write` stays the one write path on both backends. On Postgres it also takes the shared advisory lock and sends the `NOTIFY` for live events.
+- Copying a whole workspace between backends lives in `store/transfer.rs`. Postgres backups and `llmtodo db migrate` use it.
+- Outside the backend layer, code branches on the backend only for features that exist on one side: laptop sync, the file folder and the parallel reads on SQLite's side, and the listener, the job lock and the idle pause on Postgres's side.
 
 ## The app's layers
 

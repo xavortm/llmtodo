@@ -342,6 +342,29 @@ Active time is the sum of the gaps between the user and assistant lines of your 
 
 `llmtodo usage` shows time per ticket, and `issue view` shows it per session. Issue lists carry it as `active_seconds`. The field is missing when the task has no time data. Past work gets no invented time: a session that reported tokens before time tracking existed counts time only from its next write on.
 
+## Choose the database
+
+The server keeps the data in a SQLite file in the data folder by default. The owner can share one Postgres database between laptops instead, such as a free Neon database. Each laptop still runs its own local server, and the CLI, the app and agents still talk only to that local server. Only its storage changes.
+
+```sh
+llmtodo db status                       # configured backend, stored URL host, what the server opened
+llmtodo db set-url                      # reads the connection string from stdin into the macOS Keychain
+llmtodo db migrate --to postgres        # copies this laptop's data, then switches
+llmtodo db use postgres                 # joins a database that already holds the data
+llmtodo db migrate --to sqlite          # copies the shared data back into a local file
+llmtodo db use sqlite                   # switches back with no copy
+```
+
+Rules:
+
+- **Ask the owner first.** Never run `db migrate` or `db use` without the owner's answer. They stop the server, move data and change `config.toml`.
+- **The connection string is a secret.** Never ask for it in chat, and never write it in a file, a ticket or a command line. The owner pipes it in: `! pbpaste | llmtodo db set-url`, or `! op read op://<vault>/<item>/<field> | llmtodo db set-url`. `LLMTODO_DATABASE_URL` can stand in for the Keychain, for example under `op run`.
+- **Migrate or join.** `db migrate --to postgres` is for the first laptop: it copies everything and refuses a target that already holds issues, unless `--replace` is set. `db use postgres` is for each further laptop: it moves the local SQLite file to `backups/` untouched and opens the shared data. Nothing merges two databases.
+- **Use the direct connection string.** On Neon, turn off connection pooling in the Connect dialog. The host must not contain `-pooler`, because live updates need a direct connection.
+- **Only the main data folder.** The choice in `config.toml` applies only to the main data folder. A folder set with `LLMTODO_DATA_DIR` for a test or preview always keeps its own SQLite file. `db use` and `db migrate` refuse there with exit code 6.
+- **Laptop handoff is SQLite only.** `llmtodo sync` refuses on a shared database, because every laptop already sees the same data.
+- **Offline.** On Postgres a laptop with no network has no tracker. The server never falls back to SQLite on its own.
+
 ## Search
 
 ```sh

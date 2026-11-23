@@ -59,7 +59,7 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 - Full-text search and duplicate search.
 - GitHub sync by polling.
 - Sharing the database between laptops by handoff.
-- An optional shared Postgres database, such as Neon, next to the default SQLite file. Laptops then share live data with no handoff (LLM-450, target).
+- An optional shared Postgres database, such as Neon, next to the default SQLite file. Laptops then share live data with no handoff (LLM-450).
 - Native desktop app with vim keys, and the CLI.
 - Import from Linear, so the existing ALX issues move over with their keys.
 - A read-only file store for images copied from Linear during the import. New uploads stay in "Later".
@@ -153,27 +153,29 @@ Every record has a UUIDv7 ID. Issues also have a key. Projects, teams and labels
 
 ### Shared Postgres (LLM-450)
 
-The owner can pick a shared Postgres database instead of the SQLite file. SQLite stays the default, and a setup that never opts in sees no change. Neon is the first target, and Supabase must work too. Every point in this section is a target until its task lands.
+The owner can pick a shared Postgres database instead of the SQLite file. SQLite stays the default, and a setup that never opts in sees no change. Neon is the first target, and any Postgres 17 with `pg_trgm` and ICU works, such as Supabase.
 
 - **Each laptop keeps its own server.** The CLI, the app and agents still talk only to `127.0.0.1:7878`. Only the server's storage changes. Nothing of ours is hosted.
-- **Every feature works on both backends:** claims, search, duplicate search, live events, reviews, order, usage, the GitHub sync, the import and backups. The server tests run on both (LLM-453).
-- **One backend layer.** All SQL sits behind one layer in `store`, so the rest of the server never names a driver (LLM-452). Postgres has its own migration folder, with a schema that matches SQLite's.
-- **Search** uses a `tsvector` column with a GIN index for full text, and `pg_trgm` for duplicate search (LLM-455).
-- **Two servers can write at once.** Claims, key allocation, estimate checks, review moves and order rewrites use row locks or serializable transactions, not `BEGIN IMMEDIATE` and the in-process write lock (LLM-457).
-- **Live events cross laptops.** The activity seq comes from a Postgres sequence. Each commit sends `NOTIFY`, and each server holds one direct `LISTEN` connection, not one through a pooler. A server sends seqs in order and waits out gaps, so catch-up never skips an event. After a dropped connection it reconnects and catches up (LLM-459).
-- **Background jobs run on one server.** The GitHub poll and the daily backup take a Postgres advisory lock. A server that does not get it skips the run (LLM-460).
-- **Imported files** live in a table keyed by content hash, so every laptop serves them (LLM-458).
-- **Latency.** Each query is a network round trip. A request costs a few round trips at most, so the snapshot and the issue view batch their queries (LLM-465).
+- **Every feature works on both backends.** The server tests run on both: `LLMTODO_TEST_POSTGRES_URL` points them at Postgres, `compose.yaml` runs a local one, and CI runs both. `tests/postgres.rs` runs two servers on one database.
+- **One backend layer.** `store/backend.rs` holds our own pool, connection and query types over both sqlx drivers. SQL is written once with `?` placeholders. On Postgres the layer turns them into `$1`, `$2` and so on, and turns `CROSS JOIN ... ON` into `JOIN ... ON`. Values bind as integers, reals, text or blobs, and booleans bind as 0 or 1 (LLM-452).
+- **One schema shape.** `migrations-postgres/0001_init.sql` matches SQLite after `0020`, table by table and column by column, and a test checks it. IDs and timestamps are TEXT, integers and flags BIGINT. The Postgres schema adds a `nocase` ICU collation, and `json_each`, `json_valid`, `json_extract` and `instr` for text, so the queries need no second form. Every later schema change needs a migration in both folders (LLM-453).
+- **Search** uses a generated `tsvector` with a GIN index for full text, ranked with `ts_rank`. Duplicate search matches any word of 3 or more characters with `ILIKE` over a `pg_trgm` index, scored by words found and word similarity. SQLite strips diacritics and Postgres does not (LLM-455).
+- **Two servers can write at once.** Every write transaction on Postgres takes one shared advisory lock, as SQLite's `BEGIN IMMEDIATE` does. One write runs at a time per database, so claims, keys, estimate checks, review moves, order rewrites and activity seqs stay atomic and in commit order (LLM-457).
+- **Live events cross laptops.** A write sends `NOTIFY` on commit. A server listens on one direct connection, not through a pooler, and sends the other servers' events after the last seq it sent. It listens only while a client follows its live events, and lets go a minute after the last one leaves. A socket never hears events older than its hello (LLM-459, LLM-465).
+- **Background jobs.** The GitHub poll runs on the server that holds a session advisory lock. Another takes over when it stops or loses its connection. On Postgres the poll pauses after 10 minutes with no request and no live client, so Neon can suspend the database, and the next poll catches up (LLM-460, LLM-465).
+- **Imported files** keep their bytes in `files.content` on Postgres, so every laptop serves them. SQLite keeps them in `files/` and leaves the column empty (LLM-458).
+- **Latency.** Each statement is a network round trip. The independent reads of an issue page and of the issue view run at once on their own connections. Only a connection idle for 30 seconds gets a ping before use, and an idle one closes after 4 minutes, before Neon suspends at 5. A page holds up to 5,000 issues. `tests/latency.rs` times the common requests through a delaying proxy (LLM-465).
 - **Offline.** A laptop with no network has no tracker on Postgres. The server never falls back to SQLite on its own.
-- **The connection string is a secret.** It never goes in `config.toml`, which can live in a dotfiles repo. launchd starts the server, so the server reads the string from `LLMTODO_DATABASE_URL` or from the macOS Keychain, where `llmtodo db` stores it (LLM-461).
-- **Moving between backends.** `llmtodo db migrate` copies the whole workspace to the other backend, both ways, and keeps IDs and keys. It writes a backup first and refuses a target that holds data, unless a flag says to replace it. `llmtodo db use postgres|sqlite` switches with no copy, for a laptop that joins a shared database. On a join, the local SQLite file moves to `backups/` untouched, and the command says where. Nothing merges two databases (LLM-462).
+- **The connection string is a secret.** It never goes in `config.toml`, which can live in a dotfiles repo. The server reads it from `LLMTODO_DATABASE_URL`, or else from the macOS Keychain item `llmtodo-database`. `llmtodo db set-url` writes that item from stdin. TLS uses rustls with the system's root certificates (LLM-461).
+- **Only the main data folder.** `[database] backend` in `config.toml` applies only to the data folder that the config names, or the standard one. A preview or test folder always opens its own SQLite file (LLM-461).
+- **Moving between backends.** `llmtodo db migrate --to postgres|sqlite` stops the server, writes a backup, copies every table in one transaction and checks the row count of each. Then it switches the config and starts the server. IDs, keys and seqs stay the same. A target with issues needs `--replace`. After a move to Postgres the local file moves to `backups/`. `llmtodo db use postgres|sqlite` switches with no copy, for a laptop that joins: its local SQLite file moves to `backups/` untouched. Nothing merges two databases (LLM-462).
 - **An agent asks first.** When an agent sets llmtodo up, it asks the owner which backend to use, and whether to migrate or join. It never runs `db migrate` or `db use` without the answer, and never asks for the connection string in chat (LLM-464).
 
 ### Backups and prune
 
 - The server writes a copy of the database to `backups/` in the data folder every day and keeps the last 14. At startup it writes one when the newest copy is older than 24 hours, because the server may not run every day.
 - It also writes a copy before every migration, every prune, every import and every `sync pull`.
-- On Postgres, a backup is an export to a SQLite file in the same `backups/` folder, with the same keep. So a backup is also a way back to local SQLite (LLM-460, target).
+- On Postgres, a backup is a copy of every table into a new SQLite file in the same `backups/` folder, with the same keep. So a backup is also a way back to local SQLite. Each laptop writes its own (LLM-460).
 - Deleted issues go to a trash. Their keys are never reused. Nothing is deleted on a timer.
 - `llmtodo prune --before <date>` deletes trashed issues and all their revisions. It also removes their relations and attachments.
 - `llmtodo prune --revisions-before <date>` trims old revisions of live issues and keeps the newest one.
@@ -185,7 +187,7 @@ The owner can pick a shared Postgres database instead of the SQLite file. SQLite
 
 The local database is the primary copy. Only one machine is the primary at a time.
 
-This handoff is for the SQLite backend. A shared Postgres database needs no handoff, so `sync push`, `sync pull` and `sync status` refuse on it with a clear message (LLM-461, target).
+This handoff is for the SQLite backend. A shared Postgres database needs no handoff, so `sync push`, `sync pull` and `sync status` refuse on it with exit code 6 (LLM-461).
 
 - `llmtodo sync push` writes a copy with `VACUUM INTO`, compresses it, and uploads it with a manifest. The manifest holds the owner host, schema version, a generation counter that goes up on every push, and a timestamp.
 - `llmtodo sync pull` downloads the copy and makes this machine the primary. It refuses while another machine holds the lock, unless `--take` is set.
@@ -424,7 +426,7 @@ The CLI mirrors the `linear` CLI (schpet/linear-cli) that both projects use now.
 - `llmtodo issue ask|questions|answer|undo-answer`
 - `llmtodo session show|note`
 - `llmtodo label|status|project|milestone|doc|team|view ...`
-- `llmtodo sync push|pull|status`, `llmtodo db status|migrate|use` (LLM-461, LLM-462, target), `llmtodo prune`, `llmtodo github sync`, `llmtodo server install|run|stop|status`
+- `llmtodo sync push|pull|status`, `llmtodo db status|set-url|clear-url|use|migrate` (LLM-461, LLM-462), `llmtodo prune`, `llmtodo github sync`, `llmtodo server install|run|stop|status`
 - `llmtodo import linear`
 - `llmtodo api` sends a raw request, as an escape hatch
 
@@ -462,7 +464,7 @@ Gap review additions:
 
 ### Config
 
-- Global config: `config.toml`, in the first of these folders: `LLMTODO_CONFIG_DIR`, then `$XDG_CONFIG_HOME/llmtodo`, then `~/.config/llmtodo`, also on macOS. `llmtodo_client::config` resolves the path and reads and writes the file for every client (LLM-449). The top level holds `data_dir`, and the `[app]` table holds the app's preferences. The `[database]` table holds `backend`, `"sqlite"` by default or `"postgres"`, and never the connection string (LLM-461, target).
+- Global config: `config.toml`, in the first of these folders: `LLMTODO_CONFIG_DIR`, then `$XDG_CONFIG_HOME/llmtodo`, then `~/.config/llmtodo`, also on macOS. `llmtodo_client::config` resolves the path and reads and writes the file for every client (LLM-449). The top level holds `data_dir`, and the `[app]` table holds the app's preferences. The `[database]` table holds `backend`, `"sqlite"` by default or `"postgres"`, and never the connection string. It applies only to the main data folder (LLM-461).
 - The app splits its settings in two. Preferences go to `config.toml`: `theme`, `color_theme`, `vim_editor`, `mascot`, `animations`, `strike_done`, `hidden_columns`, `hide_closed`, `hide_closed_days`, `open_last_view` and `zoom`. State that changes every few seconds goes to `ui-state.json` in the standard data folder, or in `LLMTODO_CONFIG_DIR` when that is set: the window frame, pane and panel sizes, open tabs, the last task, the sidebar, sort, grouping and collapsed groups. So a `config.toml` in git does not change when the window moves.
 - The app never fights the person's setup for `config.toml`:
   - No file is fine. The app does not create it at start, and writes only the keys the person changes.
@@ -607,8 +609,8 @@ What the numbers say:
 
 ## Tests
 
-- Server integration tests run against a temporary SQLite file. When `LLMTODO_TEST_POSTGRES_URL` is set, they also run against a fresh Postgres database, and CI sets it (LLM-453, LLM-463, target).
-- A two-server test runs two servers on one Postgres database. Both claim one task at once and exactly one wins, and a write on one reaches a live client of the other (LLM-457, LLM-459, target).
+- Server integration tests run against a temporary SQLite file. When `LLMTODO_TEST_POSTGRES_URL` is set, they run against a fresh Postgres database for each data folder instead, and CI runs them both ways (LLM-453, LLM-463). Tests that read SQLite internals return early on Postgres.
+- A two-server test runs two servers on one Postgres database. Both claim one task at once and exactly one wins, and a write on one reaches a live client of the other. A round trip from SQLite through Postgres and back keeps every row (LLM-457, LLM-459, LLM-462).
 - CLI tests run against a server started inside the test process.
 - A concurrency test starts 20 claimers on one frontier at once and checks that each issue gets exactly one owner.
 - The coverage test checks that every API endpoint has a CLI command.
@@ -683,3 +685,4 @@ Build decisions, 2026-11-10:
 48. **Tabs that do not fit go under More (LLM-197).** The task view's tab bar shows the tabs that fit, from the left. The rest go under a "More (N)" button at the right end of the tabs, which opens a GPUI Kit dropdown menu. The bar never scrolls sideways. It measures each label with the text system as it renders, and a canvas records the room the tabs had. Keyboard tab switching still reaches every tab.
 49. **An epic's order is stored as real `blocks` edges (LLM-206).** A sub-issue has a step number scoped to its parent. The server turns the steps into `blocks` relations with `source = order` and rewrites them on each order change, in the same transaction. Six queries read `blocks` edges, so real edges keep all of them, the cycle check and the 50,000-issue plan unchanged. A view that computed the edges on the fly would touch every one of them. See "Order (LLM-206)".
 50. **An optional shared Postgres backend (LLM-450).** The owner chose this on 2026-11-23, to share live data between laptops. SQLite stays the default. Each laptop keeps its own local server, and only the database is hosted, with Neon as the first target. Every feature works on both backends. This replaces the "no repository traits" rule in `ARCHITECTURE.md` with one backend layer. A laptop that joins a shared database sets its local file aside as a backup, and nothing merges two databases. See "Shared Postgres".
+51. **A shared database is allowed to sleep (LLM-465).** Neon suspends a database after 5 idle minutes, and its free tier counts the hours a database runs. So on Postgres the server holds no connection and runs no job while nobody uses it: the event listener runs only while a client follows live events, and the GitHub poll pauses after 10 quiet minutes. The cost is a slower first request after a pause, while the database wakes.
