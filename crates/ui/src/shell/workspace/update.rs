@@ -274,10 +274,10 @@ impl Workspace {
     }
 
     /// The title bar button. It shows only when a new build is installed.
-    pub(super) fn render_update_button(&self) -> Option<AnyElement> {
+    pub(super) fn update_button(&self) -> Option<Entity<UpdateButton>> {
         let state = self.update.as_ref()?;
         state.ready.as_ref()?;
-        Some(state.button.clone().into_any_element())
+        Some(state.button.clone())
     }
 }
 

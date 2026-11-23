@@ -1,5 +1,5 @@
-//! Draws the window: the split, the title bar, the status bar, the help
-//! overlay and the task menu.
+//! Draws the window: the split, the help overlay and the task menu. The
+//! title bar and the status bar are their own views, in `bars.rs`.
 
 use super::*;
 
@@ -258,128 +258,6 @@ impl Workspace {
             .child(panel)
     }
 
-    /// The project of the scope on the left, its repo or folder on the
-    /// right. A click on the repo opens it; a click on the folder copies
-    /// it. Restart to update sits left of them.
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let update = self.render_update_button();
-        let (name, place) = self.title_place(cx);
-        let place = self.render_title_place(place, cx);
-        let project_icon = self.title_project_icon(cx);
-        let theme = cx.theme();
-        let sidebar_open = self.sidebar_shown();
-        // Which tracker is open, when there is a choice. The real one says
-        // so plainly, so the owner never edits real data by mistake.
-        let tracker = self.store.read(cx).open_tracker().map(|t| {
-            let (label, tip) = if t.read_only {
-                (
-                    format!("{}: read-only", t.name),
-                    "This preview can read your real tracker but cannot change it",
-                )
-            } else if t.real {
-                (
-                    format!("{}: real data", t.name),
-                    "Changes here change your real tracker",
-                )
-            } else {
-                (t.name.to_string(), "Changes here stay in this tracker")
-            };
-            h_flex()
-                .id("open-tracker")
-                .test_support()
-                .flex_none()
-                .gap_1()
-                .px_1p5()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(if t.real {
-                    theme.foreground
-                } else {
-                    theme.border
-                })
-                .text_xs()
-                .text_color(if t.real {
-                    theme.foreground
-                } else {
-                    theme.muted_foreground
-                })
-                .when(t.real, |this| {
-                    this.font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                })
-                .tooltip(crate::shell::tooltip::Card::text(tip).builder())
-                .child(Icon::new(IconName::Database).xsmall())
-                .child(crate::shell::widgets::card_text(label, cx))
-        });
-        // Owner rule: the title bar is the plain page color, with no fill,
-        // and always has a border under it. Zoom never changes its size
-        // (LLM-212).
-        crate::shell::unzoomed::unzoomed(
-            TitleBar::new()
-                .bg(theme.background)
-                .border_b_1()
-                .border_color(theme.border)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .pr_2()
-                        .justify_between()
-                        .text_sm()
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .child(crate::shell::tooltip::with_card(
-                                    "toggle-sidebar-tip",
-                                    Button::new("toggle-sidebar")
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::PanelLeft)
-                                        .selected(sidebar_open)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_sidebar(&ToggleSidebar, window, cx);
-                                        })),
-                                    crate::shell::tooltip::Card::text(if sidebar_open {
-                                        "Hide sidebar (Cmd-B)"
-                                    } else {
-                                        "Show sidebar (Cmd-B)"
-                                    }),
-                                ))
-                                .children(project_icon)
-                                .child(
-                                    div()
-                                        .id("project-name")
-                                        .test_support()
-                                        .text_color(theme.foreground)
-                                        .child(name),
-                                )
-                                .children(tracker),
-                        )
-                        .child(h_flex().gap_2().children(update).children(place)),
-                ),
-        )
-    }
-
-    /// The icon of the scope's project, in its color, before its name in
-    /// the title bar. None for other scopes and for development runs.
-    fn title_project_icon(&self, cx: &App) -> Option<impl IntoElement> {
-        if self.project_dir.is_some() {
-            return None;
-        }
-        let catalog = &self.store.read(cx).catalog;
-        let slug = super::scope_project(&self.list.read(cx).scope, catalog)?;
-        catalog.projects.iter().find(|p| p.key == slug)?;
-        let style = catalog.project_style(&slug);
-        Some(
-            div()
-                .id("title-project-icon")
-                .test_support()
-                .flex_none()
-                .child(
-                    crate::shell::icons::project_icon(&style, cx.theme().muted_foreground, cx)
-                        .small(),
-                ),
-        )
-    }
-
     /// The scope's project name and its repo or folder, for the title bar.
     pub(crate) fn title_place(&self, cx: &App) -> (SharedString, TitlePlace) {
         let store = self.store.read(cx);
@@ -395,71 +273,6 @@ impl Workspace {
             self.project_dir.as_deref(),
             home.as_deref(),
         )
-    }
-
-    /// The repo as a link, or the folder as a copy button. Neither for a
-    /// scope that is not one project.
-    fn render_title_place(
-        &self,
-        place: TitlePlace,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui_kit::AnyElement> {
-        let theme = cx.theme();
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
-        let mono = theme.mono_font_family.clone();
-        let muted = theme.muted_foreground;
-        let radius = theme.radius;
-        match place {
-            TitlePlace::None => None,
-            TitlePlace::Repo { label, url } => {
-                let tip = if url.starts_with("https://github.com/") {
-                    "Open on GitHub"
-                } else {
-                    "Open the repo"
-                };
-                Some(
-                    div()
-                        .id("project-repo")
-                        .test_support()
-                        .px_1()
-                        .rounded(radius)
-                        .hover(move |s| s.bg(hover))
-                        .active(move |s| s.bg(pressed))
-                        .tooltip(crate::shell::tooltip::Card::text(tip).builder())
-                        .child(
-                            crate::shell::widgets::link("project-repo-link", url, cx)
-                                .font_family(mono)
-                                .text_xs()
-                                .child(crate::shell::widgets::card_text(label, cx)),
-                        )
-                        .into_any_element(),
-                )
-            }
-            TitlePlace::Folder(path) => Some(
-                div()
-                    .id("project-path")
-                    .test_support()
-                    .px_1()
-                    .rounded(radius)
-                    .cursor_pointer()
-                    .font_family(mono)
-                    .text_xs()
-                    .text_color(muted)
-                    .hover(move |s| s.bg(hover))
-                    .active(move |s| s.bg(pressed))
-                    .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
-                    .child(crate::shell::widgets::card_text(path.clone(), cx))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                            path.to_string(),
-                        ));
-                        this.message = format!("Copied {path}").into();
-                        this.flash("Copied", window, cx);
-                    }))
-                    .into_any_element(),
-            ),
-        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -563,152 +376,6 @@ impl Workspace {
                     })),
             )
     }
-
-    fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let task = self.task.read(cx);
-        let mode = if task.editing() && task.editor_focused(window, cx) {
-            task.editor_vim.name()
-        } else {
-            self.vim_mode(window, cx)
-        };
-        let count = self.visible_count(cx);
-        let scope = self.list.read(cx).scope.clone();
-        let mut count = match scope {
-            Scope::All => format!("{count} issues"),
-            Scope::Settings => String::new(),
-            _ => format!(
-                "{count} issues in {}",
-                scope.name(&self.store.read(cx).catalog)
-            ),
-        };
-        let hidden = self.list.read(cx).hidden_closed();
-        if hidden > 0 {
-            count.push_str(&format!(", {hidden} old closed hidden"));
-        }
-        let marked = self.list.read(cx).marked.len();
-        if marked > 0 {
-            count.push_str(&format!(", {marked} marked"));
-        }
-        let connection = self.store.read(cx).connection.clone();
-        let claimed = self.store.read(cx).claim_count();
-        let theme = cx.theme();
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
-        let radius = theme.radius;
-        // The offer repeats the answer message, so that message shows once.
-        let offer = self.answer_undo.as_ref().map(|u| u.message.clone());
-        let plain_message = (offer.as_ref() != Some(&self.message)).then(|| self.message.clone());
-        let undo = crate::shell::widgets::button("answer-undo-button", false)
-            .xsmall()
-            .label("Undo")
-            .tooltip("Undo this answer (u in the inbox)")
-            .on_click(cx.listener(|this, _, _, cx| this.undo_answer(cx)));
-        StatusBar::new()
-            .left(
-                h_flex()
-                    .gap_3()
-                    .text_xs()
-                    .child(
-                        div()
-                            .font_family(theme.mono_font_family.clone())
-                            .child(mode.to_uppercase()),
-                    )
-                    .map(|this| {
-                        if count.is_empty() {
-                            return this;
-                        }
-                        // The count names the project: a click opens the
-                        // palette on `project `, the UI for `:project X`.
-                        this.child(
-                            div()
-                                .id("status-count")
-                                .test_support()
-                                .px_1()
-                                .rounded(radius)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover))
-                                .active(move |s| s.bg(pressed))
-                                .child(count)
-                                .tooltip(
-                                    crate::shell::tooltip::Card::text("Switch project (:project)")
-                                        .builder(),
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_palette_with("project ", window, cx)
-                                })),
-                        )
-                    })
-                    .when_some(offer, |this, offer| {
-                        this.child(
-                            h_flex()
-                                .id("answer-undo")
-                                .test_support()
-                                .gap_2()
-                                .child(div().max_w(gpui_kit::px(560.)).truncate().child(offer))
-                                .child(undo),
-                        )
-                    })
-                    .when_some(plain_message.filter(|m| !m.is_empty()), |this, message| {
-                        // The message keeps to one line. Long text ends in
-                        // an ellipsis, and a hover shows all of it.
-                        let full = message.clone();
-                        this.child(
-                            div()
-                                .id("status-message")
-                                .test_support()
-                                .min_w_0()
-                                .max_w(gpui_kit::px(560.))
-                                .truncate()
-                                .child(one_line(&message))
-                                .tooltip(crate::shell::tooltip::Card::text(full).builder()),
-                        )
-                    }),
-            )
-            .right(
-                h_flex()
-                    .gap_3()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .map(|this| match &connection {
-                        Connection::Local => this,
-                        Connection::Connecting => this.child("Connecting…"),
-                        Connection::Online(url) => this.child(
-                            h_flex()
-                                .gap_1()
-                                .child(Icon::new(IconName::Radio).xsmall())
-                                .child(format!("Live · {url}")),
-                        ),
-                        // The one state the owner must notice, so it uses
-                        // the foreground, not muted text.
-                        Connection::Offline(_) => this.child(
-                            h_flex()
-                                .gap_1()
-                                .text_color(theme.foreground)
-                                .child(Icon::new(IconName::Unplug).xsmall())
-                                .child("Offline, retrying"),
-                        ),
-                    })
-                    .when(claimed > 0, |this| {
-                        this.child(
-                            h_flex()
-                                .id("status-claims")
-                                .test_support()
-                                .gap_1()
-                                .px_1()
-                                .rounded(radius)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(hover))
-                                .active(move |s| s.bg(pressed))
-                                .child(Icon::new(IconName::Lock).xsmall())
-                                .child(format!("{claimed} claimed"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_claims(&ShowClaims, window, cx)
-                                })),
-                        )
-                    })
-                    .child("? keys"),
-            )
-    }
 }
 
 /// A view drawn from its cache until it notifies. A cat frame or an
@@ -729,6 +396,8 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::render_count::bump::<Self>();
         self.sync_auto_split(window, cx);
         // Only when the owner was typing: focus elsewhere stays there. The
         // preview takes focus after this frame, once it is drawn.
@@ -742,6 +411,8 @@ impl Render for Workspace {
         let claims_open = self.claims.read(cx).is_open();
         let sidebar_open =
             crate::shell::motion::panel_open("sidebar-open", self.sidebar_shown(), window, cx);
+        self.sync_bars(window, cx);
+        let status_height = self.status_bar_height(window, cx);
         let theme = cx.theme();
         v_flex()
             .id("workspace")
@@ -829,7 +500,16 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(self.render_title_bar(cx))
+            // Each bar is its own cached view, so a cat frame or a cursor
+            // blink draws neither (LLM-348).
+            .child(
+                self.title_bar.clone().cached(
+                    gpui_kit::StyleRefinement::default()
+                        .w_full()
+                        .flex_none()
+                        .h(gpui_kit::component::TITLE_BAR_HEIGHT),
+                ),
+            )
             .children(self.render_not_primary(cx))
             .child(
                 h_flex()
@@ -850,7 +530,14 @@ impl Render for Workspace {
                         }
                     }),
             )
-            .child(self.render_status_bar(window, cx))
+            .child(
+                self.status_bar.clone().cached(
+                    gpui_kit::StyleRefinement::default()
+                        .w_full()
+                        .flex_none()
+                        .h(status_height),
+                ),
+            )
             .when(palette_open, |this| this.child(self.palette.clone()))
             .when(self.create.read(cx).is_open(), |this| {
                 this.child(self.create.clone())
