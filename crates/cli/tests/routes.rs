@@ -315,6 +315,9 @@ async fn every_route_is_called_by_its_command() {
     h.run("sync status", &["sync", "status"]);
     h.run("sync push", &["sync", "push", "--folder", &sync]);
     h.run("sync pull", &["sync", "pull", "--folder", &sync, "--force"]);
+    // On SQLite the outbox is empty, and a drop finds no row.
+    h.run("db outbox", &["db", "outbox"]);
+    h.run("db outbox drop", &["db", "outbox", "drop", "1", "-y"]);
     h.run("server stop", &["server", "stop"]);
 
     let mut missing = Vec::new();

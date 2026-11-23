@@ -11,7 +11,9 @@ fn describe(cmd: &clap::Command, path: &str) -> Vec<Value> {
         .get_subcommands()
         .filter(|c| c.get_name() != "help")
         .collect();
-    if (subs.is_empty() || path.is_empty()) && !path.is_empty() {
+    // A command whose subcommand is optional, such as `db outbox`, runs
+    // on its own too.
+    if (subs.is_empty() || !cmd.is_subcommand_required_set()) && !path.is_empty() {
         let args: Vec<Value> = cmd
             .get_arguments()
             .filter(|a| !a.is_global_set() && a.get_id() != "help" && a.get_id() != "version")
@@ -64,7 +66,8 @@ pub fn schema() -> Value {
         "0": "success", "1": "unknown error", "2": "bad flags or arguments", "3": "not found",
         "4": "claim held by another session", "5": "stale version on a description or document write",
         "6": "validation failed", "7": "server unreachable and could not start, or its shared database unreachable", "8": "input needed, but --no-input is set",
-        "9": "this machine is not the primary", "10": "patch matched zero times or more than once", "11": "forbidden, such as prune by an agent"
+        "9": "this machine is not the primary", "10": "patch matched zero times or more than once", "11": "forbidden, such as prune by an agent",
+        "12": "needs the shared database: the server works offline on its local copy"
     });
     let error_codes: serde_json::Map<String, Value> = llmtodo_api_types::ErrorCode::ALL
         .iter()

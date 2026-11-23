@@ -117,6 +117,9 @@ pub struct Shared {
     /// while the copy is refreshed or swapped. So no outbox row is lost
     /// and no write lands between a check and a swap.
     gate: tokio::sync::Mutex<()>,
+    /// Held while the copy is written again whole, so two writes never
+    /// share the partial file.
+    rebuilding: tokio::sync::Mutex<()>,
     refresh: Notify,
     reconnecting: AtomicBool,
 }
@@ -132,6 +135,7 @@ impl Shared {
             waiting: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             gate: tokio::sync::Mutex::new(()),
+            rebuilding: tokio::sync::Mutex::new(()),
             refresh: Notify::new(),
             reconnecting: AtomicBool::new(false),
         }
@@ -272,6 +276,7 @@ pub async fn rebuild(state: &AppState) -> anyhow::Result<()> {
     let pg = shared
         .pg()
         .ok_or_else(|| anyhow::anyhow!("no Postgres pool"))?;
+    let _rebuilding = shared.rebuilding.lock().await;
     let path = mirror_path(&state.data_dir);
     let partial = path.with_extension("db.partial");
     remove_sqlite_files(&partial);
@@ -337,6 +342,10 @@ fn remove_sqlite_files(path: &Path) {
 async fn refresh(state: &AppState) -> anyhow::Result<()> {
     let shared = state.shared.as_ref().expect("offline mode");
     let (Some(pg), Some(mirror)) = (shared.pg(), shared.mirror()) else {
+        // The first copy is still being written; it will be current.
+        if shared.rebuilding.try_lock().is_err() {
+            return Ok(());
+        }
         return rebuild(state).await;
     };
     let gate = shared.gate.lock().await;
