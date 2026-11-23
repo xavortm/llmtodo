@@ -1452,6 +1452,48 @@ async fn websocket_drop_and_catch_up() {
     t.stop().await;
 }
 
+/// LLM-351: a socket that falls behind the live channel hears `lagged`, so
+/// it catches up from its last seq. It does not hear `reload`, which would
+/// make the app load a full snapshot, and the socket stays open.
+#[tokio::test]
+async fn a_lagging_socket_hears_lagged_not_reload() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let t = T::new().await;
+    let ws_url = format!("{}/v1/ws", t.url.replacen("http://", "ws://", 1));
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    let hello: Value = match ws.next().await.unwrap().unwrap() {
+        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        m => panic!("unexpected {m:?}"),
+    };
+    assert_eq!(hello["type"], "hello");
+
+    // The test runs on one thread, so the socket's task cannot read the
+    // channel while this loop fills it past its capacity.
+    let events = &t.running.as_ref().unwrap().state.events;
+    for _ in 0..2000 {
+        let _ = events.send(WsMessage::Hello {
+            last_seq: 0,
+            version: "filler".into(),
+        });
+    }
+    let first: Value = loop {
+        if let Message::Text(t) = ws.next().await.unwrap().unwrap() {
+            break serde_json::from_str(&t).unwrap();
+        }
+    };
+    assert_eq!(first["type"], "lagged");
+
+    // The socket stays open and goes on with the events still kept.
+    let next: Value = loop {
+        if let Message::Text(t) = ws.next().await.unwrap().unwrap() {
+            break serde_json::from_str(&t).unwrap();
+        }
+    };
+    assert_eq!(next["version"], "filler");
+    t.stop().await;
+}
+
 #[tokio::test]
 async fn sync_handoff_between_two_machines() {
     let shared = tempfile::tempdir().unwrap();
