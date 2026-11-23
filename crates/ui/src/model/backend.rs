@@ -568,6 +568,37 @@ const PING_EVERY: Duration = if cfg!(test) {
     Duration::from_secs(5)
 };
 
+/// The limit for the health check and for opening the live socket, the
+/// steps of a connect that have no ping to watch. The server's own health
+/// check waits 3 s for its database, so this leaves room for that.
+const SETUP_WITHIN: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(10)
+};
+
+/// The limit for finding the server. Starting one takes up to 5 s more.
+const CONNECT_WITHIN: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(15)
+};
+
+/// Runs one step of a connect within `limit`. A step that runs out ends
+/// the try as a server that stopped answering.
+async fn within<T>(
+    limit: Duration,
+    step: &str,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, Lost> {
+    tokio::time::timeout(limit, work).await.map_err(|_| {
+        Lost::Server(format!(
+            "the server stopped answering during {step} ({} s)",
+            limit.as_secs_f32()
+        ))
+    })
+}
+
 /// The wait before a retry after the first failure.
 const FIRST_DELAY: Duration = Duration::from_millis(250);
 const MAX_DELAY: Duration = Duration::from_secs(5);
@@ -853,9 +884,13 @@ async fn session(
         // The app never stops a running server; the CLI does upgrades.
         upgrade_old_server: false,
     }
-    .connect()
-    .await
-    .map_err(|e| Lost::from_error(&e))?;
+    .connect();
+    // Each step before the live socket opens has its own limit, since there
+    // is no ping to watch yet. Without one, a server that goes silent here
+    // holds the app for the client's 60 s request timeout (LLM-476).
+    let client = within(CONNECT_WITHIN, "the connect", client)
+        .await?
+        .map_err(|e| Lost::from_error(&e))?;
     let client = if target.read_only {
         client.read_only()
     } else {
@@ -864,11 +899,18 @@ async fn session(
 
     // A server that lost its shared database answers its health check, and
     // says so. The thread waits for the database like for a server.
-    let health = client.health().await.ok();
+    let health = within(SETUP_WITHIN, "the health check", client.health())
+        .await?
+        .ok();
     if let Some(lost) = health.as_ref().and_then(Lost::from_health) {
         return Err(lost);
     }
-    let mut live = live::Connection::open(&client, PING_EVERY).await?;
+    let mut live = within(
+        SETUP_WITHIN,
+        "opening the live connection",
+        live::Connection::open(&client, PING_EVERY),
+    )
+    .await??;
     // The server subscribes before it says hello, so no event between the
     // hello and the snapshot below is lost.
     let hello_seq = live.hello_seq;
@@ -1170,8 +1212,12 @@ async fn handle(
             *settled = true;
             match created {
                 Ok(detail) => {
+                    // No await between the create and these two events, so
+                    // a server that goes silent now cannot leave the app
+                    // with neither Created nor CreateFailed (LLM-476). A new
+                    // issue has no sessions, so it has no commits to read.
                     let (id, key) = (detail.issue.id, detail.issue.key.to_string());
-                    send_detail(client, detail, events).await;
+                    send(events, Event::IssueDetail(Box::new(detail_parts(detail))));
                     send(events, Event::Created { id, key });
                 }
                 Err(e) if fatal(&e) => {
@@ -1746,16 +1792,17 @@ pub(crate) fn local_host() -> Option<String> {
 async fn send_detail(client: &Client, detail: IssueDetail, events: &Events) {
     let fallback = project_folder(client, &detail).await;
     let detail = with_commits(detail, fallback).await;
-    send(
-        events,
-        Event::IssueDetail(Box::new(DetailParts {
-            issue: detail.issue,
-            relations: detail.relations,
-            reviews: detail.reviews,
-            git: detail.git,
-            sessions: detail.sessions,
-        })),
-    );
+    send(events, Event::IssueDetail(Box::new(detail_parts(detail))));
+}
+
+fn detail_parts(detail: IssueDetail) -> DetailParts {
+    DetailParts {
+        issue: detail.issue,
+        relations: detail.relations,
+        reviews: detail.reviews,
+        git: detail.git,
+        sessions: detail.sessions,
+    }
 }
 
 /// The folder the git panel reads once a session's worktree is gone:

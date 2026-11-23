@@ -734,6 +734,39 @@ fn backend_notices_a_server_that_goes_silent_during_the_first_load() {
     });
 }
 
+/// LLM-476: the server goes silent before the live socket opens, in the
+/// health check of the connect or while the socket opens. There is no ping
+/// to watch yet, so each step has its own limit. The app shows Offline
+/// within it, not after the request's 60 s timeout, and connects once the
+/// server answers again. The wait in `Live::wait` is 10 s.
+fn notices_silence_before_the_socket(needle: &'static [u8], step: &str) {
+    let live = Live::new();
+    let proxy = live.proxy();
+    proxy.freeze_on(needle);
+    let (_backend, mut events) = live.backend();
+    let reason = live.wait(&mut events, "offline", |e| match e {
+        Event::Offline { reason } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(reason.contains("stopped answering"), "{reason}");
+    assert!(reason.contains(step), "{reason}");
+
+    proxy.freeze(false);
+    live.wait(&mut events, "reconnect", |e| {
+        matches!(e, Event::Connected { .. }).then_some(())
+    });
+}
+
+#[test]
+fn backend_notices_a_server_that_goes_silent_in_the_health_check() {
+    notices_silence_before_the_socket(b"GET /v1/health", "the connect");
+}
+
+#[test]
+fn backend_notices_a_server_that_goes_silent_while_the_socket_opens() {
+    notices_silence_before_the_socket(b"GET /v1/ws", "opening the live connection");
+}
+
 /// LLM-475: the server goes silent while a save runs. The save fails within
 /// the ping window and is owed, so the reconnect fetches the issue again.
 /// The proxy kept the save from the server, so the server's copy is the
