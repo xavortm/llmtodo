@@ -265,8 +265,8 @@ impl Render for UpdateButton {
                 ButtonCustomVariant::new(cx)
                     .color(gold(0.55))
                     .foreground(hsla(0., 0., 0.1, 1.))
-                    .hover(gold(0.63))
-                    .active(gold(0.47)),
+                    .hover(gold(0.60))
+                    .active(gold(0.50)),
             )
             .xsmall()
             .icon(IconName::RefreshCw)
