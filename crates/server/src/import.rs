@@ -21,6 +21,7 @@ use sha2::Digest;
 use crate::db::{self, new_id, now};
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, Ctx, Write};
+use crate::store::backend::Backend;
 use crate::store::{self, actors, projects};
 
 pub const LINEAR_API: &str = "https://api.linear.app/graphql";
@@ -401,7 +402,16 @@ async fn download_files(
     for url in urls {
         let known: Option<String> =
             store::import::source_hash(&mut pool.acquire().await?, &url).await?;
-        if let Some(h) = known.filter(|h| dir.join(h).exists()) {
+        let stored = match &known {
+            Some(h) if pool.backend() == Backend::Postgres => {
+                store::import::file_content(&mut pool.acquire().await?, h)
+                    .await?
+                    .is_some()
+            }
+            Some(h) => dir.join(h).exists(),
+            None => false,
+        };
+        if let Some(h) = known.filter(|_| stored) {
             count(report, "files", Change::Unchanged);
             map.insert(url, h);
             continue;
@@ -409,16 +419,25 @@ async fn download_files(
         match fetch.download(&url).await {
             Ok((bytes, mime)) => {
                 let hash = hex::encode(sha2::Sha256::digest(&bytes));
-                let path = dir.join(&hash);
-                if !path.exists() {
-                    std::fs::write(&path, &bytes).map_err(|e| ApiError::internal(e.to_string()))?;
-                }
+                // A shared database keeps the bytes, so every server can
+                // serve them (LLM-458). SQLite keeps them in `files/`.
+                let content = if pool.backend() == Backend::Postgres {
+                    Some(bytes.to_vec())
+                } else {
+                    let path = dir.join(&hash);
+                    if !path.exists() {
+                        std::fs::write(&path, &bytes)
+                            .map_err(|e| ApiError::internal(e.to_string()))?;
+                    }
+                    None
+                };
                 store::import::insert_file(
                     &mut pool.acquire().await?,
                     &hash,
                     mime,
                     bytes.len() as i64,
                     &url,
+                    content,
                 )
                 .await?;
                 store::import::link_file_source(&mut pool.acquire().await?, &url, &hash).await?;

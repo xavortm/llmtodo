@@ -11,6 +11,7 @@ async fn start(dir: &Path) -> llmtodo_server::Running {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::Database::Sqlite,
     })
     .await
     .unwrap()

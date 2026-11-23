@@ -18,14 +18,14 @@ pub async fn touch(conn: &mut Conn, ctx: &Ctx, session: &str, issue_id: &str) ->
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (session_id, issue_id) DO UPDATE SET
             actor_id = excluded.actor_id,
-            harness_version = coalesce(excluded.harness_version, harness_version),
-            transcript_path = coalesce(excluded.transcript_path, transcript_path),
-            herdr_pane = coalesce(excluded.herdr_pane, herdr_pane),
-            host = coalesce(excluded.host, host),
-            worktree = coalesce(excluded.worktree, worktree),
-            branch = coalesce(excluded.branch, branch),
-            first_head = coalesce(first_head, excluded.first_head),
-            last_head = coalesce(excluded.last_head, last_head),
+            harness_version = coalesce(excluded.harness_version, work_sessions.harness_version),
+            transcript_path = coalesce(excluded.transcript_path, work_sessions.transcript_path),
+            herdr_pane = coalesce(excluded.herdr_pane, work_sessions.herdr_pane),
+            host = coalesce(excluded.host, work_sessions.host),
+            worktree = coalesce(excluded.worktree, work_sessions.worktree),
+            branch = coalesce(excluded.branch, work_sessions.branch),
+            first_head = coalesce(work_sessions.first_head, excluded.first_head),
+            last_head = coalesce(excluded.last_head, work_sessions.last_head),
             last_seen_at = excluded.last_seen_at",
     )
     .bind(new_id())

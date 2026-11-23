@@ -59,6 +59,7 @@ impl T {
             port: 0,
             host: host.map(str::to_string),
             github_poll: false,
+            database: llmtodo_server::test_database(dir.path()).await,
         })
         .await
         .unwrap();
@@ -1496,6 +1497,10 @@ async fn a_lagging_socket_hears_lagged_not_reload() {
 
 #[tokio::test]
 async fn sync_handoff_between_two_machines() {
+    // SQLite only: laptop handoff is SQLite only.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     let shared = tempfile::tempdir().unwrap();
     let folder = shared.path().display().to_string();
     let a = T::bare(Some("mac-a")).await;
@@ -1622,6 +1627,10 @@ async fn sync_handoff_between_two_machines() {
 /// The old file has the same unpacked size, so a size check alone passes.
 #[tokio::test]
 async fn sync_pull_refuses_a_database_older_than_its_manifest() {
+    // SQLite only: laptop handoff is SQLite only.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     let shared = tempfile::tempdir().unwrap();
     let folder = shared.path().display().to_string();
     let a = T::bare(Some("mac-a")).await;
@@ -1688,6 +1697,10 @@ async fn sync_pull_refuses_a_database_older_than_its_manifest() {
 /// the server keeps serving reads and writes from the old database.
 #[tokio::test]
 async fn failed_sync_pull_leaves_the_server_working() {
+    // SQLite only: laptop handoff is SQLite only.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     use sha2::Digest;
     use std::io::Write as _;
     let shared = tempfile::tempdir().unwrap();
@@ -2609,18 +2622,14 @@ async fn query_filters_by_llm_status() {
         .as_str()
         .unwrap()
         .to_string();
-    let pool = sqlx::SqlitePool::connect(&format!(
-        "sqlite://{}",
-        llmtodo_server::db::db_path(t._dir.path()).display()
-    ))
+    let pool = t.running.as_ref().unwrap().state.pool();
+    llmtodo_server::store::backend::query(
+        "UPDATE analyzing SET seen_at = '2020-01-01T00:00:00.000000Z' WHERE issue_id = ?",
+    )
+    .bind(expired_id)
+    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE analyzing SET seen_at = '2020-01-01T00:00:00.000000Z' WHERE issue_id = ?")
-        .bind(expired_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    pool.close().await;
 
     let keys = |q: Value| {
         let t = &t;
@@ -2704,17 +2713,13 @@ async fn analyzing_marks_never_block_and_expire() {
 
     // A mark without a write for 15 minutes expires. A later write by the
     // same session does not bring it back.
-    let pool = sqlx::SqlitePool::connect(&format!(
-        "sqlite://{}",
-        llmtodo_server::db::db_path(t._dir.path()).display()
-    ))
+    let pool = t.running.as_ref().unwrap().state.pool();
+    llmtodo_server::store::backend::query(
+        "UPDATE analyzing SET seen_at = '2020-01-01T00:00:00.000000Z'",
+    )
+    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE analyzing SET seen_at = '2020-01-01T00:00:00.000000Z'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    pool.close().await;
     let view = t.ok(&owner(), "GET", &path(""), json!({})).await;
     assert!(view["analyzing"].is_null(), "{view}");
     t.ok(&a, "PATCH", &path(""), json!({ "title": "Again" }))
@@ -2978,6 +2983,10 @@ async fn author_of(
 /// each answer in the revisions, and changes nothing else.
 #[tokio::test]
 async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
+    // SQLite only: it rolls back a SQLite migration.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     let mut t = T::new().await;
     let o = owner();
     let a1 = agent("s1");
@@ -3144,6 +3153,7 @@ async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(&dir).await,
     })
     .await
     .unwrap();
@@ -4169,6 +4179,10 @@ async fn assert_search_rows_consistent(db: &mut sqlx::SqliteConnection) {
 /// still adds, replaces and removes the right FTS rows.
 #[tokio::test]
 async fn search_rows_follow_every_write() {
+    // SQLite only: it reads SQLite's FTS tables and query plans; LLM-455 covers search on Postgres.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     use sqlx::Connection as _;
     let t = T::new().await;
     let mut db = sqlx::SqliteConnection::connect(&format!(
@@ -4356,6 +4370,10 @@ async fn search_rows_follow_every_write() {
 /// ranked results stay the same.
 #[tokio::test]
 async fn fts_rowid_migration_keeps_search_results() {
+    // SQLite only: it tests a SQLite migration.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     use sqlx::Connection as _;
     let dir = tempfile::tempdir().unwrap();
     let mut db = sqlx::SqliteConnection::connect(&format!(

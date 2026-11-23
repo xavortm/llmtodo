@@ -16,6 +16,7 @@ impl T {
             port: 0,
             host: None,
             github_poll: false,
+            database: llmtodo_server::Database::Sqlite,
         })
         .await
         .unwrap();

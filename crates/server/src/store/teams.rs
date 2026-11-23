@@ -46,8 +46,7 @@ impl StatusRow {
     }
 }
 
-const STATUS_COLS: &str =
-    "s.id, s.team_id, t.key AS team_key, s.name, s.type, s.color, s.position, s.review";
+const STATUS_COLS: &str = "s.id, s.team_id, t.key AS team_key, s.name, s.type, s.color, s.position, (s.review <> 0) AS review";
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct TeamRow {
@@ -258,8 +257,9 @@ pub async fn default_team(conn: &mut Conn) -> ApiResult<TeamRow> {
 }
 
 pub async fn reserve_number(c: &mut Conn, number: i64, team_id: &str) -> ApiResult<()> {
-    backend::query("UPDATE teams SET next_number = max(next_number, ? + 1) WHERE id = ?")
-        .bind(number)
+    backend::query("UPDATE teams SET next_number = CASE WHEN next_number > ? THEN next_number ELSE ? END WHERE id = ?")
+        .bind(number + 1)
+        .bind(number + 1)
         .bind(team_id)
         .execute(&mut *c)
         .await?;

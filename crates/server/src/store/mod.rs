@@ -23,5 +23,6 @@ pub mod sessions;
 pub mod settings;
 pub mod sync;
 pub mod teams;
+pub mod transfer;
 pub mod usage;
 pub mod views;

@@ -13,6 +13,7 @@ async fn start(dir: &Path) -> llmtodo_server::Running {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir).await,
     })
     .await
     .unwrap()
@@ -155,9 +156,14 @@ fn expect(texts: &[String]) -> Vec<(i64, String)> {
 }
 
 async fn stored(pool: &llmtodo_server::store::backend::Pool) -> (i64, i64, i64) {
-    llmtodo_server::store::backend::query_as(
-        "SELECT count(*), count(base_version), sum(length(CAST(body AS BLOB))) FROM revisions WHERE entity_type = 'issue'",
-    )
+    use llmtodo_server::store::backend::{self, Backend};
+    let bytes = match pool.backend() {
+        Backend::Sqlite => "length(CAST(body AS BLOB))",
+        Backend::Postgres => "octet_length(body)",
+    };
+    backend::query_as(llmtodo_server::sql!(
+        "SELECT count(*), count(base_version), CAST(sum({bytes}) AS BIGINT) FROM revisions WHERE entity_type = 'issue'"
+    ))
     .fetch_one(pool)
     .await
     .unwrap()

@@ -51,7 +51,7 @@ pub async fn documents(
     trashed: bool,
 ) -> ApiResult<Vec<DocRow>> {
     Ok(backend::query_as::<DocRow>(crate::sql!(
-        "{D_LIST} WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL)) ORDER BY p.slug, d.title COLLATE NOCASE"
+        "{D_LIST} WHERE (? IS NULL OR d.project_id = ?) AND ((? = 1 AND d.deleted_at IS NOT NULL) OR (? = 0 AND d.deleted_at IS NULL)) ORDER BY p.slug, d.title COLLATE NOCASE"
     ))
     .bind(project_id)
     .bind(project_id)
@@ -61,27 +61,32 @@ pub async fn documents(
     .await?)
 }
 
-/// Documents that match an FTS5 `terms` query, best match first, with an
-/// empty body.
+/// Documents that match a text search, best match first, with an empty
+/// body.
 pub async fn search_documents(
     conn: &mut Conn,
     project_id: Option<&str>,
     trashed: bool,
-    terms: &str,
+    search: &crate::store::issues::Search,
 ) -> ApiResult<Vec<DocRow>> {
-    Ok(backend::query_as::<DocRow>(crate::sql!(
-        "WITH fts AS MATERIALIZED (SELECT entity_id, -rank AS score FROM search_fts WHERE search_fts MATCH ? AND entity_type = 'document')
-        {D_LIST} JOIN fts ON fts.entity_id = d.id
-        WHERE (? IS NULL OR d.project_id = ?) AND ((? AND d.deleted_at IS NOT NULL) OR (NOT ? AND d.deleted_at IS NULL))
-        ORDER BY fts.score DESC, p.slug, d.title COLLATE NOCASE"
-    ))
-    .bind(terms)
-    .bind(project_id)
-    .bind(project_id)
-    .bind(trashed)
-    .bind(trashed)
-    .fetch_all(&mut *conn)
-    .await?)
+    let mut b = backend::QueryBuilder::new("");
+    crate::store::issues::push_text_matches(
+        &mut b,
+        conn.backend(),
+        "entity_id",
+        search,
+        " AND entity_type = 'document'",
+    );
+    b.push(crate::sql!("{D_LIST} JOIN fts ON fts.entity_id = d.id WHERE (").as_str())
+        .push_bind(project_id)
+        .push(" IS NULL OR d.project_id = ")
+        .push_bind(project_id)
+        .push(") AND ((")
+        .push_bind(trashed)
+        .push(" = 1 AND d.deleted_at IS NOT NULL) OR (")
+        .push_bind(trashed)
+        .push(" = 0 AND d.deleted_at IS NULL)) ORDER BY fts.score DESC, p.slug, d.title COLLATE NOCASE");
+    Ok(b.build_query_as::<DocRow>().fetch_all(&mut *conn).await?)
 }
 
 /// Resolves a document by ID, or by `project/slug`.

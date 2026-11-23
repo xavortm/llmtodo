@@ -56,16 +56,16 @@ pub async fn relations(
 }
 
 pub async fn first_duplicate_of(c: &mut Conn, id: &str) -> ApiResult<Option<i64>> {
-    Ok(
-        backend::query_scalar("SELECT 1 FROM relations WHERE type = 'duplicate' AND from_id = ?")
-            .bind(id)
-            .fetch_optional(&mut *c)
-            .await?,
+    Ok(backend::query_scalar(
+        "SELECT CAST(1 AS BIGINT) FROM relations WHERE type = 'duplicate' AND from_id = ?",
     )
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
 pub async fn related_exists(c: &mut Conn, from: &str, to: &str) -> ApiResult<Option<i64>> {
-    Ok(backend::query_scalar("SELECT 1 FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
+    Ok(backend::query_scalar("SELECT CAST(1 AS BIGINT) FROM relations WHERE type = 'related' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
         .bind(from)
         .bind(to)
         .bind(to)
@@ -76,7 +76,7 @@ pub async fn related_exists(c: &mut Conn, from: &str, to: &str) -> ApiResult<Opt
 
 pub async fn exists(c: &mut Conn, kind: &str, from: &str, to: &str) -> ApiResult<Option<i64>> {
     Ok(backend::query_scalar(
-        "SELECT 1 FROM relations WHERE type = ? AND from_id = ? AND to_id = ?",
+        "SELECT CAST(1 AS BIGINT) FROM relations WHERE type = ? AND from_id = ? AND to_id = ?",
     )
     .bind(kind)
     .bind(from)

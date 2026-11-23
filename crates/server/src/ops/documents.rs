@@ -26,9 +26,9 @@ pub async fn list(
     };
     let rows = match search {
         Some(text) => {
-            let terms = store::issues::fts_terms(text, 1, " ")
+            let search = store::issues::Search::text(text)
                 .ok_or_else(|| ApiError::bad_request("text search needs at least one word"))?;
-            documents::search_documents(c, pid.as_deref(), trashed, &terms).await?
+            documents::search_documents(c, pid.as_deref(), trashed, &search).await?
         }
         None => documents::documents(c, pid.as_deref(), trashed).await?,
     };

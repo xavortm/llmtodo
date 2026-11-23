@@ -177,3 +177,18 @@ pub async fn insert(
         .fetch_one(&mut *c)
         .await?)
 }
+
+/// The channel that tells servers on a shared Postgres database of new
+/// activity.
+pub const CHANNEL: &str = "llmtodo_activity";
+
+/// Tells every server listening on the shared database that activity up to
+/// `seq` exists. Postgres delivers it when the transaction commits.
+pub async fn notify(c: &mut Conn, seq: i64) -> ApiResult<()> {
+    backend::query("SELECT pg_notify(?, ?)")
+        .bind(CHANNEL)
+        .bind(seq.to_string())
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}

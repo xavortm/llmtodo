@@ -112,7 +112,7 @@ pub async fn list(c: &mut Conn, f: &ListFilter<'_>) -> ApiResult<Vec<ListRow>> {
          FROM questions q
          JOIN issues i ON i.id = q.issue_id
          JOIN statuses s ON s.id = i.status_id
-         WHERE (? OR q.answer IS NULL)
+         WHERE (? = 1 OR q.answer IS NULL)
            AND (q.issue_id = ? OR (? IS NULL AND i.deleted_at IS NULL
                                    AND s.type NOT IN ('completed', 'canceled')))
            AND (? IS NULL OR i.project_id = ?)

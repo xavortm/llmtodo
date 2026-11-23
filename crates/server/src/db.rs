@@ -14,6 +14,118 @@ use crate::store::backend::Pool;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// The Postgres schema. Its first migration matches SQLite's 0020, and each
+/// later change needs a migration in both folders.
+pub static PG_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations-postgres");
+
+/// A Postgres URL with the password replaced, for logs and errors.
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<invalid URL>".into();
+    };
+    let Some((userinfo, host)) = rest.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let user = userinfo.split(':').next().unwrap_or("");
+    format!("{scheme}://{user}:***@{host}")
+}
+
+/// Connects to a shared Postgres database and runs pending migrations.
+pub async fn open_postgres(url: &str) -> anyhow::Result<Pool> {
+    use sqlx::postgres::PgPoolOptions;
+    let shown = redact_url(url);
+    let pg = PgPoolOptions::new()
+        .max_connections(8)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect(url)
+        .await
+        .map_err(|e| anyhow::anyhow!("connect to Postgres at {shown}: {}", pg_error(&e)))?;
+    let pool = Pool::Postgres(pg.clone());
+    let newest_known = PG_MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0);
+    let has_table: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+        .fetch_one(&pg)
+        .await?;
+    if has_table {
+        let newest_applied: i64 =
+            sqlx::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations")
+                .fetch_one(&pg)
+                .await?;
+        if newest_applied > newest_known {
+            anyhow::bail!(
+                "the Postgres schema {newest_applied} is newer than this build supports ({newest_known}); upgrade llmtodo"
+            );
+        }
+    }
+    PG_MIGRATOR
+        .run(&pg)
+        .await
+        .context("run the Postgres migrations")?;
+    crate::ops::questions::backfill(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("fill the questions table: {}", e.message))?;
+    crate::store::revisions::compact(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("store old revisions as deltas: {}", e.message))?;
+    Ok(pool)
+}
+
+/// A connection error without the URL, which sqlx can include.
+fn pg_error(e: &sqlx::Error) -> String {
+    match e {
+        sqlx::Error::Database(d) => d.message().to_string(),
+        sqlx::Error::Io(e) => e.to_string(),
+        sqlx::Error::Tls(e) => format!("TLS: {e}"),
+        sqlx::Error::PoolTimedOut => "timed out".into(),
+        sqlx::Error::Configuration(e) => format!("bad connection string: {e}"),
+        other => other.to_string(),
+    }
+}
+
+/// Creates a fresh database next to the one in `admin_url`, and returns
+/// its URL. For tests.
+pub async fn create_test_database(admin_url: &str) -> anyhow::Result<String> {
+    use sqlx::Connection as _;
+    let name = format!("llmtodo_test_{}", uuid::Uuid::now_v7().simple());
+    let mut c = sqlx::PgConnection::connect(admin_url).await?;
+    // Test databases are never dropped by their tests, which may panic. The
+    // name holds a UUIDv7, so each run drops the ones over 30 minutes old.
+    let old: Vec<String> = sqlx::query_scalar(
+        "SELECT datname::text FROM pg_database WHERE datname LIKE 'llmtodo\\_test\\_%'",
+    )
+    .fetch_all(&mut c)
+    .await?;
+    let cutoff = Timestamp::now() - jiff::SignedDuration::from_mins(30);
+    for db in old {
+        let made = uuid::Uuid::try_parse(db.trim_start_matches("llmtodo_test_"))
+            .ok()
+            .and_then(|u| u.get_timestamp())
+            .and_then(|t| {
+                let (secs, nanos) = t.to_unix();
+                Timestamp::new(secs as i64, nanos as i32).ok()
+            });
+        if made.is_some_and(|m| m < cutoff) {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {db} WITH (FORCE)"
+            )))
+            .execute(&mut c)
+            .await
+            .ok();
+        }
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        .execute(&mut c)
+        .await?;
+    c.close().await?;
+    let (base, query) = match admin_url.split_once('?') {
+        Some((b, q)) => (b, format!("?{q}")),
+        None => (admin_url, String::new()),
+    };
+    let (prefix, _) = base
+        .rsplit_once('/')
+        .context("the test URL needs a database name")?;
+    Ok(format!("{prefix}/{name}{query}"))
+}
+
 /// Days of daily backups to keep, and copies of each event backup kind.
 pub const KEEP_BACKUPS: usize = 14;
 
@@ -77,7 +189,7 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<Pool> {
 
     if existed {
         let applied: i64 =
-            backend::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success = 1")
+            backend::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success")
                 .fetch_one(&pool)
                 .await
                 .unwrap_or(0);
@@ -112,12 +224,11 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<Pool> {
 }
 
 pub async fn schema_version(pool: &Pool) -> i64 {
-    backend::query_scalar(
-        "SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success = 1",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0)
+    // Both migrators record their versions in _sqlx_migrations.
+    backend::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
 }
 
 /// Writes a consistent copy with `VACUUM INTO` and trims old copies of the
@@ -130,7 +241,15 @@ pub async fn backup(pool: &Pool, data_dir: &Path, reason: &str) -> anyhow::Resul
     // The copy gets its real name only once it is whole. A copy cut short by
     // a crash keeps the `.partial` name, so it never counts as a backup.
     let partial = path.with_extension("db.partial");
-    vacuum_into(pool, &partial).await?;
+    match pool {
+        Pool::Sqlite(_) => vacuum_into(pool, &partial).await?,
+        Pool::Postgres(_) => {
+            if let Err(e) = export_to_sqlite(pool, &partial).await {
+                std::fs::remove_file(&partial).ok();
+                return Err(e);
+            }
+        }
+    }
     if let Err(e) = std::fs::rename(&partial, &path) {
         std::fs::remove_file(&partial).ok();
         return Err(e).context("name the backup");
@@ -138,6 +257,37 @@ pub async fn backup(pool: &Pool, data_dir: &Path, reason: &str) -> anyhow::Resul
     trim_backups(&dir, reason)?;
     tracing::info!(path = %path.display(), "backup written");
     Ok(path)
+}
+
+/// Opens a SQLite file outside the data folder and runs the migrations, for
+/// backups of a Postgres database and for `db migrate`.
+pub async fn open_sqlite_file(path: &Path) -> anyhow::Result<Pool> {
+    let sqlite = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(options(path))
+        .await
+        .with_context(|| format!("open database {}", path.display()))?;
+    MIGRATOR.run(&sqlite).await.context("run migrations")?;
+    Ok(Pool::Sqlite(sqlite))
+}
+
+/// Copies a whole database into a new SQLite file at `path`. A Postgres
+/// backup is such a file, so it also restores into local SQLite.
+pub async fn export_to_sqlite(pool: &Pool, path: &Path) -> anyhow::Result<()> {
+    let file = open_sqlite_file(path).await?;
+    let copied = async {
+        let mut from = pool.begin().await?;
+        let mut to = file.begin_write().await?;
+        crate::store::transfer::copy_workspace(&mut from, &mut to)
+            .await
+            .map_err(|e| anyhow::anyhow!("copy the database: {}", e.message))?;
+        to.commit().await?;
+        from.rollback().await?;
+        anyhow::Ok(())
+    }
+    .await;
+    file.close().await;
+    copied
 }
 
 pub async fn vacuum_into(pool: &Pool, path: &Path) -> anyhow::Result<()> {
@@ -219,4 +369,65 @@ pub async fn set_setting(
         .execute(&mut *conn)
         .await?;
     Ok(())
+}
+
+/// Listens for writes by other servers on the shared Postgres database and
+/// sends their events to this server's clients (LLM-459). It holds one
+/// connection of its own, which must not go through a transaction pooler
+/// such as PgBouncer. A lost connection reconnects after a pause, and the
+/// first notice after that catches up from the last seq sent.
+pub async fn listen_loop(state: crate::state::AppState) {
+    use sqlx::postgres::PgListener;
+    // Enabled now, so a stop that comes while this loop sends still ends it.
+    let shutdown = state.shutdown.notified();
+    tokio::pin!(shutdown);
+    shutdown.as_mut().enable();
+    let mut pause = Duration::from_millis(500);
+    loop {
+        let Some(pg) = state.pool().postgres().cloned() else {
+            return;
+        };
+        if pg.is_closed() {
+            return;
+        }
+        let listener = async {
+            let mut l = PgListener::connect_with(&pg).await?;
+            l.listen(crate::store::activity::CHANNEL).await?;
+            Ok::<_, sqlx::Error>(l)
+        }
+        .await;
+        match listener {
+            Ok(mut l) => {
+                pause = Duration::from_millis(500);
+                // Writes made while no connection listened.
+                crate::state::send_remote(&state).await;
+                // The loop also looks at the pool, which the stop closes: an
+                // open listener would keep that close waiting.
+                let mut tick = tokio::time::interval(Duration::from_millis(250));
+                loop {
+                    tokio::select! {
+                        n = l.recv() => match n {
+                            Ok(_) => crate::state::send_remote(&state).await,
+                            Err(e) => {
+                                tracing::warn!(error = %pg_error(&e), "the Postgres listen connection dropped");
+                                break;
+                            }
+                        },
+                        _ = tick.tick() => {
+                            if pg.is_closed() {
+                                return;
+                            }
+                        }
+                        _ = &mut shutdown => return,
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %pg_error(&e), "could not listen on Postgres"),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(pause) => {}
+            _ = &mut shutdown => return,
+        }
+        pause = (pause * 2).min(Duration::from_secs(30));
+    }
 }
