@@ -59,6 +59,7 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 - Full-text search and duplicate search.
 - GitHub sync by polling.
 - Sharing the database between laptops by handoff.
+- An optional shared Postgres database, such as Neon, next to the default SQLite file. Laptops then share live data with no handoff (LLM-450, target).
 - Native desktop app with vim keys, and the CLI.
 - Import from Linear, so the existing ALX issues move over with their keys.
 - A read-only file store for images copied from Linear during the import. New uploads stay in "Later".
@@ -80,11 +81,11 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 
 ```
  GPUI app ──┐
-            ├──HTTP + WebSocket──> local API server ──> SQLite file
- CLI ───────┘   (127.0.0.1:7878)
+            ├──HTTP + WebSocket──> local API server ──> SQLite file (default)
+ CLI ───────┘   (127.0.0.1:7878)                    └─> or a shared Postgres database (optional)
 ```
 
-Everything runs on the owner's Mac. All clients talk to one local API server. No client opens the database file directly. This keeps validation, issue keys, claims and live updates in one place.
+By default, everything runs on the owner's Mac. All clients talk to one local API server. With the optional Postgres backend, only the database is hosted: each laptop still runs its own server, and the servers share the database (see "Shared Postgres"). No client opens the database file directly. This keeps validation, issue keys, claims and live updates in one place.
 
 ### One Rust workspace
 
@@ -93,7 +94,7 @@ Everything runs on the owner's Mac. All clients talk to one local API server. No
 | `core` | Domain types, Markdown helpers, `+++` section parsing, issue key parsing, owner question parsing, the shared issue filter |
 | `api-types` | Request and response types shared by server and clients |
 | `client` | Typed HTTP client used by the CLI and the app |
-| `server` | axum + sqlx + SQLite |
+| `server` | axum + sqlx, on SQLite or Postgres |
 | `cli` | clap. Binary name `llmtodo` |
 | `ui` | The GPUI desktop app's views and model, as a library |
 | `app` | The `llmtodo-app` binary: `main.rs` and start-up |
@@ -111,7 +112,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 |---|---|
 | Async runtime | tokio |
 | HTTP server and WebSocket | axum |
-| Database | sqlx with the SQLite driver |
+| Database | sqlx with the SQLite driver, and the Postgres driver for the shared backend |
 | JSON schemas for the route table | schemars |
 | HTTP client | reqwest |
 | CLI parsing | clap with derive |
@@ -150,10 +151,29 @@ Every record has a UUIDv7 ID. Issues also have a key. Projects, teams and labels
 - Imported files live in `files/` in the data folder, named by their content hash.
 - Markdown is the record. The server stores a derived copy of any structure that must be queried, and writes it in the same transaction as the Markdown. Nothing edits the copy on its own. Owner questions are the first case.
 
+### Shared Postgres (LLM-450)
+
+The owner can pick a shared Postgres database instead of the SQLite file. SQLite stays the default, and a setup that never opts in sees no change. Neon is the first target, and Supabase must work too. Every point in this section is a target until its task lands.
+
+- **Each laptop keeps its own server.** The CLI, the app and agents still talk only to `127.0.0.1:7878`. Only the server's storage changes. Nothing of ours is hosted.
+- **Every feature works on both backends:** claims, search, duplicate search, live events, reviews, order, usage, the GitHub sync, the import and backups. The server tests run on both (LLM-453).
+- **One backend layer.** All SQL sits behind one layer in `store`, so the rest of the server never names a driver (LLM-452). Postgres has its own migration folder, with a schema that matches SQLite's.
+- **Search** uses a `tsvector` column with a GIN index for full text, and `pg_trgm` for duplicate search (LLM-455).
+- **Two servers can write at once.** Claims, key allocation, estimate checks, review moves and order rewrites use row locks or serializable transactions, not `BEGIN IMMEDIATE` and the in-process write lock (LLM-457).
+- **Live events cross laptops.** The activity seq comes from a Postgres sequence. Each commit sends `NOTIFY`, and each server holds one direct `LISTEN` connection, not one through a pooler. A server sends seqs in order and waits out gaps, so catch-up never skips an event. After a dropped connection it reconnects and catches up (LLM-459).
+- **Background jobs run on one server.** The GitHub poll and the daily backup take a Postgres advisory lock. A server that does not get it skips the run (LLM-460).
+- **Imported files** live in a table keyed by content hash, so every laptop serves them (LLM-458).
+- **Latency.** Each query is a network round trip. A request costs a few round trips at most, so the snapshot and the issue view batch their queries (LLM-465).
+- **Offline.** A laptop with no network has no tracker on Postgres. The server never falls back to SQLite on its own.
+- **The connection string is a secret.** It never goes in `config.toml`, which can live in a dotfiles repo. launchd starts the server, so the server reads the string from `LLMTODO_DATABASE_URL` or from the macOS Keychain, where `llmtodo db` stores it (LLM-461).
+- **Moving between backends.** `llmtodo db migrate` copies the whole workspace to the other backend, both ways, and keeps IDs and keys. It writes a backup first and refuses a target that holds data, unless a flag says to replace it. `llmtodo db use postgres|sqlite` switches with no copy, for a laptop that joins a shared database. On a join, the local SQLite file moves to `backups/` untouched, and the command says where. Nothing merges two databases (LLM-462).
+- **An agent asks first.** When an agent sets llmtodo up, it asks the owner which backend to use, and whether to migrate or join. It never runs `db migrate` or `db use` without the answer, and never asks for the connection string in chat (LLM-464).
+
 ### Backups and prune
 
 - The server writes a copy of the database to `backups/` in the data folder every day and keeps the last 14. At startup it writes one when the newest copy is older than 24 hours, because the server may not run every day.
 - It also writes a copy before every migration, every prune, every import and every `sync pull`.
+- On Postgres, a backup is an export to a SQLite file in the same `backups/` folder, with the same keep. So a backup is also a way back to local SQLite (LLM-460, target).
 - Deleted issues go to a trash. Their keys are never reused. Nothing is deleted on a timer.
 - `llmtodo prune --before <date>` deletes trashed issues and all their revisions. It also removes their relations and attachments.
 - `llmtodo prune --revisions-before <date>` trims old revisions of live issues and keeps the newest one.
@@ -164,6 +184,8 @@ Every record has a UUIDv7 ID. Issues also have a key. Projects, teams and labels
 ### Sharing between laptops
 
 The local database is the primary copy. Only one machine is the primary at a time.
+
+This handoff is for the SQLite backend. A shared Postgres database needs no handoff, so `sync push`, `sync pull` and `sync status` refuse on it with a clear message (LLM-461, target).
 
 - `llmtodo sync push` writes a copy with `VACUUM INTO`, compresses it, and uploads it with a manifest. The manifest holds the owner host, schema version, a generation counter that goes up on every push, and a timestamp.
 - `llmtodo sync pull` downloads the copy and makes this machine the primary. It refuses while another machine holds the lock, unless `--take` is set.
@@ -185,7 +207,7 @@ Gap review additions:
 
 - axum, bound to `127.0.0.1:7878`. `llmtodo server install` writes a launchd file that starts it at login. The CLI starts the server if it is not running.
 - REST with JSON. The route table in `api-types` lists every route with its JSON schemas. See decision 27.
-- Live updates: the server sends WebSocket events right after each write it makes. This works because there is one server process.
+- Live updates: the server sends WebSocket events right after each write it makes. On SQLite this works because there is one server process. On Postgres, the servers pass events through `LISTEN/NOTIFY` (see "Shared Postgres").
 - No tokens. Only the local machine can reach the server. Identity is an actor plus a session ID.
 
 Gap review additions:
@@ -402,7 +424,7 @@ The CLI mirrors the `linear` CLI (schpet/linear-cli) that both projects use now.
 - `llmtodo issue ask|questions|answer|undo-answer`
 - `llmtodo session show|note`
 - `llmtodo label|status|project|milestone|doc|team|view ...`
-- `llmtodo sync push|pull|status`, `llmtodo prune`, `llmtodo github sync`, `llmtodo server install|run|stop|status`
+- `llmtodo sync push|pull|status`, `llmtodo db status|migrate|use` (LLM-461, LLM-462, target), `llmtodo prune`, `llmtodo github sync`, `llmtodo server install|run|stop|status`
 - `llmtodo import linear`
 - `llmtodo api` sends a raw request, as an escape hatch
 
@@ -440,7 +462,7 @@ Gap review additions:
 
 ### Config
 
-- Global config: `config.toml`, in the first of these folders: `LLMTODO_CONFIG_DIR`, then `$XDG_CONFIG_HOME/llmtodo`, then `~/.config/llmtodo`, also on macOS. `llmtodo_client::config` resolves the path and reads and writes the file for every client (LLM-449). The top level holds `data_dir`, and the `[app]` table holds the app's preferences.
+- Global config: `config.toml`, in the first of these folders: `LLMTODO_CONFIG_DIR`, then `$XDG_CONFIG_HOME/llmtodo`, then `~/.config/llmtodo`, also on macOS. `llmtodo_client::config` resolves the path and reads and writes the file for every client (LLM-449). The top level holds `data_dir`, and the `[app]` table holds the app's preferences. The `[database]` table holds `backend`, `"sqlite"` by default or `"postgres"`, and never the connection string (LLM-461, target).
 - The app splits its settings in two. Preferences go to `config.toml`: `theme`, `color_theme`, `vim_editor`, `mascot`, `animations`, `strike_done`, `hidden_columns`, `hide_closed`, `hide_closed_days`, `open_last_view` and `zoom`. State that changes every few seconds goes to `ui-state.json` in the standard data folder, or in `LLMTODO_CONFIG_DIR` when that is set: the window frame, pane and panel sizes, open tabs, the last task, the sidebar, sort, grouping and collapsed groups. So a `config.toml` in git does not change when the window moves.
 - The app never fights the person's setup for `config.toml`:
   - No file is fine. The app does not create it at start, and writes only the keys the person changes.
@@ -585,7 +607,8 @@ What the numbers say:
 
 ## Tests
 
-- Server integration tests run against a temporary SQLite file.
+- Server integration tests run against a temporary SQLite file. When `LLMTODO_TEST_POSTGRES_URL` is set, they also run against a fresh Postgres database, and CI sets it (LLM-453, LLM-463, target).
+- A two-server test runs two servers on one Postgres database. Both claim one task at once and exactly one wins, and a write on one reaches a live client of the other (LLM-457, LLM-459, target).
 - CLI tests run against a server started inside the test process.
 - A concurrency test starts 20 claimers on one frontier at once and checks that each issue gets exactly one owner.
 - The coverage test checks that every API endpoint has a CLI command.
@@ -602,7 +625,7 @@ Gap review additions:
 
 1. **Single owner.** There is no sign-up, no roles and no sharing. Actors stay, so agents and the owner can hold tickets.
 2. **Keep issue keys.** The Linear import keeps `ALX-123`, and keys are never reused.
-3. **Local first.** SQLite on the owner's Mac. Postgres, Neon and Render are dropped. Remote access is a handoff, not a live connection.
+3. **Local first.** SQLite on the owner's Mac. Postgres, Neon and Render are dropped. Remote access is a handoff, not a live connection. Decision 50 changes this: SQLite stays the default, and a shared Postgres database is an option.
 4. **Markdown editing.** Preview by default, the built-in editor on `e`, and `$EDITOR` on `Shift+E`, which is `E`.
 5. **GitHub sync in v1**, by polling, because the local server has no public URL.
 6. **Vim keys** in the app instead of Linear's shortcuts, except `c`.
@@ -659,3 +682,4 @@ Build decisions, 2026-11-10:
 47. **Workflow states are fields, not labels (LLM-161).** Ready for an agent and needs the owner are `waiting_on`. Blocked is a `blocked-by` relation, and in review is a review status. `label create` and `label update --name` refuse a name with a workflow word, such as ready, owner or blocked, with exit code 6. `--force` creates it anyway. The check lives in the CLI, so the owner can still make any label in the app.
 48. **Tabs that do not fit go under More (LLM-197).** The task view's tab bar shows the tabs that fit, from the left. The rest go under a "More (N)" button at the right end of the tabs, which opens a GPUI Kit dropdown menu. The bar never scrolls sideways. It measures each label with the text system as it renders, and a canvas records the room the tabs had. Keyboard tab switching still reaches every tab.
 49. **An epic's order is stored as real `blocks` edges (LLM-206).** A sub-issue has a step number scoped to its parent. The server turns the steps into `blocks` relations with `source = order` and rewrites them on each order change, in the same transaction. Six queries read `blocks` edges, so real edges keep all of them, the cycle check and the 50,000-issue plan unchanged. A view that computed the edges on the fly would touch every one of them. See "Order (LLM-206)".
+50. **An optional shared Postgres backend (LLM-450).** The owner chose this on 2026-11-23, to share live data between laptops. SQLite stays the default. Each laptop keeps its own local server, and only the database is hosted, with Neon as the first target. Every feature works on both backends. This replaces the "no repository traits" rule in `ARCHITECTURE.md` with one backend layer. A laptop that joins a shared database sets its local file aside as a backup, and nothing merges two databases. See "Shared Postgres".
