@@ -11,22 +11,17 @@ use serde::Deserialize;
 
 pub use llmtodo_core::data_dir::{DATA_DIR_ENV, standard_data_dir, standard_data_dir_in};
 
-/// `~/.config/llmtodo/config.toml`, the settings shared by every client on
-/// this machine.
+/// The keys of `config.toml` that every client on this machine reads. The
+/// file's place comes from [`crate::config::config_path`].
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct GlobalConfig {
     pub data_dir: Option<PathBuf>,
 }
 
-/// The path of the global config file under `home`.
-pub fn global_config_path(home: &Path) -> PathBuf {
-    home.join(".config/llmtodo/config.toml")
-}
-
 /// Reads the global config. A missing or broken file reads as empty.
 pub fn global_config() -> GlobalConfig {
-    std::env::var_os("HOME")
-        .map(|h| read_global_config(&global_config_path(Path::new(&h))))
+    crate::config::config_path()
+        .map(|path| read_global_config(&path))
         .unwrap_or_default()
 }
 
@@ -84,7 +79,7 @@ mod tests {
     #[test]
     fn the_global_config_names_the_data_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let path = global_config_path(dir.path());
+        let path = dir.path().join(".config/llmtodo/config.toml");
         assert_eq!(read_global_config(&path).data_dir, None);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "data_dir = \"/somewhere/else\"\n").unwrap();

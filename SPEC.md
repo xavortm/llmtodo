@@ -440,7 +440,15 @@ Gap review additions:
 
 ### Config
 
-- Global config: `~/.config/llmtodo/config.toml`.
+- Global config: `config.toml`, in the first of these folders: `LLMTODO_CONFIG_DIR`, then `$XDG_CONFIG_HOME/llmtodo`, then `~/.config/llmtodo`, also on macOS. `llmtodo_client::config` resolves the path and reads and writes the file for every client (LLM-449). The top level holds `data_dir`, and the `[app]` table holds the app's preferences.
+- The app splits its settings in two. Preferences go to `config.toml`: `theme`, `color_theme`, `vim_editor`, `mascot`, `animations`, `strike_done`, `hidden_columns`, `hide_closed`, `hide_closed_days`, `open_last_view` and `zoom`. State that changes every few seconds goes to `ui-state.json` in the standard data folder, or in `LLMTODO_CONFIG_DIR` when that is set: the window frame, pane and panel sizes, open tabs, the last task, the sidebar, sort, grouping and collapsed groups. So a `config.toml` in git does not change when the window moves.
+- The app never fights the person's setup for `config.toml`:
+  - No file is fine. The app does not create it at start, and writes only the keys the person changes.
+  - A save edits the file in place with `toml_edit`, so comments, key order, formatting and unknown keys survive.
+  - A save follows a symlink, so a dotfiles manager's link survives and its target gets the change.
+  - A read-only file stays read-only. The change lasts until quit, and Settings shows one quiet note.
+  - A hand edit applies while the app runs. The app checks the file's modification time when its window gets focus. A file that does not parse keeps the last good settings, Settings shows the error with its line, and the app never writes over it.
+- The first start without `ui-state.json` moves an old `ui.json` over: its state to `ui-state.json`, and its preferences that differ from the defaults to `config.toml` when that file has no `[app]` table yet. `ui.json` stays, so an older build still starts.
 - Per-repo defaults (team, project, actor): `.llmtodo.toml`. The CLI looks for it in the current folder and every parent up to the git root.
 - Data folder: `~/Library/Application Support/llmtodo/`, holding the database, backups, files, logs and `drafts.json`, the description text the server has not accepted yet.
 - `LLMTODO_DATA_DIR` overrides the data folder. Tests and a second local install use it.
