@@ -19,10 +19,10 @@
 
 use std::collections::HashMap;
 
+use crate::store::backend::{Conn, Pool};
 use llmtodo_api_types::*;
 use llmtodo_core::{Patch, Question};
 use serde_json::json;
-use sqlx::{SqliteConnection, SqlitePool};
 
 use super::issues::apply_fields;
 use crate::error::{ApiError, ApiResult};
@@ -159,7 +159,7 @@ fn from_row(r: QuestionRow) -> ApiResult<Derived> {
     })
 }
 
-async fn load(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Derived>> {
+async fn load(c: &mut Conn, issue_id: &str) -> ApiResult<Vec<Derived>> {
     store::questions::of_issue(c, issue_id)
         .await?
         .into_iter()
@@ -167,7 +167,7 @@ async fn load(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<Derived
         .collect()
 }
 
-async fn save(c: &mut SqliteConnection, issue_id: &str, derived: &[Derived]) -> ApiResult<()> {
+async fn save(c: &mut Conn, issue_id: &str, derived: &[Derived]) -> ApiResult<()> {
     let rows = derived
         .iter()
         .enumerate()
@@ -177,14 +177,14 @@ async fn save(c: &mut SqliteConnection, issue_id: &str, derived: &[Derived]) -> 
 }
 
 /// Stores the questions of a new issue's first description.
-pub async fn record_created(c: &mut SqliteConnection, issue_id: &str, body: &str) -> ApiResult<()> {
+pub async fn record_created(c: &mut Conn, issue_id: &str, body: &str) -> ApiResult<()> {
     save(c, issue_id, &derive(None, body, None)).await
 }
 
 /// Stores the questions after a description change. The caller runs this in
 /// the transaction that writes the description.
 pub async fn record_changed(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     issue_id: &str,
     body: &str,
     version: i64,
@@ -202,13 +202,13 @@ pub async fn record_changed(
 /// issues and revisions and writes only to `questions`, so a description,
 /// its version and `updated_at` stay as they are. One transaction clears
 /// the pending mark too, so a crash leaves the work to the next start.
-pub async fn backfill(pool: &SqlitePool) -> ApiResult<()> {
+pub async fn backfill(pool: &Pool) -> ApiResult<()> {
     // A plain read first, so a start with nothing to fill takes no write
     // lock. The mark is checked again under the lock below.
-    if !store::questions::backfill_pending(&mut *pool.acquire().await?).await? {
+    if !store::questions::backfill_pending(&mut pool.acquire().await?).await? {
         return Ok(());
     }
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = pool.begin_write().await?;
     if !store::questions::backfill_pending(&mut tx).await? {
         return Ok(());
     }
@@ -234,7 +234,7 @@ fn parse_cursor(cursor: &str) -> ApiResult<(&str, &str, i64)> {
 
 /// Lists owner questions, oldest issue first. With `issue`, the questions of
 /// that issue whatever its status. Without it, those on open issues.
-pub async fn list(c: &mut SqliteConnection, q: &QuestionQuery) -> ApiResult<Page<QuestionEntry>> {
+pub async fn list(c: &mut Conn, q: &QuestionQuery) -> ApiResult<Page<QuestionEntry>> {
     let issue = match &q.issue {
         Some(r) => Some(issues::resolve_id(c, r).await?),
         None => None,

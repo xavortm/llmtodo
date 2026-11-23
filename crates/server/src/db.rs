@@ -6,8 +6,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use jiff::Timestamp;
+use sqlx::sqlite::SqliteConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqlitePool, sqlite::SqliteConnection};
+
+use crate::store::backend;
+use crate::store::backend::Pool;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -60,20 +63,21 @@ fn options(path: &Path) -> SqliteConnectOptions {
 
 /// Opens the pool and runs pending migrations. A backup is written before any
 /// migration of an existing database.
-pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
+pub async fn open(data_dir: &Path) -> anyhow::Result<Pool> {
     std::fs::create_dir_all(data_dir)
         .with_context(|| format!("create data folder {}", data_dir.display()))?;
     let path = db_path(data_dir);
     let existed = path.exists();
-    let pool = SqlitePoolOptions::new()
+    let sqlite = SqlitePoolOptions::new()
         .max_connections(8)
         .connect_with(options(&path))
         .await
         .with_context(|| format!("open database {}", path.display()))?;
+    let pool = Pool::Sqlite(sqlite.clone());
 
     if existed {
         let applied: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success = 1")
+            backend::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success = 1")
                 .fetch_one(&pool)
                 .await
                 .unwrap_or(0);
@@ -87,7 +91,7 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
         }
         let newest_known = MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0);
         let newest_applied: i64 =
-            sqlx::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations")
+            backend::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations")
                 .fetch_one(&pool)
                 .await
                 .unwrap_or(0);
@@ -97,7 +101,7 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
             );
         }
     }
-    MIGRATOR.run(&pool).await.context("run migrations")?;
+    MIGRATOR.run(&sqlite).await.context("run migrations")?;
     crate::ops::questions::backfill(&pool)
         .await
         .map_err(|e| anyhow::anyhow!("fill the questions table: {}", e.message))?;
@@ -107,16 +111,18 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
-pub async fn schema_version(pool: &SqlitePool) -> i64 {
-    sqlx::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success = 1")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0)
+pub async fn schema_version(pool: &Pool) -> i64 {
+    backend::query_scalar(
+        "SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
 }
 
 /// Writes a consistent copy with `VACUUM INTO` and trims old copies of the
 /// same kind.
-pub async fn backup(pool: &SqlitePool, data_dir: &Path, reason: &str) -> anyhow::Result<PathBuf> {
+pub async fn backup(pool: &Pool, data_dir: &Path, reason: &str) -> anyhow::Result<PathBuf> {
     let dir = data_dir.join("backups");
     std::fs::create_dir_all(&dir)?;
     let stamp = Timestamp::now().strftime("%Y%m%dT%H%M%S%.3fZ");
@@ -134,7 +140,10 @@ pub async fn backup(pool: &SqlitePool, data_dir: &Path, reason: &str) -> anyhow:
     Ok(path)
 }
 
-pub async fn vacuum_into(pool: &SqlitePool, path: &Path) -> anyhow::Result<()> {
+pub async fn vacuum_into(pool: &Pool, path: &Path) -> anyhow::Result<()> {
+    let pool = pool
+        .sqlite()
+        .context("VACUUM INTO needs a SQLite database")?;
     let mut conn = pool.acquire().await?;
     vacuum_into_conn(&mut conn, path).await
 }
@@ -190,9 +199,9 @@ pub fn newest_daily_backup(data_dir: &Path) -> Option<std::time::SystemTime> {
         .max()
 }
 
-pub async fn get_setting(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+pub async fn get_setting(pool: &Pool, key: &str) -> anyhow::Result<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        backend::query_scalar("SELECT value FROM settings WHERE key = ?")
             .bind(key)
             .fetch_optional(pool)
             .await?,
@@ -200,11 +209,11 @@ pub async fn get_setting(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<
 }
 
 pub async fn set_setting(
-    conn: &mut SqliteConnection,
+    conn: &mut crate::store::backend::Conn,
     key: &str,
     value: &str,
 ) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    backend::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
         .bind(key)
         .bind(value)
         .execute(&mut *conn)

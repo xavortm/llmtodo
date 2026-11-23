@@ -400,7 +400,7 @@ async fn download_files(
     let pool = st.pool();
     for url in urls {
         let known: Option<String> =
-            store::import::source_hash(&mut *pool.acquire().await?, &url).await?;
+            store::import::source_hash(&mut pool.acquire().await?, &url).await?;
         if let Some(h) = known.filter(|h| dir.join(h).exists()) {
             count(report, "files", Change::Unchanged);
             map.insert(url, h);
@@ -414,14 +414,14 @@ async fn download_files(
                     std::fs::write(&path, &bytes).map_err(|e| ApiError::internal(e.to_string()))?;
                 }
                 store::import::insert_file(
-                    &mut *pool.acquire().await?,
+                    &mut pool.acquire().await?,
                     &hash,
                     mime,
                     bytes.len() as i64,
                     &url,
                 )
                 .await?;
-                store::import::link_file_source(&mut *pool.acquire().await?, &url, &hash).await?;
+                store::import::link_file_source(&mut pool.acquire().await?, &url, &hash).await?;
                 count(report, "files", Change::Created);
                 map.insert(url, hash);
             }

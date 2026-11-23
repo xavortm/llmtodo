@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use crate::store::backend::{Conn, Pool};
 use llmtodo_api_types::{Actor, ActorInput, ActorKind};
-use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::db::{new_id, now, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 pub const OWNER_NAME: &str = "owner";
 
@@ -47,15 +48,15 @@ pub fn agent_name(harness: Option<&str>, model: Option<&str>, effort: Option<&st
 }
 
 /// Makes sure the owner and the built-in system actors exist.
-pub async fn seed(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO actors (id, kind, name, is_owner, created_at) VALUES (?, 'human', ?, 1, ?) ON CONFLICT DO NOTHING")
+pub async fn seed(pool: &Pool) -> anyhow::Result<()> {
+    backend::query("INSERT INTO actors (id, kind, name, is_owner, created_at) VALUES (?, 'human', ?, 1, ?) ON CONFLICT DO NOTHING")
         .bind(new_id())
         .bind(OWNER_NAME)
         .bind(now())
         .execute(pool)
         .await?;
     for name in ["github", "linear-import", "migration"] {
-        sqlx::query("INSERT INTO actors (id, kind, name, created_at) VALUES (?, 'system', ?, ?) ON CONFLICT DO NOTHING")
+        backend::query("INSERT INTO actors (id, kind, name, created_at) VALUES (?, 'system', ?, ?) ON CONFLICT DO NOTHING")
             .bind(new_id())
             .bind(name)
             .bind(now())
@@ -66,7 +67,7 @@ pub async fn seed(pool: &SqlitePool) -> anyhow::Result<()> {
 }
 
 /// Finds or creates the actor a request names.
-pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<Actor> {
+pub async fn resolve_input(pool: &Pool, input: &ActorInput) -> ApiResult<Actor> {
     let clean = |s: &Option<String>| {
         s.as_deref()
             .map(str::trim)
@@ -80,7 +81,7 @@ pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<A
                 clean(&input.model),
                 clean(&input.effort),
             );
-            let found = sqlx::query_as::<_, Row>(crate::sql!(
+            let found = backend::query_as::<Row>(crate::sql!(
                 "SELECT {COLS} FROM actors WHERE kind = 'agent' AND coalesce(harness, '') = coalesce(?, '') AND coalesce(model, '') = coalesce(?, '') AND coalesce(effort, '') = coalesce(?, '')"
             ))
             .bind(&h)
@@ -92,7 +93,7 @@ pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<A
                 return Ok(to_actor(r));
             }
             let name = agent_name(h.as_deref(), m.as_deref(), e.as_deref());
-            sqlx::query("INSERT INTO actors (id, kind, name, harness, model, effort, created_at) VALUES (?, 'agent', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")
+            backend::query("INSERT INTO actors (id, kind, name, harness, model, effort, created_at) VALUES (?, 'agent', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")
                 .bind(new_id())
                 .bind(&name)
                 .bind(&h)
@@ -107,7 +108,7 @@ pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<A
             None => owner(pool).await,
             Some(name) if name.eq_ignore_ascii_case(OWNER_NAME) => owner(pool).await,
             Some(name) => {
-                if let Some(r) = sqlx::query_as::<_, Row>(crate::sql!(
+                if let Some(r) = backend::query_as::<Row>(crate::sql!(
                     "SELECT {COLS} FROM actors WHERE kind = 'human' AND name = ?"
                 ))
                 .bind(&name)
@@ -116,7 +117,7 @@ pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<A
                 {
                     return Ok(to_actor(r));
                 }
-                sqlx::query("INSERT INTO actors (id, kind, name, created_at) VALUES (?, 'human', ?, ?) ON CONFLICT DO NOTHING")
+                backend::query("INSERT INTO actors (id, kind, name, created_at) VALUES (?, 'human', ?, ?) ON CONFLICT DO NOTHING")
                     .bind(new_id())
                     .bind(&name)
                     .bind(now())
@@ -129,15 +130,15 @@ pub async fn resolve_input(pool: &SqlitePool, input: &ActorInput) -> ApiResult<A
     }
 }
 
-pub async fn owner(pool: &SqlitePool) -> ApiResult<Actor> {
-    let r = sqlx::query_as::<_, Row>(crate::sql!("SELECT {COLS} FROM actors WHERE is_owner = 1"))
+pub async fn owner(pool: &Pool) -> ApiResult<Actor> {
+    let r = backend::query_as::<Row>(crate::sql!("SELECT {COLS} FROM actors WHERE is_owner = 1"))
         .fetch_one(pool)
         .await?;
     Ok(to_actor(r))
 }
 
-pub async fn system(pool: &SqlitePool, name: &str) -> ApiResult<Actor> {
-    let r = sqlx::query_as::<_, Row>(crate::sql!(
+pub async fn system(pool: &Pool, name: &str) -> ApiResult<Actor> {
+    let r = backend::query_as::<Row>(crate::sql!(
         "SELECT {COLS} FROM actors WHERE kind = 'system' AND name = ?"
     ))
     .bind(name)
@@ -146,9 +147,9 @@ pub async fn system(pool: &SqlitePool, name: &str) -> ApiResult<Actor> {
     Ok(to_actor(r))
 }
 
-pub async fn all(conn: &mut SqliteConnection) -> ApiResult<HashMap<String, Actor>> {
+pub async fn all(conn: &mut Conn) -> ApiResult<HashMap<String, Actor>> {
     let rows =
-        sqlx::query_as::<_, Row>(crate::sql!("SELECT {COLS} FROM actors ORDER BY created_at"))
+        backend::query_as::<Row>(crate::sql!("SELECT {COLS} FROM actors ORDER BY created_at"))
             .fetch_all(&mut *conn)
             .await?;
     Ok(rows
@@ -158,12 +159,9 @@ pub async fn all(conn: &mut SqliteConnection) -> ApiResult<HashMap<String, Actor
 }
 
 /// The IDs of the actors whose name holds `part`, ignoring case.
-pub async fn ids_with_name_containing(
-    conn: &mut SqliteConnection,
-    part: &str,
-) -> ApiResult<Vec<String>> {
+pub async fn ids_with_name_containing(conn: &mut Conn, part: &str) -> ApiResult<Vec<String>> {
     Ok(
-        sqlx::query_scalar("SELECT id FROM actors WHERE instr(lower(name), lower(?)) > 0")
+        backend::query_scalar("SELECT id FROM actors WHERE instr(lower(name), lower(?)) > 0")
             .bind(part)
             .fetch_all(&mut *conn)
             .await?,
@@ -171,17 +169,17 @@ pub async fn ids_with_name_containing(
 }
 
 /// Resolves `me`, `owner`, an ID or a name. Returns the actor ID.
-pub async fn resolve_ref(conn: &mut SqliteConnection, me: &Actor, r: &str) -> ApiResult<String> {
+pub async fn resolve_ref(conn: &mut Conn, me: &Actor, r: &str) -> ApiResult<String> {
     let r = r.trim();
     if r.eq_ignore_ascii_case("me") || r == "@me" {
         return Ok(me.id.to_string());
     }
     let row: Option<String> = if r.eq_ignore_ascii_case(OWNER_NAME) {
-        sqlx::query_scalar("SELECT id FROM actors WHERE is_owner = 1")
+        backend::query_scalar("SELECT id FROM actors WHERE is_owner = 1")
             .fetch_optional(&mut *conn)
             .await?
     } else {
-        sqlx::query_scalar("SELECT id FROM actors WHERE id = ? OR name = ? COLLATE NOCASE ORDER BY is_owner DESC LIMIT 1")
+        backend::query_scalar("SELECT id FROM actors WHERE id = ? OR name = ? COLLATE NOCASE ORDER BY is_owner DESC LIMIT 1")
             .bind(r)
             .bind(r)
             .fetch_optional(&mut *conn)

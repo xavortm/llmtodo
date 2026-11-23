@@ -1,8 +1,8 @@
 //! Prune: the only permanent delete. Only the owner may run it.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
 use serde_json::json;
-use sqlx::SqliteConnection;
 
 use crate::db;
 use crate::error::{ApiError, ApiResult};
@@ -25,7 +25,7 @@ pub fn check(ctx: &Ctx, req: &PruneRequest) -> ApiResult<()> {
 }
 
 /// What a prune would delete, without deleting it.
-pub async fn dry_run(c: &mut SqliteConnection, req: &PruneRequest) -> ApiResult<PruneReport> {
+pub async fn dry_run(c: &mut Conn, req: &PruneRequest) -> ApiResult<PruneReport> {
     let (issue_ids, revisions) = targets(c, req).await?;
     Ok(PruneReport {
         dry_run: true,
@@ -94,7 +94,7 @@ pub async fn apply(w: &mut Write<'_>, req: &PruneRequest) -> ApiResult<(Vec<Issu
 
 /// The trashed issues and the revision count a prune would delete.
 async fn targets(
-    c: &mut sqlx::SqliteConnection,
+    c: &mut crate::store::backend::Conn,
     req: &PruneRequest,
 ) -> ApiResult<(Vec<(String, String)>, i64)> {
     let issue_ids: Vec<(String, String)> = match req.before {

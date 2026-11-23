@@ -1,13 +1,13 @@
 //! The activity feed.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
-use sqlx::SqliteConnection;
 
 use crate::error::ApiResult;
 use crate::store::{activity, issues};
 
 /// One page of events. `reload` tells a client that its seq was pruned.
-pub async fn page(c: &mut SqliteConnection, q: &ActivityQuery) -> ApiResult<ActivityPage> {
+pub async fn page(c: &mut Conn, q: &ActivityQuery) -> ApiResult<ActivityPage> {
     let issue_id = match &q.issue {
         Some(r) => Some(issues::resolve_id(c, r).await?),
         None => None,

@@ -10,9 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
 use serde_json::json;
-use sqlx::SqliteConnection;
 
 use super::issues::touch_updated;
 use super::j;
@@ -50,7 +50,7 @@ fn same(a: &Steps, b: &Steps) -> bool {
 }
 
 /// The order of a parent's sub-issues.
-pub async fn view(c: &mut SqliteConnection, r: &str) -> ApiResult<OrderView> {
+pub async fn view(c: &mut Conn, r: &str) -> ApiResult<OrderView> {
     let parent_id = issues::resolve_id(c, r).await?;
     let parent = issues::row(c, &parent_id).await?;
     let children = order::children(c, &parent_id).await?;

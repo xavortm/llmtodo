@@ -154,8 +154,8 @@ fn expect(texts: &[String]) -> Vec<(i64, String)> {
         .collect()
 }
 
-async fn stored(pool: &sqlx::SqlitePool) -> (i64, i64, i64) {
-    sqlx::query_as(
+async fn stored(pool: &llmtodo_server::store::backend::Pool) -> (i64, i64, i64) {
+    llmtodo_server::store::backend::query_as(
         "SELECT count(*), count(base_version), sum(length(CAST(body AS BLOB))) FROM revisions WHERE entity_type = 'issue'",
     )
     .fetch_one(pool)
@@ -206,17 +206,19 @@ async fn the_upgrade_compacts_full_copies() {
     let pool = r.state.pool();
     // Back to the old layout: a full copy in every row.
     for (v, text) in expect(&texts) {
-        sqlx::query("UPDATE revisions SET body = ?, base_version = NULL WHERE entity_type = 'issue' AND version = ?")
+        llmtodo_server::store::backend::query("UPDATE revisions SET body = ?, base_version = NULL WHERE entity_type = 'issue' AND version = ?")
             .bind(text)
             .bind(v)
             .execute(&pool)
             .await
             .unwrap();
     }
-    sqlx::query("INSERT INTO settings (key, value) VALUES ('revisions_compact', 'pending')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    llmtodo_server::store::backend::query(
+        "INSERT INTO settings (key, value) VALUES ('revisions_compact', 'pending')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     assert_eq!(stored(&pool).await.1, 0);
     r.stop().await.unwrap();
 
@@ -225,11 +227,12 @@ async fn the_upgrade_compacts_full_copies() {
     assert_eq!(rows, texts.len() as i64);
     assert!(deltas > 50, "only {deltas} rows are deltas");
     assert_eq!(bodies(&r).await, expect(&texts));
-    let pending: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM settings WHERE key = 'revisions_compact'")
-            .fetch_one(&r.state.pool())
-            .await
-            .unwrap();
+    let pending: i64 = llmtodo_server::store::backend::query_scalar(
+        "SELECT count(*) FROM settings WHERE key = 'revisions_compact'",
+    )
+    .fetch_one(&r.state.pool())
+    .await
+    .unwrap();
     assert_eq!(pending, 0);
     // A new edit after the upgrade still reads back.
     let mut all = texts.clone();
@@ -255,18 +258,19 @@ async fn a_trim_keeps_the_text_of_kept_revisions() {
     let texts = history(&r, 60).await;
     let pool = r.state.pool();
     // Versions 1 to 40 are old, except 20: its base, 21, goes, and it stays.
-    sqlx::query(
+    llmtodo_server::store::backend::query(
         "UPDATE revisions SET created_at = '2001-01-01T00:00:00.000000Z'
          WHERE entity_type = 'issue' AND version <= 40 AND version != 20",
     )
     .execute(&pool)
     .await
     .unwrap();
-    let base: Option<i64> =
-        sqlx::query_scalar("SELECT base_version FROM revisions WHERE version = 20")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let base: Option<i64> = llmtodo_server::store::backend::query_scalar(
+        "SELECT base_version FROM revisions WHERE version = 20",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         base,
         Some(21),

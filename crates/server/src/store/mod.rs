@@ -2,6 +2,7 @@ pub mod activity;
 pub mod actors;
 pub mod analyzing;
 pub mod attachments;
+pub mod backend;
 pub mod claims;
 pub mod comments;
 pub mod deps;

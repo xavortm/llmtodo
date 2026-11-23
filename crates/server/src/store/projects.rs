@@ -1,8 +1,9 @@
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Milestone, Project, ProjectState};
-use sqlx::SqliteConnection;
 
 use crate::db::{now, parse_ts, parse_ts_opt, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct ProjectRow {
@@ -35,9 +36,9 @@ pub fn slugify(name: &str) -> String {
 }
 
 /// Resolves a slug, ID or name. Trashed projects resolve too.
-pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<ProjectRow> {
+pub async fn resolve(conn: &mut Conn, r: &str) -> ApiResult<ProjectRow> {
     let r = r.trim();
-    sqlx::query_as::<_, ProjectRow>(crate::sql!(
+    backend::query_as::<ProjectRow>(crate::sql!(
         "SELECT {COLS} FROM projects WHERE id = ? OR slug = ? COLLATE NOCASE OR name = ? COLLATE NOCASE ORDER BY deleted_at IS NOT NULL, (id = ?) DESC LIMIT 1"
     ))
     .bind(r)
@@ -49,11 +50,8 @@ pub async fn resolve(conn: &mut SqliteConnection, r: &str) -> ApiResult<ProjectR
     .ok_or_else(|| ApiError::not_found("project", r))
 }
 
-pub async fn rows(
-    conn: &mut SqliteConnection,
-    include_deleted: bool,
-) -> ApiResult<Vec<ProjectRow>> {
-    Ok(sqlx::query_as::<_, ProjectRow>(crate::sql!(
+pub async fn rows(conn: &mut Conn, include_deleted: bool) -> ApiResult<Vec<ProjectRow>> {
+    Ok(backend::query_as::<ProjectRow>(crate::sql!(
         "SELECT {COLS} FROM projects WHERE (? OR deleted_at IS NULL) ORDER BY name COLLATE NOCASE"
     ))
     .bind(include_deleted)
@@ -61,24 +59,21 @@ pub async fn rows(
     .await?)
 }
 
-pub async fn to_api(conn: &mut SqliteConnection, p: ProjectRow) -> ApiResult<Project> {
+pub async fn to_api(conn: &mut Conn, p: ProjectRow) -> ApiResult<Project> {
     Ok(all_to_api(conn, vec![p]).await?.remove(0))
 }
 
 /// Builds every project from one query for teams and one for repos.
-pub async fn all_to_api(
-    conn: &mut SqliteConnection,
-    rows: Vec<ProjectRow>,
-) -> ApiResult<Vec<Project>> {
+pub async fn all_to_api(conn: &mut Conn, rows: Vec<ProjectRow>) -> ApiResult<Vec<Project>> {
     let ids = serde_json::to_string(&rows.iter().map(|p| &p.id).collect::<Vec<_>>())?;
     let mut teams = grouped(
-        sqlx::query_as("SELECT pt.project_id, t.key FROM project_teams pt JOIN teams t ON t.id = pt.team_id WHERE pt.project_id IN (SELECT value FROM json_each(?)) ORDER BY t.key")
+        backend::query_as("SELECT pt.project_id, t.key FROM project_teams pt JOIN teams t ON t.id = pt.team_id WHERE pt.project_id IN (SELECT value FROM json_each(?)) ORDER BY t.key")
             .bind(&ids)
             .fetch_all(&mut *conn)
             .await?,
     );
     let mut repos = grouped(
-        sqlx::query_as("SELECT project_id, repo FROM project_repos WHERE project_id IN (SELECT value FROM json_each(?)) ORDER BY repo")
+        backend::query_as("SELECT project_id, repo FROM project_repos WHERE project_id IN (SELECT value FROM json_each(?)) ORDER BY repo")
             .bind(&ids)
             .fetch_all(&mut *conn)
             .await?,
@@ -139,11 +134,8 @@ impl MilestoneRow {
 const M_COLS: &str =
     "m.id, m.project_id, p.slug AS project_slug, m.name, m.description, m.target_date, m.position";
 
-pub async fn milestones(
-    conn: &mut SqliteConnection,
-    project_id: &str,
-) -> ApiResult<Vec<MilestoneRow>> {
-    Ok(sqlx::query_as::<_, MilestoneRow>(crate::sql!(
+pub async fn milestones(conn: &mut Conn, project_id: &str) -> ApiResult<Vec<MilestoneRow>> {
+    Ok(backend::query_as::<MilestoneRow>(crate::sql!(
         "SELECT {M_COLS} FROM milestones m JOIN projects p ON p.id = m.project_id WHERE m.project_id = ? ORDER BY m.position, m.name"
     ))
     .bind(project_id)
@@ -151,8 +143,8 @@ pub async fn milestones(
     .await?)
 }
 
-pub async fn milestone_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult<MilestoneRow> {
-    sqlx::query_as::<_, MilestoneRow>(crate::sql!(
+pub async fn milestone_by_id(conn: &mut Conn, id: &str) -> ApiResult<MilestoneRow> {
+    backend::query_as::<MilestoneRow>(crate::sql!(
         "SELECT {M_COLS} FROM milestones m JOIN projects p ON p.id = m.project_id WHERE m.id = ?"
     ))
     .bind(id)
@@ -163,7 +155,7 @@ pub async fn milestone_by_id(conn: &mut SqliteConnection, id: &str) -> ApiResult
 
 /// Finds a milestone by ID or by name inside a project.
 pub async fn resolve_milestone(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     project_id: Option<&str>,
     r: &str,
 ) -> ApiResult<MilestoneRow> {
@@ -190,7 +182,7 @@ pub fn validate_date(d: &str) -> ApiResult<()> {
 }
 
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     slug: &str,
     name: &str,
@@ -198,7 +190,7 @@ pub async fn insert(
     state: &str,
     t: &str,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO projects (id, slug, name, description, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO projects (id, slug, name, description, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(slug)
         .bind(name)
@@ -211,12 +203,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn add_team(
-    c: &mut SqliteConnection,
-    project_id: &str,
-    team_id: String,
-) -> ApiResult<()> {
-    sqlx::query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)")
+pub async fn add_team(c: &mut Conn, project_id: &str, team_id: String) -> ApiResult<()> {
+    backend::query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)")
         .bind(project_id)
         .bind(team_id)
         .execute(&mut *c)
@@ -224,8 +212,8 @@ pub async fn add_team(
     Ok(())
 }
 
-pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+pub async fn set_name(c: &mut Conn, name: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET name = ? WHERE id = ?")
         .bind(name)
         .bind(id)
         .execute(&mut *c)
@@ -234,8 +222,8 @@ pub async fn set_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResu
 }
 
 /// Sets or clears the project's icon name.
-pub async fn set_icon(c: &mut SqliteConnection, icon: Option<&str>, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET icon = ? WHERE id = ?")
+pub async fn set_icon(c: &mut Conn, icon: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET icon = ? WHERE id = ?")
         .bind(icon)
         .bind(id)
         .execute(&mut *c)
@@ -244,8 +232,8 @@ pub async fn set_icon(c: &mut SqliteConnection, icon: Option<&str>, id: &str) ->
 }
 
 /// Sets or clears the project's color.
-pub async fn set_color(c: &mut SqliteConnection, color: Option<&str>, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET color = ? WHERE id = ?")
+pub async fn set_color(c: &mut Conn, color: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET color = ? WHERE id = ?")
         .bind(color)
         .bind(id)
         .execute(&mut *c)
@@ -254,12 +242,8 @@ pub async fn set_color(c: &mut SqliteConnection, color: Option<&str>, id: &str) 
 }
 
 /// Sets or clears the project's local folder.
-pub async fn set_local_path(
-    c: &mut SqliteConnection,
-    path: Option<&str>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET local_path = ? WHERE id = ?")
+pub async fn set_local_path(c: &mut Conn, path: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET local_path = ? WHERE id = ?")
         .bind(path)
         .bind(id)
         .execute(&mut *c)
@@ -267,8 +251,8 @@ pub async fn set_local_path(
     Ok(())
 }
 
-pub async fn set_slug(c: &mut SqliteConnection, slug: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET slug = ? WHERE id = ?")
+pub async fn set_slug(c: &mut Conn, slug: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET slug = ? WHERE id = ?")
         .bind(slug)
         .bind(id)
         .execute(&mut *c)
@@ -276,12 +260,8 @@ pub async fn set_slug(c: &mut SqliteConnection, slug: &str, id: &str) -> ApiResu
     Ok(())
 }
 
-pub async fn set_description(
-    c: &mut SqliteConnection,
-    description: &str,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET description = ? WHERE id = ?")
+pub async fn set_description(c: &mut Conn, description: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET description = ? WHERE id = ?")
         .bind(description)
         .bind(id)
         .execute(&mut *c)
@@ -289,8 +269,8 @@ pub async fn set_description(
     Ok(())
 }
 
-pub async fn set_state(c: &mut SqliteConnection, state: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET state = ? WHERE id = ?")
+pub async fn set_state(c: &mut Conn, state: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET state = ? WHERE id = ?")
         .bind(state)
         .bind(id)
         .execute(&mut *c)
@@ -298,12 +278,8 @@ pub async fn set_state(c: &mut SqliteConnection, state: &str, id: &str) -> ApiRe
     Ok(())
 }
 
-pub async fn remove_team(
-    c: &mut SqliteConnection,
-    project_id: &str,
-    team_id: String,
-) -> ApiResult<()> {
-    sqlx::query("DELETE FROM project_teams WHERE project_id = ? AND team_id = ?")
+pub async fn remove_team(c: &mut Conn, project_id: &str, team_id: String) -> ApiResult<()> {
+    backend::query("DELETE FROM project_teams WHERE project_id = ? AND team_id = ?")
         .bind(project_id)
         .bind(team_id)
         .execute(&mut *c)
@@ -311,8 +287,8 @@ pub async fn remove_team(
     Ok(())
 }
 
-pub async fn touch(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET updated_at = ? WHERE id = ?")
+pub async fn touch(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -320,8 +296,8 @@ pub async fn touch(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?")
+pub async fn trash(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(now())
         .bind(id)
@@ -330,8 +306,8 @@ pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn link_repo(c: &mut SqliteConnection, project_id: &str, repo: &str) -> ApiResult<()> {
-    sqlx::query("INSERT OR IGNORE INTO project_repos (project_id, repo) VALUES (?, ?)")
+pub async fn link_repo(c: &mut Conn, project_id: &str, repo: &str) -> ApiResult<()> {
+    backend::query("INSERT OR IGNORE INTO project_repos (project_id, repo) VALUES (?, ?)")
         .bind(project_id)
         .bind(repo)
         .execute(&mut *c)
@@ -340,12 +316,12 @@ pub async fn link_repo(c: &mut SqliteConnection, project_id: &str, repo: &str) -
 }
 
 pub async fn unlink_repo(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     project_id: &str,
     repo: &str,
-) -> ApiResult<sqlx::sqlite::SqliteQueryResult> {
+) -> ApiResult<crate::store::backend::Done> {
     Ok(
-        sqlx::query("DELETE FROM project_repos WHERE project_id = ? AND repo = ?")
+        backend::query("DELETE FROM project_repos WHERE project_id = ? AND repo = ?")
             .bind(project_id)
             .bind(repo)
             .execute(&mut *c)
@@ -353,8 +329,8 @@ pub async fn unlink_repo(
     )
 }
 
-pub async fn next_milestone_position(c: &mut SqliteConnection, project_id: &str) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar(
+pub async fn next_milestone_position(c: &mut Conn, project_id: &str) -> ApiResult<i64> {
+    Ok(backend::query_scalar(
         "SELECT coalesce(max(position), -1) + 1 FROM milestones WHERE project_id = ?",
     )
     .bind(project_id)
@@ -363,7 +339,7 @@ pub async fn next_milestone_position(c: &mut SqliteConnection, project_id: &str)
 }
 
 pub async fn insert_milestone(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     project_id: &str,
     name: &str,
@@ -371,7 +347,7 @@ pub async fn insert_milestone(
     target_date: &Option<String>,
     position: i64,
 ) -> ApiResult<()> {
-    sqlx::query("INSERT INTO milestones (id, project_id, name, description, target_date, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    backend::query("INSERT INTO milestones (id, project_id, name, description, target_date, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(project_id)
         .bind(name)
@@ -384,8 +360,8 @@ pub async fn insert_milestone(
     Ok(())
 }
 
-pub async fn set_milestone_name(c: &mut SqliteConnection, name: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE milestones SET name = ? WHERE id = ?")
+pub async fn set_milestone_name(c: &mut Conn, name: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE milestones SET name = ? WHERE id = ?")
         .bind(name)
         .bind(id)
         .execute(&mut *c)
@@ -393,12 +369,8 @@ pub async fn set_milestone_name(c: &mut SqliteConnection, name: &str, id: &str) 
     Ok(())
 }
 
-pub async fn set_milestone_description(
-    c: &mut SqliteConnection,
-    description: &str,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE milestones SET description = ? WHERE id = ?")
+pub async fn set_milestone_description(c: &mut Conn, description: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE milestones SET description = ? WHERE id = ?")
         .bind(description)
         .bind(id)
         .execute(&mut *c)
@@ -407,11 +379,11 @@ pub async fn set_milestone_description(
 }
 
 pub async fn set_milestone_date(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     target_date: Option<&str>,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE milestones SET target_date = ? WHERE id = ?")
+    backend::query("UPDATE milestones SET target_date = ? WHERE id = ?")
         .bind(target_date)
         .bind(id)
         .execute(&mut *c)
@@ -419,12 +391,8 @@ pub async fn set_milestone_date(
     Ok(())
 }
 
-pub async fn set_milestone_position(
-    c: &mut SqliteConnection,
-    position: i64,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE milestones SET position = ? WHERE id = ?")
+pub async fn set_milestone_position(c: &mut Conn, position: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE milestones SET position = ? WHERE id = ?")
         .bind(position)
         .bind(id)
         .execute(&mut *c)
@@ -432,8 +400,8 @@ pub async fn set_milestone_position(
     Ok(())
 }
 
-pub async fn delete_milestone(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("DELETE FROM milestones WHERE id = ?")
+pub async fn delete_milestone(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("DELETE FROM milestones WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;

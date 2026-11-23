@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use sqlx::SqliteConnection;
+use crate::store::backend::Conn;
 
 use crate::error::ApiResult;
+use crate::store::backend;
 
 const BACKFILL_KEY: &str = "questions_backfill";
 
@@ -48,8 +49,8 @@ pub struct ListFilter<'a> {
     pub limit: i64,
 }
 
-pub async fn of_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec<QuestionRow>> {
-    Ok(sqlx::query_as(
+pub async fn of_issue(c: &mut Conn, issue_id: &str) -> ApiResult<Vec<QuestionRow>> {
+    Ok(backend::query_as(
         "SELECT position, number, text, context, options, answer,
                 answered_version, answered_by, answered_question
          FROM questions WHERE issue_id = ? ORDER BY position",
@@ -60,17 +61,13 @@ pub async fn of_issue(c: &mut SqliteConnection, issue_id: &str) -> ApiResult<Vec
 }
 
 /// Replaces every question of one issue.
-pub async fn replace(
-    c: &mut SqliteConnection,
-    issue_id: &str,
-    rows: &[QuestionRow],
-) -> ApiResult<()> {
-    sqlx::query("DELETE FROM questions WHERE issue_id = ?")
+pub async fn replace(c: &mut Conn, issue_id: &str, rows: &[QuestionRow]) -> ApiResult<()> {
+    backend::query("DELETE FROM questions WHERE issue_id = ?")
         .bind(issue_id)
         .execute(&mut *c)
         .await?;
     for r in rows {
-        sqlx::query(
+        backend::query(
             "INSERT INTO questions (issue_id, position, number, text, context, options, answer,
                                     answered_version, answered_by, answered_question)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -92,11 +89,8 @@ pub async fn replace(
 }
 
 /// How many open questions each issue holds. Issues with none are absent.
-pub async fn open_counts(
-    c: &mut SqliteConnection,
-    ids: &[String],
-) -> ApiResult<HashMap<String, u32>> {
-    let rows: Vec<(String, i64)> = sqlx::query_as(
+pub async fn open_counts(c: &mut Conn, ids: &[String]) -> ApiResult<HashMap<String, u32>> {
+    let rows: Vec<(String, i64)> = backend::query_as(
         "SELECT issue_id, count(*) FROM questions
          WHERE answer IS NULL AND issue_id IN (SELECT value FROM json_each(?))
          GROUP BY issue_id",
@@ -107,12 +101,12 @@ pub async fn open_counts(
     Ok(rows.into_iter().map(|(id, n)| (id, n as u32)).collect())
 }
 
-pub async fn list(c: &mut SqliteConnection, f: &ListFilter<'_>) -> ApiResult<Vec<ListRow>> {
+pub async fn list(c: &mut Conn, f: &ListFilter<'_>) -> ApiResult<Vec<ListRow>> {
     let (after_created, after_issue, after_position) = match f.after {
         Some((created, issue, position)) => (Some(created), Some(issue), Some(position)),
         None => (None, None, None),
     };
-    Ok(sqlx::query_as(
+    Ok(backend::query_as(
         "SELECT i.created_at AS issue_created_at, q.issue_id, q.position, i.key, i.title, i.waiting_on,
                 q.number, q.text, q.context, q.options, q.answer
          FROM questions q
@@ -140,16 +134,16 @@ pub async fn list(c: &mut SqliteConnection, f: &ListFilter<'_>) -> ApiResult<Vec
     .await?)
 }
 
-pub async fn backfill_pending(c: &mut SqliteConnection) -> ApiResult<bool> {
-    let found: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+pub async fn backfill_pending(c: &mut Conn) -> ApiResult<bool> {
+    let found: Option<String> = backend::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(BACKFILL_KEY)
         .fetch_optional(&mut *c)
         .await?;
     Ok(found.is_some())
 }
 
-pub async fn finish_backfill(c: &mut SqliteConnection) -> ApiResult<()> {
-    sqlx::query("DELETE FROM settings WHERE key = ?")
+pub async fn finish_backfill(c: &mut Conn) -> ApiResult<()> {
+    backend::query("DELETE FROM settings WHERE key = ?")
         .bind(BACKFILL_KEY)
         .execute(&mut *c)
         .await?;
@@ -158,8 +152,8 @@ pub async fn finish_backfill(c: &mut SqliteConnection) -> ApiResult<()> {
 
 /// Issues, live and trashed, whose description can hold the section. LIKE
 /// ignores ASCII case, as the section title does.
-pub async fn issues_to_backfill(c: &mut SqliteConnection) -> ApiResult<Vec<(String, String)>> {
-    Ok(sqlx::query_as(
+pub async fn issues_to_backfill(c: &mut Conn) -> ApiResult<Vec<(String, String)>> {
+    Ok(backend::query_as(
         "SELECT id, description FROM issues WHERE description LIKE '%owner questions%'",
     )
     .fetch_all(&mut *c)

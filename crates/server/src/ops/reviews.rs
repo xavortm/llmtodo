@@ -17,9 +17,9 @@
 //! One answer per round. A round ends when the ticket enters a review status
 //! again.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
 use serde_json::json;
-use sqlx::SqliteConnection;
 
 use super::claims::{end_claim, live_claim};
 use super::issues::{apply_waiting_on, set_assignee, set_status, touch_updated};
@@ -54,7 +54,7 @@ pub(crate) fn section_missing(key: &str, description: &str) -> Option<ApiError> 
 }
 
 /// The review section and the answers of an issue.
-pub async fn state(c: &mut SqliteConnection, r: &str) -> ApiResult<ReviewState> {
+pub async fn state(c: &mut Conn, r: &str) -> ApiResult<ReviewState> {
     let row = issues::resolve_live(c, r).await?;
     let status = teams::status_by_id(c, &row.status_id).await?;
     let description = row.description.clone().unwrap_or_default();

@@ -2,32 +2,33 @@
 
 use std::collections::HashMap;
 
+use crate::store::backend::Row as DbRow;
+use crate::store::backend::{Conn, QueryBuilder};
 use base64::Engine;
 use llmtodo_api_types::{
     ANALYZING_EXPIRY_SECS, Actor, AnalyzingSummary, ClaimSummary, Issue, IssueKey, IssueLink,
     IssueQuery, Priority, WantedExecutor,
 };
 use serde_json::Value;
-use sqlx::sqlite::SqliteRow;
-use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::db::{now, parse_ts, parse_ts_opt, parse_uuid};
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 use crate::store::{actors, deps, filter, projects, teams};
 
 /// Resolves a key (current or old) or an ID. Trashed issues resolve too;
 /// callers that need a live issue check `deleted_at`.
-pub async fn resolve_id(conn: &mut SqliteConnection, r: &str) -> ApiResult<String> {
+pub async fn resolve_id(conn: &mut Conn, r: &str) -> ApiResult<String> {
     let r = r.trim();
     if let Ok(key) = r.parse::<IssueKey>() {
         let id: Option<String> =
-            sqlx::query_scalar("SELECT issue_id FROM issue_keys WHERE key = ?")
+            backend::query_scalar("SELECT issue_id FROM issue_keys WHERE key = ?")
                 .bind(key.to_string())
                 .fetch_optional(&mut *conn)
                 .await?;
         return id.ok_or_else(|| ApiError::not_found("issue", r));
     }
-    let id: Option<String> = sqlx::query_scalar("SELECT id FROM issues WHERE id = ?")
+    let id: Option<String> = backend::query_scalar("SELECT id FROM issues WHERE id = ?")
         .bind(r)
         .fetch_optional(&mut *conn)
         .await?;
@@ -35,7 +36,7 @@ pub async fn resolve_id(conn: &mut SqliteConnection, r: &str) -> ApiResult<Strin
 }
 
 /// Like [`resolve_id`], but a trashed issue counts as not found.
-pub async fn resolve_live(conn: &mut SqliteConnection, r: &str) -> ApiResult<IssueRow> {
+pub async fn resolve_live(conn: &mut Conn, r: &str) -> ApiResult<IssueRow> {
     let id = resolve_id(conn, r).await?;
     let row = row(conn, &id).await?;
     if row.deleted_at.is_some() {
@@ -92,8 +93,8 @@ const SELECT: &str = "SELECT i.id, i.key, i.team_id, t.key AS team_key, i.number
     LEFT JOIN milestones m ON m.id = i.milestone_id
     LEFT JOIN issues par ON par.id = i.parent_id";
 
-pub async fn row(conn: &mut SqliteConnection, id: &str) -> ApiResult<IssueRow> {
-    sqlx::query_as::<_, IssueRow>(crate::sql!("{SELECT} WHERE i.id = ?"))
+pub async fn row(conn: &mut Conn, id: &str) -> ApiResult<IssueRow> {
+    backend::query_as::<IssueRow>(crate::sql!("{SELECT} WHERE i.id = ?"))
         .bind(true)
         .bind(id)
         .fetch_optional(&mut *conn)
@@ -101,13 +102,9 @@ pub async fn row(conn: &mut SqliteConnection, id: &str) -> ApiResult<IssueRow> {
         .ok_or_else(|| ApiError::not_found("issue", id))
 }
 
-async fn rows(
-    conn: &mut SqliteConnection,
-    ids: &[String],
-    with_description: bool,
-) -> ApiResult<Vec<IssueRow>> {
+async fn rows(conn: &mut Conn, ids: &[String], with_description: bool) -> ApiResult<Vec<IssueRow>> {
     let json = serde_json::to_string(ids)?;
-    Ok(sqlx::query_as::<_, IssueRow>(crate::sql!(
+    Ok(backend::query_as::<IssueRow>(crate::sql!(
         "{SELECT} WHERE i.id IN (SELECT value FROM json_each(?))"
     ))
     .bind(with_description)
@@ -129,12 +126,12 @@ struct ClaimRow {
 }
 
 pub async fn live_claims(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     actors: &HashMap<String, Actor>,
 ) -> ApiResult<HashMap<String, ClaimSummary>> {
     let json = serde_json::to_string(ids)?;
-    let rows = sqlx::query_as::<_, ClaimRow>(
+    let rows = backend::query_as::<ClaimRow>(
         "SELECT issue_id, actor_id, session_id, host, worktree, branch, herdr_pane, created_at FROM claims
          WHERE ended_at IS NULL AND issue_id IN (SELECT value FROM json_each(?))",
     )
@@ -169,12 +166,12 @@ pub fn analyzing_cutoff() -> String {
 
 /// Live Analyzing marks by issue ID. Expired marks are left out.
 pub async fn live_analyzing(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     actors: &HashMap<String, Actor>,
 ) -> ApiResult<HashMap<String, AnalyzingSummary>> {
     let json = serde_json::to_string(ids)?;
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, String)> = backend::query_as(
         "SELECT issue_id, actor_id, session_id, started_at, seen_at FROM analyzing
          WHERE seen_at >= ? AND issue_id IN (SELECT value FROM json_each(?))",
     )
@@ -209,7 +206,7 @@ pub struct Lookup {
 }
 
 impl Lookup {
-    pub async fn load(conn: &mut SqliteConnection) -> ApiResult<Self> {
+    pub async fn load(conn: &mut Conn) -> ApiResult<Self> {
         Ok(Self {
             statuses: teams::status_map(conn).await?,
             actors: actors::all(conn).await?,
@@ -219,7 +216,7 @@ impl Lookup {
 
 /// Loads issues in the order of `ids`.
 pub async fn load(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     with_description: bool,
 ) -> ApiResult<Vec<Issue>> {
@@ -232,7 +229,7 @@ pub async fn load(
 
 /// Loads issues in the order of `ids`, with statuses and actors given.
 pub async fn load_with(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     with_description: bool,
     lookup: &Lookup,
@@ -250,7 +247,7 @@ pub async fn load_with(
     let open_questions = crate::store::questions::open_counts(conn, ids).await?;
     let mut times = crate::store::usage::active_seconds_by_issue(conn, ids).await?;
     let json = serde_json::to_string(ids)?;
-    let label_rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+    let label_rows: Vec<(String, String, Option<String>)> = backend::query_as(
         "SELECT il.issue_id, l.name, g.name FROM issue_labels il JOIN labels l ON l.id = il.label_id LEFT JOIN labels g ON g.id = l.group_id
          WHERE il.issue_id IN (SELECT value FROM json_each(?)) ORDER BY coalesce(g.name, l.name) COLLATE NOCASE, l.name COLLATE NOCASE",
     )
@@ -313,11 +310,7 @@ pub async fn load_with(
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
-pub async fn load_one(
-    conn: &mut SqliteConnection,
-    id: &str,
-    with_description: bool,
-) -> ApiResult<Issue> {
+pub async fn load_one(conn: &mut Conn, id: &str, with_description: bool) -> ApiResult<Issue> {
     load(conn, &[id.to_string()], with_description)
         .await?
         .pop()
@@ -325,7 +318,7 @@ pub async fn load_one(
 }
 
 pub async fn load_one_with(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     id: &str,
     with_description: bool,
     lookup: &Lookup,
@@ -338,10 +331,7 @@ pub async fn load_one_with(
 
 /// Short forms of issues, by issue ID. It runs no blocker query, so the
 /// blocker code can call it.
-pub async fn link_map(
-    conn: &mut SqliteConnection,
-    ids: &[String],
-) -> ApiResult<HashMap<String, IssueLink>> {
+pub async fn link_map(conn: &mut Conn, ids: &[String]) -> ApiResult<HashMap<String, IssueLink>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -351,7 +341,7 @@ pub async fn link_map(
 
 /// Short forms of issues, by issue ID, with the statuses given.
 pub async fn link_map_with(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     statuses: &HashMap<String, teams::StatusRow>,
 ) -> ApiResult<HashMap<String, IssueLink>> {
@@ -383,7 +373,7 @@ pub async fn link_map_with(
 
 /// Short forms of issues, in the order of `ids`.
 pub async fn links(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     statuses: &HashMap<String, teams::StatusRow>,
 ) -> ApiResult<Vec<IssueLink>> {
@@ -447,14 +437,14 @@ struct Cursor {
 }
 
 impl Cursor {
-    fn of(row: &SqliteRow, keys: &[SortKey]) -> ApiResult<Self> {
+    fn of(row: &DbRow, keys: &[SortKey]) -> ApiResult<Self> {
         let mut values = Vec::with_capacity(keys.len());
         for (n, k) in keys.iter().enumerate() {
             let col = format!("k{n}");
             values.push(match k.kind {
-                KeyKind::Int => Value::from(row.try_get::<i64, _>(col.as_str())?),
-                KeyKind::Real => Value::from(row.try_get::<f64, _>(col.as_str())?),
-                KeyKind::Text => Value::from(row.try_get::<String, _>(col.as_str())?),
+                KeyKind::Int => Value::from(row.try_get::<i64>(col.as_str())?),
+                KeyKind::Real => Value::from(row.try_get::<f64>(col.as_str())?),
+                KeyKind::Text => Value::from(row.try_get::<String>(col.as_str())?),
             });
         }
         Ok(Cursor {
@@ -479,12 +469,7 @@ impl Cursor {
 
 /// Pushes the condition "this row sorts after the cursor", one key at a
 /// time: a greater first key, or an equal first key and a greater rest.
-fn push_after(
-    b: &mut QueryBuilder<Sqlite>,
-    keys: &[SortKey],
-    n: usize,
-    c: &Cursor,
-) -> ApiResult<()> {
+fn push_after(b: &mut QueryBuilder, keys: &[SortKey], n: usize, c: &Cursor) -> ApiResult<()> {
     let Some(k) = keys.get(n) else {
         b.push("id > ").push_bind(c.id.clone());
         return Ok(());
@@ -500,7 +485,7 @@ fn push_after(
     Ok(())
 }
 
-fn push_key(b: &mut QueryBuilder<Sqlite>, kind: KeyKind, v: &Value) -> ApiResult<()> {
+fn push_key(b: &mut QueryBuilder, kind: KeyKind, v: &Value) -> ApiResult<()> {
     let bad = || ApiError::bad_request("bad cursor");
     match kind {
         KeyKind::Int => b.push_bind(v.as_i64().ok_or_else(bad)?),
@@ -528,7 +513,7 @@ fn search_terms(q: &IssueQuery) -> ApiResult<(Option<String>, Option<String>)> {
 /// Pushes the `fts` common table. FTS5 ranks only inside a direct MATCH
 /// query, so the matches are collected first. `rank` is lower for better
 /// matches.
-fn push_matches(b: &mut QueryBuilder<Sqlite>, text: Option<&str>, similar: Option<&str>) {
+fn push_matches(b: &mut QueryBuilder, text: Option<&str>, similar: Option<&str>) {
     if let Some(t) = text {
         b.push("WITH fts AS MATERIALIZED (SELECT issue_id, -rank AS score FROM search_fts WHERE search_fts MATCH ").push_bind(t.to_string()).push(") ");
     } else if let Some(t) = similar {
@@ -539,7 +524,7 @@ fn push_matches(b: &mut QueryBuilder<Sqlite>, text: Option<&str>, similar: Optio
 /// Pushes the start of the two nested selects. The inner query filters. The
 /// outer one pages by the sort keys, so a write between two pages never
 /// shifts the rows after the cursor.
-fn push_select(b: &mut QueryBuilder<Sqlite>, keys: &[SortKey], ranked: bool, trashed: bool) {
+fn push_select(b: &mut QueryBuilder, keys: &[SortKey], ranked: bool, trashed: bool) {
     b.push("SELECT id, score");
     for n in 0..keys.len() {
         b.push(format_args!(", k{n}"));
@@ -560,8 +545,8 @@ fn push_select(b: &mut QueryBuilder<Sqlite>, keys: &[SortKey], ranked: bool, tra
 
 /// Pushes every filter of the query, in a fixed order.
 async fn push_filters(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
+    b: &mut QueryBuilder,
+    conn: &mut Conn,
     me: &Actor,
     q: &IssueQuery,
 ) -> ApiResult<()> {
@@ -591,11 +576,7 @@ async fn push_filters(
 /// Keeps only the issues named in `q.keys`. A key that names no issue is
 /// skipped, so a list of keys from live events never fails on one that
 /// went away.
-async fn push_key_filter(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
-    q: &IssueQuery,
-) -> ApiResult<()> {
+async fn push_key_filter(b: &mut QueryBuilder, conn: &mut Conn, q: &IssueQuery) -> ApiResult<()> {
     if q.keys.is_empty() {
         return Ok(());
     }
@@ -613,11 +594,7 @@ async fn push_key_filter(
     Ok(())
 }
 
-async fn push_org_filters(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
-    q: &IssueQuery,
-) -> ApiResult<()> {
+async fn push_org_filters(b: &mut QueryBuilder, conn: &mut Conn, q: &IssueQuery) -> ApiResult<()> {
     if !q.teams.is_empty() {
         let mut ids = Vec::new();
         for t in &q.teams {
@@ -639,11 +616,7 @@ async fn push_org_filters(
     Ok(())
 }
 
-async fn push_link_filters(
-    b: &mut QueryBuilder<Sqlite>,
-    conn: &mut SqliteConnection,
-    q: &IssueQuery,
-) -> ApiResult<()> {
+async fn push_link_filters(b: &mut QueryBuilder, conn: &mut Conn, q: &IssueQuery) -> ApiResult<()> {
     if let Some(p) = &q.parent {
         if p.eq_ignore_ascii_case("none") {
             b.push(" AND i.parent_id IS NULL");
@@ -662,7 +635,7 @@ async fn push_link_filters(
     Ok(())
 }
 
-fn push_waiting_on(b: &mut QueryBuilder<Sqlite>, q: &IssueQuery) -> ApiResult<()> {
+fn push_waiting_on(b: &mut QueryBuilder, q: &IssueQuery) -> ApiResult<()> {
     if let Some(w) = q.waiting_on.as_deref().map(str::trim) {
         match w.to_ascii_lowercase().as_str() {
             "none" | "" => {
@@ -682,7 +655,7 @@ fn push_waiting_on(b: &mut QueryBuilder<Sqlite>, q: &IssueQuery) -> ApiResult<()
     Ok(())
 }
 
-fn push_field_filters(b: &mut QueryBuilder<Sqlite>, q: &IssueQuery) -> ApiResult<()> {
+fn push_field_filters(b: &mut QueryBuilder, q: &IssueQuery) -> ApiResult<()> {
     if let Some(p) = q.priority {
         b.push(" AND i.priority = ").push_bind(p.as_number() as i64);
     }
@@ -701,11 +674,7 @@ fn push_field_filters(b: &mut QueryBuilder<Sqlite>, q: &IssueQuery) -> ApiResult
 }
 
 /// Pushes the cursor condition and the order.
-fn push_page(
-    b: &mut QueryBuilder<Sqlite>,
-    keys: &[SortKey],
-    after: Option<&Cursor>,
-) -> ApiResult<()> {
+fn push_page(b: &mut QueryBuilder, keys: &[SortKey], after: Option<&Cursor>) -> ApiResult<()> {
     if let Some(c) = after {
         b.push(" WHERE ");
         push_after(b, keys, 0, c)?;
@@ -723,12 +692,12 @@ fn push_page(
 
 /// Runs an issue query. Returns IDs, scores and the next cursor.
 pub async fn query(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     me: &Actor,
     q: &IssueQuery,
 ) -> ApiResult<(Vec<(String, Option<f64>)>, Option<String>)> {
     let (mut b, keys, limit) = build_query(conn, me, q, "", true).await?;
-    let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
+    let rows: Vec<DbRow> = b.build().fetch_all(&mut *conn).await?;
     let more = rows.len() as i64 > limit;
     let rows = &rows[..rows.len().min(limit as usize)];
     let next = match rows.last() {
@@ -744,18 +713,14 @@ pub async fn query(
 
 /// The IDs of every issue a query matches, in the query's order, in one SQL
 /// statement. It reads no cursor and no limit.
-pub async fn query_ids(
-    conn: &mut SqliteConnection,
-    me: &Actor,
-    q: &IssueQuery,
-) -> ApiResult<Vec<String>> {
+pub async fn query_ids(conn: &mut Conn, me: &Actor, q: &IssueQuery) -> ApiResult<Vec<String>> {
     let q = IssueQuery {
         cursor: None,
         limit: None,
         ..q.clone()
     };
     let (mut b, _, _) = build_query(conn, me, &q, "", false).await?;
-    let rows: Vec<SqliteRow> = b.build().fetch_all(&mut *conn).await?;
+    let rows: Vec<DbRow> = b.build().fetch_all(&mut *conn).await?;
     rows.iter()
         .map(|r| r.try_get("id").map_err(Into::into))
         .collect()
@@ -764,14 +729,14 @@ pub async fn query_ids(
 /// Builds the SQL of an issue query after `prefix`. Returns it with the sort
 /// keys and the page size. Without `paged`, the SQL has no limit.
 async fn build_query(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     me: &Actor,
     q: &IssueQuery,
     prefix: &str,
     paged: bool,
-) -> ApiResult<(QueryBuilder<Sqlite>, Vec<SortKey>, i64)> {
+) -> ApiResult<(QueryBuilder, Vec<SortKey>, i64)> {
     let (ranked_text, ranked_similar) = search_terms(q)?;
-    let mut b: QueryBuilder<Sqlite> = QueryBuilder::new(prefix);
+    let mut b: QueryBuilder = QueryBuilder::new(prefix);
     let ranked = ranked_text.is_some() || ranked_similar.is_some();
     push_matches(&mut b, ranked_text.as_deref(), ranked_similar.as_deref());
     let keys = sort_keys(ranked, q);
@@ -799,12 +764,12 @@ async fn build_query(
 }
 
 async fn executor_ok(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     ids: &[String],
     want: &WantedExecutor,
 ) -> ApiResult<std::collections::HashSet<String>> {
     let json = serde_json::to_string(ids)?;
-    let rows: Vec<(String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String)> = backend::query_as(
         "SELECT id, wanted_executor FROM issues WHERE id IN (SELECT value FROM json_each(?))",
     )
     .bind(json)
@@ -826,7 +791,7 @@ async fn executor_ok(
 /// for the owner, so it shows only when it waits on an agent, as after an
 /// approval with an open PR. Sorted by priority, then key.
 pub async fn frontier(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     root: Option<&str>,
     project: Option<&str>,
     depth: u32,
@@ -850,7 +815,7 @@ pub async fn frontier(
                     SELECT c.id, tree.depth + 1 FROM issues c JOIN tree ON c.parent_id = tree.id WHERE tree.depth < ?
                  ) {base} AND i.id IN (SELECT id FROM tree){order}"
             );
-            sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            backend::query_scalar(crate::store::backend::Sql::assert_safe(sql))
                 .bind(root)
                 .bind(depth.max(1) as i64)
                 .fetch_all(&mut *conn)
@@ -858,7 +823,7 @@ pub async fn frontier(
         }
         (None, Some(project)) => {
             let sql = format!("{base} AND i.project_id = ?{order}");
-            sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            backend::query_scalar(crate::store::backend::Sql::assert_safe(sql))
                 .bind(project)
                 .fetch_all(&mut *conn)
                 .await?
@@ -879,8 +844,8 @@ pub async fn frontier(
 }
 
 /// True when `ancestor` is `id` or one of its parents.
-pub async fn is_ancestor(conn: &mut SqliteConnection, ancestor: &str, id: &str) -> ApiResult<bool> {
-    let found: Option<i64> = sqlx::query_scalar(
+pub async fn is_ancestor(conn: &mut Conn, ancestor: &str, id: &str) -> ApiResult<bool> {
+    let found: Option<i64> = backend::query_scalar(
         "WITH RECURSIVE up(id) AS (SELECT ? UNION SELECT i.parent_id FROM issues i JOIN up ON i.id = up.id WHERE i.parent_id IS NOT NULL)
          SELECT 1 FROM up WHERE id = ? LIMIT 1",
     )
@@ -891,8 +856,8 @@ pub async fn is_ancestor(conn: &mut SqliteConnection, ancestor: &str, id: &str) 
     Ok(found.is_some())
 }
 
-pub async fn touch_updated(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET updated_at = ? WHERE id = ?")
+pub async fn touch_updated(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -902,7 +867,7 @@ pub async fn touch_updated(c: &mut SqliteConnection, id: &str) -> ApiResult<()> 
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     team_id: &str,
     number: i64,
@@ -916,7 +881,7 @@ pub async fn insert(
     completed: Option<String>,
     executor: String,
 ) -> ApiResult<()> {
-    sqlx::query(
+    backend::query(
         "INSERT INTO issues (id, team_id, number, key, title, description, status_id, priority, created_by, created_at, updated_at, completed_at, wanted_executor)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -938,8 +903,8 @@ pub async fn insert(
     Ok(())
 }
 
-pub async fn add_key(c: &mut SqliteConnection, key: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("INSERT INTO issue_keys (key, issue_id) VALUES (?, ?)")
+pub async fn add_key(c: &mut Conn, key: &str, id: &str) -> ApiResult<()> {
+    backend::query("INSERT INTO issue_keys (key, issue_id) VALUES (?, ?)")
         .bind(key)
         .bind(id)
         .execute(&mut *c)
@@ -948,7 +913,7 @@ pub async fn add_key(c: &mut SqliteConnection, key: &str, id: &str) -> ApiResult
 }
 
 pub async fn git_fields(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
 ) -> ApiResult<(
     Option<String>,
@@ -956,22 +921,16 @@ pub async fn git_fields(
     Option<String>,
     Option<String>,
 )> {
-    Ok(
-        sqlx::query_as(
-            "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&mut *c)
-        .await?,
+    Ok(backend::query_as(
+        "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
     )
+    .bind(id)
+    .fetch_one(&mut *c)
+    .await?)
 }
 
-pub async fn set_git_branch(
-    c: &mut SqliteConnection,
-    branch: Option<&str>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET git_branch = ? WHERE id = ?")
+pub async fn set_git_branch(c: &mut Conn, branch: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET git_branch = ? WHERE id = ?")
         .bind(branch)
         .bind(id)
         .execute(&mut *c)
@@ -980,12 +939,12 @@ pub async fn set_git_branch(
 }
 
 pub async fn set_git_worktree(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     worktree: Option<&str>,
     host: Option<&str>,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET git_worktree = ?, git_host = ? WHERE id = ?")
+    backend::query("UPDATE issues SET git_worktree = ?, git_host = ? WHERE id = ?")
         .bind(worktree)
         .bind(host)
         .bind(id)
@@ -994,8 +953,8 @@ pub async fn set_git_worktree(
     Ok(())
 }
 
-pub async fn set_git_pr(c: &mut SqliteConnection, pr: Option<&str>, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET git_pr = ? WHERE id = ?")
+pub async fn set_git_pr(c: &mut Conn, pr: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET git_pr = ? WHERE id = ?")
         .bind(pr)
         .bind(id)
         .execute(&mut *c)
@@ -1003,8 +962,8 @@ pub async fn set_git_pr(c: &mut SqliteConnection, pr: Option<&str>, id: &str) ->
     Ok(())
 }
 
-pub async fn set_title(c: &mut SqliteConnection, title: &str, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET title = ? WHERE id = ?")
+pub async fn set_title(c: &mut Conn, title: &str, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET title = ? WHERE id = ?")
         .bind(title)
         .bind(id)
         .execute(&mut *c)
@@ -1012,8 +971,8 @@ pub async fn set_title(c: &mut SqliteConnection, title: &str, id: &str) -> ApiRe
     Ok(())
 }
 
-pub async fn set_priority(c: &mut SqliteConnection, priority: i64, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET priority = ? WHERE id = ?")
+pub async fn set_priority(c: &mut Conn, priority: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET priority = ? WHERE id = ?")
         .bind(priority)
         .bind(id)
         .execute(&mut *c)
@@ -1021,12 +980,8 @@ pub async fn set_priority(c: &mut SqliteConnection, priority: i64, id: &str) -> 
     Ok(())
 }
 
-pub async fn set_waiting_on(
-    c: &mut SqliteConnection,
-    waiting_on: Option<&str>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET waiting_on = ? WHERE id = ?")
+pub async fn set_waiting_on(c: &mut Conn, waiting_on: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET waiting_on = ? WHERE id = ?")
         .bind(waiting_on)
         .bind(id)
         .execute(&mut *c)
@@ -1034,8 +989,8 @@ pub async fn set_waiting_on(
     Ok(())
 }
 
-pub async fn set_executor(c: &mut SqliteConnection, executor: String, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET wanted_executor = ? WHERE id = ?")
+pub async fn set_executor(c: &mut Conn, executor: String, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET wanted_executor = ? WHERE id = ?")
         .bind(executor)
         .bind(id)
         .execute(&mut *c)
@@ -1044,12 +999,12 @@ pub async fn set_executor(c: &mut SqliteConnection, executor: String, id: &str) 
 }
 
 pub async fn set_project(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     project_id: Option<String>,
     keep_milestone: bool,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET project_id = ?, milestone_id = CASE WHEN ? THEN milestone_id ELSE NULL END WHERE id = ?")
+    backend::query("UPDATE issues SET project_id = ?, milestone_id = CASE WHEN ? THEN milestone_id ELSE NULL END WHERE id = ?")
         .bind(project_id)
         .bind(keep_milestone)
         .bind(id)
@@ -1058,12 +1013,8 @@ pub async fn set_project(
     Ok(())
 }
 
-pub async fn set_milestone(
-    c: &mut SqliteConnection,
-    milestone_id: Option<String>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET milestone_id = ? WHERE id = ?")
+pub async fn set_milestone(c: &mut Conn, milestone_id: Option<String>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET milestone_id = ? WHERE id = ?")
         .bind(milestone_id)
         .bind(id)
         .execute(&mut *c)
@@ -1071,12 +1022,8 @@ pub async fn set_milestone(
     Ok(())
 }
 
-pub async fn set_parent(
-    c: &mut SqliteConnection,
-    parent_id: Option<String>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET parent_id = ? WHERE id = ?")
+pub async fn set_parent(c: &mut Conn, parent_id: Option<String>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET parent_id = ? WHERE id = ?")
         .bind(parent_id)
         .bind(id)
         .execute(&mut *c)
@@ -1084,30 +1031,26 @@ pub async fn set_parent(
     Ok(())
 }
 
-pub async fn description(c: &mut SqliteConnection, id: &str) -> ApiResult<String> {
+pub async fn description(c: &mut Conn, id: &str) -> ApiResult<String> {
     Ok(
-        sqlx::query_scalar("SELECT description FROM issues WHERE id = ?")
+        backend::query_scalar("SELECT description FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn assignee(c: &mut SqliteConnection, id: &str) -> ApiResult<Option<String>> {
+pub async fn assignee(c: &mut Conn, id: &str) -> ApiResult<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT assignee_id FROM issues WHERE id = ?")
+        backend::query_scalar("SELECT assignee_id FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn set_assignee(
-    c: &mut SqliteConnection,
-    assignee_id: Option<&str>,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET assignee_id = ? WHERE id = ?")
+pub async fn set_assignee(c: &mut Conn, assignee_id: Option<&str>, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET assignee_id = ? WHERE id = ?")
         .bind(assignee_id)
         .bind(id)
         .execute(&mut *c)
@@ -1115,26 +1058,26 @@ pub async fn set_assignee(
     Ok(())
 }
 
-pub async fn status_id(c: &mut SqliteConnection, id: &str) -> ApiResult<String> {
+pub async fn status_id(c: &mut Conn, id: &str) -> ApiResult<String> {
     Ok(
-        sqlx::query_scalar("SELECT status_id FROM issues WHERE id = ?")
+        backend::query_scalar("SELECT status_id FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn waiting_on(c: &mut SqliteConnection, id: &str) -> ApiResult<Option<String>> {
+pub async fn waiting_on(c: &mut Conn, id: &str) -> ApiResult<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT waiting_on FROM issues WHERE id = ?")
+        backend::query_scalar("SELECT waiting_on FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn clear_waiting_on(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET waiting_on = NULL WHERE id = ?")
+pub async fn clear_waiting_on(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET waiting_on = NULL WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;
@@ -1142,12 +1085,12 @@ pub async fn clear_waiting_on(c: &mut SqliteConnection, id: &str) -> ApiResult<(
 }
 
 pub async fn set_status(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     status_id: &str,
     completed: Option<String>,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET status_id = ?, completed_at = ? WHERE id = ?")
+    backend::query("UPDATE issues SET status_id = ?, completed_at = ? WHERE id = ?")
         .bind(status_id)
         .bind(completed)
         .bind(id)
@@ -1157,44 +1100,36 @@ pub async fn set_status(
 }
 
 pub async fn description_and_waiting_on(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
 ) -> ApiResult<(String, Option<String>)> {
     Ok(
-        sqlx::query_as("SELECT description, waiting_on FROM issues WHERE id = ?")
+        backend::query_as("SELECT description, waiting_on FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn hand_to_agent(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET waiting_on = 'agent' WHERE id = ?")
+pub async fn hand_to_agent(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET waiting_on = 'agent' WHERE id = ?")
         .bind(id)
         .execute(&mut *c)
         .await?;
     Ok(())
 }
 
-pub async fn description_and_version(
-    c: &mut SqliteConnection,
-    id: &str,
-) -> ApiResult<(String, i64)> {
+pub async fn description_and_version(c: &mut Conn, id: &str) -> ApiResult<(String, i64)> {
     Ok(
-        sqlx::query_as("SELECT description, description_version FROM issues WHERE id = ?")
+        backend::query_as("SELECT description, description_version FROM issues WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *c)
             .await?,
     )
 }
 
-pub async fn set_description(
-    c: &mut SqliteConnection,
-    text: &str,
-    version: i64,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET description = ?, description_version = ? WHERE id = ?")
+pub async fn set_description(c: &mut Conn, text: &str, version: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET description = ?, description_version = ? WHERE id = ?")
         .bind(text)
         .bind(version)
         .bind(id)
@@ -1204,26 +1139,28 @@ pub async fn set_description(
 }
 
 pub async fn move_team(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     team_id: &str,
     number: i64,
     key: &str,
     status_id: &str,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET team_id = ?, number = ?, key = ?, status_id = ? WHERE id = ?")
-        .bind(team_id)
-        .bind(number)
-        .bind(key)
-        .bind(status_id)
-        .bind(id)
-        .execute(&mut *c)
-        .await?;
+    backend::query(
+        "UPDATE issues SET team_id = ?, number = ?, key = ?, status_id = ? WHERE id = ?",
+    )
+    .bind(team_id)
+    .bind(number)
+    .bind(key)
+    .bind(status_id)
+    .bind(id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 
-pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET deleted_at = ?, updated_at = ? WHERE id = ?")
+pub async fn trash(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET deleted_at = ?, updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(now())
         .bind(id)
@@ -1232,8 +1169,8 @@ pub async fn trash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn untrash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET deleted_at = NULL, updated_at = ? WHERE id = ?")
+pub async fn untrash(c: &mut Conn, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET deleted_at = NULL, updated_at = ? WHERE id = ?")
         .bind(now())
         .bind(id)
         .execute(&mut *c)
@@ -1242,13 +1179,13 @@ pub async fn untrash(c: &mut SqliteConnection, id: &str) -> ApiResult<()> {
 }
 
 pub async fn merge_claim_git(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     branch: Option<&str>,
     worktree: Option<&str>,
     host: Option<&str>,
     id: &str,
 ) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET git_branch = coalesce(?, git_branch), git_worktree = coalesce(?, git_worktree), git_host = CASE WHEN ? IS NULL THEN git_host ELSE ? END WHERE id = ?")
+    backend::query("UPDATE issues SET git_branch = coalesce(?, git_branch), git_worktree = coalesce(?, git_worktree), git_host = CASE WHEN ? IS NULL THEN git_host ELSE ? END WHERE id = ?")
         .bind(branch)
         .bind(worktree)
         .bind(worktree)
@@ -1261,9 +1198,9 @@ pub async fn merge_claim_git(
 
 /// The children lose their parent, and with it their order: their steps
 /// and order edges go too.
-pub async fn clear_parent(c: &mut SqliteConnection, parent_id: &str) -> ApiResult<()> {
+pub async fn clear_parent(c: &mut Conn, parent_id: &str) -> ApiResult<()> {
     crate::store::order::delete_edges(c, parent_id).await?;
-    sqlx::query("UPDATE issues SET parent_id = NULL, order_step = NULL WHERE parent_id = ?")
+    backend::query("UPDATE issues SET parent_id = NULL, order_step = NULL WHERE parent_id = ?")
         .bind(parent_id)
         .execute(&mut *c)
         .await?;
@@ -1271,11 +1208,11 @@ pub async fn clear_parent(c: &mut SqliteConnection, parent_id: &str) -> ApiResul
 }
 
 pub async fn delete_if_trashed_before(
-    c: &mut SqliteConnection,
+    c: &mut Conn,
     id: &str,
     before: Option<&str>,
 ) -> ApiResult<()> {
-    sqlx::query("DELETE FROM issues WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at < ?")
+    backend::query("DELETE FROM issues WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at < ?")
         .bind(id)
         .bind(before)
         .execute(&mut *c)
@@ -1283,11 +1220,8 @@ pub async fn delete_if_trashed_before(
     Ok(())
 }
 
-pub async fn trashed_before(
-    c: &mut SqliteConnection,
-    before: String,
-) -> ApiResult<Vec<(String, String)>> {
-    Ok(sqlx::query_as(
+pub async fn trashed_before(c: &mut Conn, before: String) -> ApiResult<Vec<(String, String)>> {
+    Ok(backend::query_as(
         "SELECT id, key FROM issues WHERE deleted_at IS NOT NULL AND deleted_at < ? ORDER BY key",
     )
     .bind(before)
@@ -1295,18 +1229,14 @@ pub async fn trashed_before(
     .await?)
 }
 
-pub async fn count_all(c: &mut SqliteConnection) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM issues")
+pub async fn count_all(c: &mut Conn) -> ApiResult<i64> {
+    Ok(backend::query_scalar("SELECT count(*) FROM issues")
         .fetch_one(&mut *c)
         .await?)
 }
 
-pub async fn set_estimate_minutes(
-    c: &mut SqliteConnection,
-    minutes: u32,
-    id: &str,
-) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET estimate_minutes = ? WHERE id = ?")
+pub async fn set_estimate_minutes(c: &mut Conn, minutes: u32, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET estimate_minutes = ? WHERE id = ?")
         .bind(i64::from(minutes))
         .bind(id)
         .execute(&mut *c)
@@ -1314,8 +1244,8 @@ pub async fn set_estimate_minutes(
     Ok(())
 }
 
-pub async fn set_estimate_cost(c: &mut SqliteConnection, usd: f64, id: &str) -> ApiResult<()> {
-    sqlx::query("UPDATE issues SET estimate_cost_usd = ? WHERE id = ?")
+pub async fn set_estimate_cost(c: &mut Conn, usd: f64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE issues SET estimate_cost_usd = ? WHERE id = ?")
         .bind(usd)
         .bind(id)
         .execute(&mut *c)
@@ -1326,10 +1256,9 @@ pub async fn set_estimate_cost(c: &mut SqliteConnection, usd: f64, id: &str) -> 
 #[cfg(test)]
 mod tests {
     use llmtodo_api_types::IssueQuery;
-    use sqlx::Row as _;
 
     async fn plan(
-        c: &mut sqlx::SqliteConnection,
+        c: &mut crate::store::backend::Conn,
         me: &llmtodo_api_types::Actor,
         q: IssueQuery,
     ) -> String {
@@ -1338,7 +1267,7 @@ mod tests {
             .unwrap();
         let rows = b.build().fetch_all(&mut *c).await.unwrap();
         rows.iter()
-            .map(|r| r.get::<String, _>("detail"))
+            .map(|r| r.try_get::<String>("detail").unwrap_or_default())
             .collect::<Vec<_>>()
             .join("\n")
     }

@@ -1,25 +1,26 @@
 //! The full detail of one issue, with everything an agent needs.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{Attachment, AttachmentKind, GitPr, IssueDetail, IssueGit, WorkSession};
-use sqlx::SqliteConnection;
 
 use crate::error::ApiResult;
+use crate::store::backend;
 use crate::store::{attachments, comments, issues, relations, reviews, sessions, usage};
 
 /// One issue with everything an agent needs.
-pub async fn load(conn: &mut SqliteConnection, issue_id: &str) -> ApiResult<IssueDetail> {
+pub async fn load(conn: &mut Conn, issue_id: &str) -> ApiResult<IssueDetail> {
     // One lookup of statuses and actors serves every part below.
     let lookup = issues::Lookup::load(conn).await?;
     let actors = &lookup.actors;
     let issue = issues::load_one_with(conn, issue_id, true, &lookup).await?;
-    let aliases: Vec<String> = sqlx::query_scalar(
+    let aliases: Vec<String> = backend::query_scalar(
         "SELECT key FROM issue_keys WHERE issue_id = ? AND key <> ? ORDER BY key",
     )
     .bind(issue_id)
     .bind(issue.key.to_string())
     .fetch_all(&mut *conn)
     .await?;
-    let child_ids: Vec<String> = sqlx::query_scalar(
+    let child_ids: Vec<String> = backend::query_scalar(
         "SELECT id FROM issues WHERE parent_id = ? AND deleted_at IS NULL ORDER BY number",
     )
     .bind(issue_id)
@@ -59,12 +60,12 @@ struct GitRow {
 /// The git panel of an issue. The PR is the one set by hand, or else the
 /// newest PR attachment that is still open, or else the newest one.
 async fn git(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     issue_id: &str,
     attachments: &[Attachment],
     sessions: &[WorkSession],
 ) -> ApiResult<IssueGit> {
-    let r = sqlx::query_as::<_, GitRow>(
+    let r = backend::query_as::<GitRow>(
         "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
     )
     .bind(issue_id)

@@ -12,18 +12,18 @@ use llmtodo_api_types::{
     ActivityField, Actor, ActorKind, CONTEXT_HEADER, ClientContext, EntityType, ErrorCode,
     WsMessage,
 };
-use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::sync::{Notify, OwnedMutexGuard, OwnedRwLockReadGuard, RwLock, broadcast};
 
 use crate::error::{ApiError, ApiResult};
 use crate::store;
+use crate::store::backend::{Conn, Pool};
 
 #[derive(Clone)]
 pub struct AppState(pub Arc<Inner>);
 
 pub struct Inner {
     /// Replaced when `sync pull` swaps the database file.
-    pub pool_slot: std::sync::RwLock<SqlitePool>,
+    pub pool_slot: std::sync::RwLock<Pool>,
     /// This machine's name, as the sync manifest records it.
     pub host: String,
     pub data_dir: PathBuf,
@@ -55,7 +55,7 @@ impl std::ops::Deref for AppState {
 }
 
 impl Inner {
-    pub fn pool(&self) -> SqlitePool {
+    pub fn pool(&self) -> Pool {
         self.pool_slot.read().expect("pool lock").clone()
     }
 
@@ -124,7 +124,7 @@ pub fn is_commit_hash(s: &str) -> bool {
 /// One write transaction. It records activity events and the issues it
 /// touched, then on commit updates the work log and sends live events.
 pub struct Write<'a> {
-    pub tx: Transaction<'static, Sqlite>,
+    pub tx: Conn,
     pub ctx: &'a Ctx,
     state: AppState,
     seqs: Vec<i64>,
@@ -152,7 +152,7 @@ impl<'a> Write<'a> {
             ));
         }
         let queue = state.write_queue.clone().lock_owned().await;
-        let tx = state.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let tx = state.pool().begin_write().await?;
         Ok(Self {
             tx,
             ctx,
@@ -173,11 +173,11 @@ impl<'a> Write<'a> {
     /// Rows changed on this write's connection so far. Compare two readings
     /// to learn whether a step changed anything.
     pub async fn changes(&mut self) -> ApiResult<i64> {
-        store::settings::total_changes(&mut self.tx).await
+        Ok(self.tx.changes() as i64)
     }
 
     /// The connection, for queries.
-    pub fn c(&mut self) -> &mut sqlx::SqliteConnection {
+    pub fn c(&mut self) -> &mut crate::store::backend::Conn {
         &mut self.tx
     }
 

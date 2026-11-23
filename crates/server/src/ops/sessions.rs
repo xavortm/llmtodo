@@ -1,8 +1,8 @@
 //! Work sessions and their notes.
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::*;
 use serde_json::json;
-use sqlx::SqliteConnection;
 
 use crate::db::new_id;
 use crate::error::{ApiError, ApiResult};
@@ -10,7 +10,7 @@ use crate::state::Write;
 use crate::store::{self, actors, issues, sessions};
 
 /// One session and everything it touched.
-pub async fn view(c: &mut SqliteConnection, session: String) -> ApiResult<SessionView> {
+pub async fn view(c: &mut Conn, session: String) -> ApiResult<SessionView> {
     let all = actors::all(c).await?;
     let (issues, notes) = sessions::for_session(c, &session, &all).await?;
     if issues.is_empty() && notes.is_empty() {

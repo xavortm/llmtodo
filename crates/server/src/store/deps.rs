@@ -22,10 +22,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use crate::store::backend::Conn;
 use llmtodo_api_types::{DepNode, IssueKey, IssueLink};
-use sqlx::SqliteConnection;
 
 use crate::error::{ApiError, ApiResult};
+use crate::store::backend;
 use crate::store::{issues, teams};
 
 /// How deep `issue deps` goes. A node takes two levels of JSON nesting, and
@@ -75,8 +76,8 @@ struct Node<'a> {
 
 impl Graph {
     /// The current graph, built again when a write changed it since.
-    async fn current(conn: &mut SqliteConnection) -> ApiResult<Arc<Self>> {
-        let token: Vec<u8> = sqlx::query_scalar("SELECT token FROM dep_graph_token")
+    async fn current(conn: &mut Conn) -> ApiResult<Arc<Self>> {
+        let token: Vec<u8> = backend::query_scalar("SELECT token FROM dep_graph_token")
             .fetch_one(&mut *conn)
             .await?;
         if let Some(g) = GRAPH.lock().expect("graph cache lock").as_ref()
@@ -86,7 +87,7 @@ impl Graph {
         }
         // Each query returns one string. sqlx hands over rows one at a time,
         // and 100,000 rows took 100 ms that way, against 15 ms as one string.
-        let edges: Option<String> = sqlx::query_scalar(
+        let edges: Option<String> = backend::query_scalar(
             "SELECT group_concat(from_id || char(31) || to_id, char(31))
              FROM relations WHERE type = 'blocks'",
         )
@@ -103,7 +104,7 @@ impl Graph {
             None
         } else if on_edges.len() <= SMALL_GRAPH {
             let ids: Vec<&str> = on_edges.iter().copied().collect();
-            sqlx::query_scalar(crate::sql!(
+            backend::query_scalar(crate::sql!(
                 "SELECT {node_fields} FROM json_each(?) j
                  CROSS JOIN issues i ON i.id = j.value
                  CROSS JOIN statuses s ON s.id = i.status_id
@@ -113,7 +114,7 @@ impl Graph {
             .fetch_one(&mut *conn)
             .await?
         } else {
-            sqlx::query_scalar(crate::sql!(
+            backend::query_scalar(crate::sql!(
                 "SELECT {node_fields} FROM issues i
                  CROSS JOIN statuses s ON s.id = i.status_id
                  WHERE i.deleted_at IS NULL"
@@ -245,7 +246,7 @@ impl Blockers {
     /// Loads the graph, and the short forms of the direct open blockers of
     /// `ids`. A closed or trashed issue has no open blockers.
     pub async fn load(
-        conn: &mut SqliteConnection,
+        conn: &mut Conn,
         ids: &[String],
         statuses: &HashMap<String, teams::StatusRow>,
     ) -> ApiResult<Self> {
@@ -287,7 +288,7 @@ impl Blockers {
     /// farthest. Between equal chains, the lowest key wins.
     pub async fn longest_chain(
         &self,
-        conn: &mut SqliteConnection,
+        conn: &mut Conn,
         id: &str,
         statuses: &HashMap<String, teams::StatusRow>,
     ) -> ApiResult<Vec<IssueKey>> {
@@ -362,7 +363,7 @@ fn chain_depths(blockers: &[Vec<u32>]) -> Vec<u32> {
 /// The open, live issues that wait for `start`, directly or through a chain.
 /// `start` itself may be closed or trashed. A closed issue ends the chain.
 /// It reads the in-memory graph (LLM-217).
-pub async fn dependents(conn: &mut SqliteConnection, start: &str) -> ApiResult<Vec<String>> {
+pub async fn dependents(conn: &mut Conn, start: &str) -> ApiResult<Vec<String>> {
     let graph = Graph::current(conn).await?;
     let seeds = neighbors(conn, &graph, start, Direction::Blocks).await?;
     let mut found = graph.reach(&seeds, &graph.down, true);
@@ -374,7 +375,7 @@ pub async fn dependents(conn: &mut SqliteConnection, start: &str) -> ApiResult<V
 /// outside the graph, such as a trashed one, still has its edges in
 /// `relations`, so those are read directly.
 async fn neighbors(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     graph: &Graph,
     start: &str,
     direction: Direction,
@@ -389,7 +390,7 @@ async fn neighbors(
         Direction::Blocks => "SELECT to_id FROM relations WHERE type = 'blocks' AND from_id = ?",
         Direction::DependsOn => "SELECT from_id FROM relations WHERE type = 'blocks' AND to_id = ?",
     };
-    let ids: Vec<String> = sqlx::query_scalar(sql)
+    let ids: Vec<String> = backend::query_scalar(sql)
         .bind(start)
         .fetch_all(&mut *conn)
         .await?;
@@ -430,7 +431,7 @@ fn held_by(edges: &[(u32, u32)], open: &[bool]) -> Vec<bool> {
 /// The closed, live issues that `start` waits for, directly or through
 /// other closed issues. `start` itself is left out. It reads the in-memory
 /// graph (LLM-217).
-pub async fn closed_blockers(conn: &mut SqliteConnection, start: &str) -> ApiResult<Vec<String>> {
+pub async fn closed_blockers(conn: &mut Conn, start: &str) -> ApiResult<Vec<String>> {
     let graph = Graph::current(conn).await?;
     let seeds = neighbors(conn, &graph, start, Direction::DependsOn).await?;
     let mut found = graph.reach(&seeds, &graph.up, false);
@@ -442,11 +443,11 @@ pub async fn closed_blockers(conn: &mut SqliteConnection, start: &str) -> ApiRes
 /// included. Closed and trashed issues count: reopening one must not be able
 /// to complete a cycle.
 pub async fn blocks_path(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     start: &str,
     target: &str,
 ) -> ApiResult<Option<Vec<String>>> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String)> = backend::query_as(
         "WITH RECURSIVE reach(id) AS (
             SELECT ?
             UNION
@@ -466,13 +467,14 @@ pub async fn blocks_path(
         return Ok(None);
     };
     let ids: Vec<String> = path.iter().map(ToString::to_string).collect();
-    let keys: HashMap<String, String> =
-        sqlx::query_as("SELECT id, key FROM issues WHERE id IN (SELECT value FROM json_each(?))")
-            .bind(serde_json::to_string(&ids)?)
-            .fetch_all(&mut *conn)
-            .await?
-            .into_iter()
-            .collect();
+    let keys: HashMap<String, String> = backend::query_as(
+        "SELECT id, key FROM issues WHERE id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(serde_json::to_string(&ids)?)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
     Ok(Some(
         ids.iter().filter_map(|id| keys.get(id).cloned()).collect(),
     ))
@@ -516,7 +518,7 @@ enum Direction {
 /// Neighbors come in key order. Trashed issues are left out, and closed ones
 /// too with `open_only`.
 async fn walk(
-    conn: &mut SqliteConnection,
+    conn: &mut Conn,
     root: &str,
     direction: Direction,
     open_only: bool,
@@ -531,7 +533,7 @@ async fn walk(
          CROSS JOIN issues n ON n.id = r.{far}
          CROSS JOIN statuses s ON s.id = n.status_id"
     );
-    Ok(sqlx::query_as(crate::sql!(
+    Ok(backend::query_as(crate::sql!(
         "WITH RECURSIVE walk(id) AS (
             SELECT ?
             UNION
@@ -548,7 +550,7 @@ async fn walk(
 }
 
 /// The dependency tree around `root`, in both directions.
-pub async fn tree(conn: &mut SqliteConnection, root: &str, open_only: bool) -> ApiResult<DepNode> {
+pub async fn tree(conn: &mut Conn, root: &str, open_only: bool) -> ApiResult<DepNode> {
     let up = walk(conn, root, Direction::DependsOn, open_only).await?;
     let down = walk(conn, root, Direction::Blocks, open_only).await?;
     let mut ids: Vec<String> = vec![root.to_string()];

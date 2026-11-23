@@ -1,26 +1,19 @@
 //! Settings.
 
 use crate::error::ApiResult;
-use sqlx::SqliteConnection;
+use crate::store::backend;
+use crate::store::backend::Conn;
 
-pub async fn model_prices_raw(c: &mut SqliteConnection) -> ApiResult<Option<String>> {
+pub async fn model_prices_raw(c: &mut Conn) -> ApiResult<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'model_prices'")
+        backend::query_scalar("SELECT value FROM settings WHERE key = 'model_prices'")
             .fetch_optional(&mut *c)
             .await?,
     )
 }
 
-/// Rows that inserts, updates and deletes changed on this connection since
-/// it opened.
-pub async fn total_changes(c: &mut SqliteConnection) -> ApiResult<i64> {
-    Ok(sqlx::query_scalar("SELECT total_changes()")
-        .fetch_one(&mut *c)
-        .await?)
-}
-
-pub async fn bump_sync_dirty(c: &mut SqliteConnection) -> ApiResult<()> {
-    sqlx::query(
+pub async fn bump_sync_dirty(c: &mut Conn) -> ApiResult<()> {
+    backend::query(
         "INSERT INTO settings (key, value) VALUES ('sync_dirty', '1')
              ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
     )
