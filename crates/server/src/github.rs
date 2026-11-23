@@ -501,12 +501,13 @@ pub async fn poll_loop(st: AppState) {
     // The others try again each round, so one takes over when the first
     // stops or loses its connection (LLM-460).
     let mut lock: Option<crate::store::backend::JobLock> = None;
-    let shared = st.pool().backend() == crate::store::backend::Backend::Postgres;
+    let shared = st.is_shared();
     loop {
         // A shared database can suspend while nobody uses it, and a poll
         // would wake it every few minutes. The next poll after a pause
-        // catches up on what changed (LLM-465).
-        if shared && st.idle(POLL_IDLE_AFTER) {
+        // catches up on what changed (LLM-465). Offline, the poll waits
+        // for the network (LLM-471).
+        if shared && (st.idle(POLL_IDLE_AFTER) || st.is_offline()) {
             lock = None;
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(30)) => continue,

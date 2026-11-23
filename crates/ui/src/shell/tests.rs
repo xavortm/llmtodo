@@ -4698,6 +4698,7 @@ fn settings_name_the_database(cx: &mut TestAppContext) {
                     host: Some("ep-calm.neon.tech/neondb".into()),
                     round_trip_ms: 40.0,
                     unreachable: None,
+                    sync: Default::default(),
                 }),
             },
             cx,

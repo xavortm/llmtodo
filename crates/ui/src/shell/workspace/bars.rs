@@ -44,6 +44,8 @@ pub(super) struct StatusShown {
     offer: Option<SharedString>,
     message: Option<SharedString>,
     connection: Connection,
+    /// Offline mode on a shared database (LLM-471).
+    sync: llmtodo_api_types::SyncState,
     /// A wait that lasted past its show-after delay (LLM-470).
     wait: Option<crate::model::activity::Wait>,
     claimed: usize,
@@ -132,6 +134,7 @@ impl Workspace {
             offer,
             message,
             connection: store.connection.clone(),
+            sync: store.sync,
             wait: self.activity.shown(cx.background_executor().now()),
             claimed: store.claim_count(),
         }
@@ -508,6 +511,7 @@ impl Render for StatusBarView {
             offer,
             message,
             connection,
+            sync,
             wait,
             claimed,
         } = shown;
@@ -621,6 +625,36 @@ impl Render for StatusBarView {
                             this
                         }
                         Connection::Connecting => this.child("Connecting…"),
+                        // Offline on a shared database, the server works on
+                        // its local copy. Like Offline below, the owner must
+                        // notice it, so it uses the foreground (LLM-471).
+                        Connection::Online(_) if sync.syncing => this.child(
+                            h_flex()
+                                .id("status-sync")
+                                .test_support()
+                                .gap_1()
+                                .child(
+                                    gpui_kit::component::spinner::Spinner::new()
+                                        .xsmall()
+                                        .color(theme.muted_foreground),
+                                )
+                                .children(crate::model::activity::sync_text(sync)),
+                        ),
+                        Connection::Online(_) if sync.offline => this.child(
+                            h_flex()
+                                .id("status-sync")
+                                .test_support()
+                                .gap_1()
+                                .text_color(theme.foreground)
+                                .child(Icon::new(IconName::Unplug).xsmall())
+                                .children(crate::model::activity::sync_text(sync))
+                                .tooltip(
+                                    crate::shell::tooltip::Card::text(
+                                        "The shared database is out of reach. Changes wait here and sync when the network is back",
+                                    )
+                                    .builder(),
+                                ),
+                        ),
                         Connection::Online(url) => this.child(
                             h_flex()
                                 .gap_1()
@@ -655,6 +689,21 @@ impl Render for StatusBarView {
                                     )
                                 }),
                         ),
+                    })
+                    .when_some(crate::model::activity::refused_text(sync), |this, text| {
+                        this.child(
+                            div()
+                                .id("status-refused")
+                                .test_support()
+                                .text_color(theme.foreground)
+                                .child(text)
+                                .tooltip(
+                                    crate::shell::tooltip::Card::text(
+                                        "The shared database refused these offline changes. Run llmtodo db outbox to see them",
+                                    )
+                                    .builder(),
+                                ),
+                        )
                     })
                     .when(claimed > 0, |this| {
                         this.child(

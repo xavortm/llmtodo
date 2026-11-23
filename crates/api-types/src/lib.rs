@@ -61,11 +61,15 @@ pub enum ErrorCode {
     /// The command needs an answer, but `--no-input` is set or there is no
     /// terminal. Only the CLI reports it.
     InputNeeded,
+    /// The server works offline on its local copy of the shared database,
+    /// and this command needs the shared database itself, such as a claim
+    /// (LLM-471). Try again when online.
+    NeedsNetwork,
 }
 
 impl ErrorCode {
     /// Every code, in exit code order.
-    pub const ALL: [ErrorCode; 13] = [
+    pub const ALL: [ErrorCode; 14] = [
         ErrorCode::Internal,
         ErrorCode::BadRequest,
         ErrorCode::NotFound,
@@ -79,6 +83,7 @@ impl ErrorCode {
         ErrorCode::NotPrimary,
         ErrorCode::PatchMismatch,
         ErrorCode::Forbidden,
+        ErrorCode::NeedsNetwork,
     ];
 
     /// The snake_case name used in error bodies, such as `claim_held`.
@@ -103,6 +108,7 @@ impl ErrorCode {
             ErrorCode::NotPrimary => 9,
             ErrorCode::PatchMismatch => 10,
             ErrorCode::Forbidden => 11,
+            ErrorCode::NeedsNetwork => 12,
         }
     }
 
@@ -113,7 +119,10 @@ impl ErrorCode {
             ErrorCode::NotFound => 404,
             ErrorCode::ClaimHeld | ErrorCode::StaleVersion | ErrorCode::Conflict => 409,
             ErrorCode::Validation | ErrorCode::PatchMismatch => 422,
-            ErrorCode::NotPrimary | ErrorCode::Unreachable | ErrorCode::DatabaseUnreachable => 503,
+            ErrorCode::NotPrimary
+            | ErrorCode::Unreachable
+            | ErrorCode::DatabaseUnreachable
+            | ErrorCode::NeedsNetwork => 503,
             ErrorCode::Forbidden => 403,
         }
     }
@@ -258,6 +267,31 @@ pub struct DatabaseInfo {
     /// retries on each request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreachable: Option<String>,
+    /// Offline mode on a shared database (LLM-471): whether the server
+    /// works on its local copy, and how many changes wait to replay.
+    #[serde(flatten)]
+    pub sync: SyncState,
+}
+
+/// Where a server on a shared database stands with its local copy
+/// (LLM-471). All zero and false on SQLite, and while online with nothing
+/// waiting.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SyncState {
+    /// The shared database is out of reach, and the server reads and
+    /// writes its local copy, `mirror.db`.
+    #[serde(default)]
+    pub offline: bool,
+    /// The network is back, and the waiting changes replay now.
+    #[serde(default)]
+    pub syncing: bool,
+    /// Changes made offline that wait to replay.
+    #[serde(default)]
+    pub waiting: u64,
+    /// Changes the shared database refused on replay. They stay in the
+    /// outbox until the owner drops them: `llmtodo db outbox`.
+    #[serde(default)]
+    pub failed: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1316,6 +1350,42 @@ pub enum WsMessage {
     /// This socket fell behind and the server dropped some events for it.
     /// The database is the same, so catch up from the last seq seen.
     Lagged,
+    /// The server went offline or online on its shared database, or the
+    /// count of waiting changes moved (LLM-471). Older clients ignore it.
+    Sync {
+        state: SyncState,
+    },
+}
+
+// ---------------------------------------------------------------- outbox
+
+/// One change made offline on a shared database (LLM-471). It waits in the
+/// outbox until it replays, or stays there, failed, when the shared
+/// database refused it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OutboxEntry {
+    pub id: i64,
+    /// The API write, such as `PATCH /v1/issues/LLM-12`.
+    pub method: String,
+    pub path: String,
+    /// The issue it changes, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
+    pub created_at: Timestamp,
+    /// `pending` or `failed`.
+    pub state: String,
+    /// Why the shared database refused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorDetail>,
+    /// The request body.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub body: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Outbox {
+    pub state: SyncState,
+    pub entries: Vec<OutboxEntry>,
 }
 
 // ---------------------------------------------------------------- views
@@ -1389,6 +1459,8 @@ mod tests {
     fn error_codes_are_stable() {
         assert_eq!(ErrorCode::ClaimHeld.exit_code(), 4);
         assert_eq!(ErrorCode::DatabaseUnreachable.exit_code(), 7);
+        assert_eq!(ErrorCode::NeedsNetwork.exit_code(), 12);
+        assert_eq!(ErrorCode::NeedsNetwork.name(), "needs_network");
         assert_eq!(
             ErrorCode::DatabaseUnreachable.name(),
             "database_unreachable"

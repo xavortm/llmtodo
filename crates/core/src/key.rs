@@ -12,6 +12,10 @@ pub const MAX_TEAM_KEY_LEN: usize = 10;
 pub struct IssueKey {
     pub team: String,
     pub number: u32,
+    /// A key given offline, such as `ALX-~1`, before the shared database
+    /// gave the real one (LLM-471). `~` never appears in a real key, and
+    /// the provisional key stays as an alias after replay.
+    pub provisional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -45,25 +49,41 @@ impl IssueKey {
         Self {
             team: team.into(),
             number,
+            provisional: false,
+        }
+    }
+
+    /// A provisional key, such as `ALX-~1`.
+    pub fn provisional(team: impl Into<String>, number: u32) -> Self {
+        Self {
+            team: team.into(),
+            number,
+            provisional: true,
         }
     }
 }
 
 impl fmt::Display for IssueKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.team, self.number)
+        let tilde = if self.provisional { "~" } else { "" };
+        write!(f, "{}-{tilde}{}", self.team, self.number)
     }
 }
 
 impl FromStr for IssueKey {
     type Err = KeyError;
 
-    /// Parses `ALX-123`. Lower case input is accepted: `alx-123`.
+    /// Parses `ALX-123`, or a provisional `ALX-~1`. Lower case input is
+    /// accepted: `alx-123`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         let (team, num) = s
             .rsplit_once('-')
             .ok_or_else(|| KeyError::Malformed(s.into()))?;
+        let (num, provisional) = match num.strip_prefix('~') {
+            Some(n) => (n, true),
+            None => (num, false),
+        };
         let team = normalize_team_key(team).map_err(|_| KeyError::Malformed(s.into()))?;
         if num.is_empty()
             || num.len() > 9
@@ -73,7 +93,11 @@ impl FromStr for IssueKey {
             return Err(KeyError::Malformed(s.into()));
         }
         let number = num.parse().map_err(|_| KeyError::Malformed(s.into()))?;
-        Ok(Self { team, number })
+        Ok(Self {
+            team,
+            number,
+            provisional,
+        })
     }
 }
 
@@ -96,7 +120,7 @@ impl schemars::JsonSchema for IssueKey {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]{0,8}$", "examples": ["ALX-123"] })
+        schemars::json_schema!({ "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}-~?[1-9][0-9]{0,8}$", "examples": ["ALX-123", "ALX-~1"] })
     }
 }
 
@@ -177,6 +201,18 @@ mod tests {
         let k: IssueKey = "alx-42".parse().unwrap();
         assert_eq!(k, IssueKey::new("ALX", 42));
         assert_eq!(k.to_string(), "ALX-42");
+    }
+
+    #[test]
+    fn provisional_keys_parse_and_print() {
+        let k: IssueKey = "alx-~3".parse().unwrap();
+        assert_eq!(k, IssueKey::provisional("ALX", 3));
+        assert_eq!(k.to_string(), "ALX-~3");
+        assert_ne!(k, IssueKey::new("ALX", 3));
+        assert!("ALX-~".parse::<IssueKey>().is_err());
+        assert!("ALX-~~1".parse::<IssueKey>().is_err());
+        // Prose never names a provisional key as a real one.
+        assert!(find_keys("see ALX-~3").is_empty());
     }
 
     #[test]

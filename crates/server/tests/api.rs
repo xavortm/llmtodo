@@ -59,6 +59,7 @@ impl T {
             port: 0,
             host: host.map(str::to_string),
             github_poll: false,
+            offline_copy: false,
             database: llmtodo_server::test_database(dir.path()).await,
         })
         .await
@@ -3201,6 +3202,7 @@ async fn backfill_rebuilds_the_table_and_keeps_answer_authors() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::test_database(&dir).await,
     })
     .await

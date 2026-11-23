@@ -14,6 +14,7 @@ pub mod issue_detail;
 pub mod issues;
 pub mod labels;
 pub mod order;
+pub mod outbox;
 pub mod projects;
 pub mod questions;
 pub mod relations;

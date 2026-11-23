@@ -44,7 +44,7 @@ fn count_statement(sql: &Sql) {
 }
 
 /// Which database a pool or connection talks to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Backend {
     Sqlite,
     Postgres,

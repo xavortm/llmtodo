@@ -75,6 +75,9 @@ pub struct IssueStore {
     sessions: HashMap<IssueId, Vec<WorkSession>>,
     pub catalog: Catalog,
     pub connection: Connection,
+    /// Offline mode on a shared database: offline, syncing, and the changes
+    /// that wait (LLM-471).
+    pub sync: llmtodo_api_types::SyncState,
     /// The issues of the saved view the list shows, as the server sent
     /// them last.
     pub view: Option<ViewMembers>,
@@ -186,6 +189,7 @@ impl IssueStore {
             sessions: HashMap::new(),
             catalog: Catalog::default(),
             connection: Connection::Connecting,
+            sync: Default::default(),
             view: None,
             server_url: None,
             saving: Default::default(),

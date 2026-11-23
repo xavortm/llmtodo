@@ -39,6 +39,8 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|d| d.backend == llmtodo_api_types::DatabaseBackend::Postgres),
                 );
+                let sync = database.as_ref().map(|d| d.sync).unwrap_or_default();
+                self.store.update(cx, |store, _| store.sync = sync);
                 let view = self.settings_view.clone();
                 cx.defer(move |cx| view.update(cx, |view, cx| view.set_database(database, cx)));
                 self.store.update(cx, |store, _| {
@@ -59,6 +61,11 @@ impl Workspace {
                 self.probe_trackers(cx);
             }
             backend::Event::Teams { data_dir, teams } => self.on_teams(data_dir, teams, cx),
+            backend::Event::Sync(sync) => self.store.update(cx, |store, cx| {
+                store.touch_all();
+                store.sync = sync;
+                cx.notify();
+            }),
             backend::Event::Offline { reason } => {
                 self.message = format!("{OFFLINE_PREFIX}{reason}. Retrying").into();
                 self.set_connection(Connection::Offline(reason.into()), cx);

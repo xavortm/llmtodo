@@ -42,6 +42,7 @@ async fn stale_server_json_does_not_reach_other_server() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::Database::Sqlite,
     })
     .await

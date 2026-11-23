@@ -755,6 +755,17 @@ impl Client {
         self.call::<ep::DeleteView, _>(r, &()).await
     }
 
+    // ------------------------------------------------------------ outbox
+
+    /// Changes made offline on a shared database (LLM-471).
+    pub async fn outbox(&self) -> Result<Outbox> {
+        self.call::<ep::Outbox, _>((), &()).await
+    }
+    pub async fn drop_outbox(&self, id: i64) -> Result<Outbox> {
+        self.call::<ep::DropOutbox, _>(id.to_string().as_str(), &())
+            .await
+    }
+
     // ------------------------------------------------------------ sync
 
     pub async fn sync_status(&self) -> Result<SyncStatus> {
