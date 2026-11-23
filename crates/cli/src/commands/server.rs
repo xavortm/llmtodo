@@ -50,6 +50,7 @@ pub async fn run(app: &App, cmd: ServerCmd) -> CliResult {
                 port,
                 host: None,
                 github_poll: !no_github,
+                database: llmtodo_server::Database::Sqlite,
             })
             .await?;
         }

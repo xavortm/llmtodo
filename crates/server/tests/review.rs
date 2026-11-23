@@ -41,6 +41,7 @@ async fn start(dir: &std::path::Path) -> llmtodo_server::Running {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir).await,
     })
     .await
     .unwrap()
@@ -632,6 +633,10 @@ async fn a_claim_moves_a_review_ticket_back_to_work() {
 /// those claims as the migration actor, once.
 #[tokio::test]
 async fn the_migration_ends_claims_on_review_tickets() {
+    // SQLite only: it rolls back a SQLite migration.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     let mut t = T::bare().await;
     for (key, name) in [("ASTRO", "Astro starter"), ("LLM", "llmtodo")] {
         t.ok(

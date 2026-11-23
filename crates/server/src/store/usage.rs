@@ -89,8 +89,8 @@ pub async fn attribute(conn: &mut Conn, ctx: &Ctx, session: &str, issue_id: &str
         if !delta.is_zero() {
             backend::query(
                 "INSERT INTO work_session_usage (work_session_id, model, requests, input, output, cache_write_5m, cache_write_1h, cache_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT (work_session_id, model) DO UPDATE SET requests = requests + excluded.requests, input = input + excluded.input, output = output + excluded.output,
-                 cache_write_5m = cache_write_5m + excluded.cache_write_5m, cache_write_1h = cache_write_1h + excluded.cache_write_1h, cache_read = cache_read + excluded.cache_read",
+                 ON CONFLICT (work_session_id, model) DO UPDATE SET requests = work_session_usage.requests + excluded.requests, input = work_session_usage.input + excluded.input, output = work_session_usage.output + excluded.output,
+                 cache_write_5m = work_session_usage.cache_write_5m + excluded.cache_write_5m, cache_write_1h = work_session_usage.cache_write_1h + excluded.cache_write_1h, cache_read = work_session_usage.cache_read + excluded.cache_read",
             )
             .bind(&ws_id)
             .bind(model)
@@ -203,7 +203,7 @@ pub async fn by_work_session(
 pub async fn cost_by_issue(conn: &mut Conn, ids: &[String]) -> ApiResult<HashMap<String, f64>> {
     type CostRow = (String, String, i64, i64, i64, i64, i64, i64);
     let rows: Vec<CostRow> = backend::query_as(
-        "SELECT ws.issue_id, u.model, SUM(u.requests), SUM(u.input), SUM(u.output), SUM(u.cache_write_5m), SUM(u.cache_write_1h), SUM(u.cache_read)
+        "SELECT ws.issue_id, u.model, CAST(SUM(u.requests) AS BIGINT), CAST(SUM(u.input) AS BIGINT), CAST(SUM(u.output) AS BIGINT), CAST(SUM(u.cache_write_5m) AS BIGINT), CAST(SUM(u.cache_write_1h) AS BIGINT), CAST(SUM(u.cache_read) AS BIGINT)
          FROM json_each(?) page
          CROSS JOIN work_sessions ws ON ws.issue_id = page.value
          CROSS JOIN work_session_usage u ON u.work_session_id = ws.id
@@ -239,7 +239,7 @@ pub async fn active_seconds_by_issue(
     ids: &[String],
 ) -> ApiResult<HashMap<String, u64>> {
     let rows: Vec<(String, i64)> = backend::query_as(
-        "SELECT ws.issue_id, SUM(ws.active_seconds)
+        "SELECT ws.issue_id, CAST(SUM(ws.active_seconds) AS BIGINT)
          FROM json_each(?) page
          CROSS JOIN work_sessions ws ON ws.issue_id = page.value
          GROUP BY ws.issue_id

@@ -251,8 +251,15 @@ impl<'a> Write<'a> {
         }
         // Counts writes since the last sync push. Push clears it only when
         // the count still equals the one inside its copy.
-        if self.count_for_sync {
+        if self.count_for_sync && !self.tx.is_postgres() {
             store::settings::bump_sync_dirty(&mut self.tx).await?;
+        }
+        // Other servers on a shared database hear of the write on commit,
+        // and send its events to their own clients (LLM-459).
+        if let Some(&mine) = self.seqs.iter().max()
+            && self.tx.is_postgres()
+        {
+            store::activity::notify(&mut self.tx, mine).await?;
         }
         self.tx.commit().await?;
         // The next writer may start now. Sending events needs no write.
@@ -270,6 +277,19 @@ impl<'a> Write<'a> {
         }
         Ok(())
     }
+}
+
+/// Sends the events another server on the shared database committed. Each
+/// write there notifies on commit. The write lock keeps seqs in commit
+/// order, so events still go out in seq order with no gap. After a lost
+/// listen connection the next notice catches up on everything missed.
+///
+/// It always reads from the last seq sent, even with no client listening.
+/// Jumping to the newest seq instead would skip a local write that commits
+/// during the read, and its client would never hear of it.
+pub async fn send_remote(state: &AppState) {
+    let mut sent = state.sent_seq.lock().await;
+    send_after(state, &mut sent).await;
 }
 
 /// Sends the committed events after `*sent` in seq order, and moves `*sent`

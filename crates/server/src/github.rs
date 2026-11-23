@@ -196,6 +196,10 @@ pub static LAST: Mutex<Option<GithubReport>> = Mutex::const_new(None);
 /// One poll at a time.
 static RUNNING: Mutex<()> = Mutex::const_new(());
 
+/// The advisory lock key that elects the polling server on a shared
+/// database.
+const GITHUB_POLL_LOCK: i64 = 0x6c6c_6d74_6f64_6f02;
+
 struct Repo {
     project_id: String,
     repo: String,
@@ -478,13 +482,37 @@ pub async fn poll_with_gh(st: &AppState) -> ApiResult<GithubReport> {
 
 /// Polls every `github_poll_seconds` while the server runs.
 pub async fn poll_loop(st: AppState) {
+    // Enabled now, so a stop during a poll still ends the loop at the next
+    // wait. The job lock below holds a pool connection, and the stop waits
+    // for the pool to close.
+    let shutdown = st.shutdown.notified();
+    tokio::pin!(shutdown);
+    shutdown.as_mut().enable();
     // Give startup a moment, then catch up on what changed while off.
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-        _ = st.shutdown.notified() => return,
+        _ = &mut shutdown => return,
     }
+    // On a shared database one server polls, the one that holds this lock.
+    // The others try again each round, so one takes over when the first
+    // stops or loses its connection (LLM-460).
+    let mut lock: Option<crate::store::backend::JobLock> = None;
     loop {
-        if st.primary()
+        if let Some(l) = lock.as_mut()
+            && !l.alive().await
+        {
+            lock = None;
+        }
+        if lock.is_none() {
+            lock = st
+                .pool()
+                .try_job_lock(GITHUB_POLL_LOCK)
+                .await
+                .ok()
+                .flatten();
+        }
+        if lock.is_some()
+            && st.primary()
             && let Err(e) = poll_with_gh(&st).await
         {
             tracing::warn!(error = %e.message, "GitHub poll failed");
@@ -497,7 +525,7 @@ pub async fn poll_loop(st: AppState) {
             .unwrap_or(300);
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(secs.max(60))) => {}
-            _ = st.shutdown.notified() => return,
+            _ = &mut shutdown => return,
         }
     }
 }

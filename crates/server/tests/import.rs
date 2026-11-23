@@ -133,6 +133,7 @@ async fn import_keeps_keys_and_is_idempotent() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();
@@ -274,6 +275,7 @@ async fn import_skips_keys_held_by_local_issues() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();
@@ -332,6 +334,7 @@ async fn reimport_keeps_local_changes_and_claims() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();
@@ -467,6 +470,7 @@ async fn import_reads_every_page_of_nested_lists() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();

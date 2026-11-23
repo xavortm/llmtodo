@@ -3,9 +3,11 @@
 //!
 //! Nothing outside this module and `db.rs` names a sqlx driver type. Store
 //! code writes SQL once, with `?` placeholders, and binds values as `Arg`s.
-//! On Postgres the placeholders become `$1`, `$2` and so on before the query
-//! runs, and the schema provides the few SQLite names the queries use, such
-//! as the `nocase` collation and `json_each(text)`.
+//! On Postgres two rewrites run before the query: placeholders become `$1`,
+//! `$2` and so on, and `CROSS JOIN ... ON`, which SQLite uses to keep the
+//! written join order, becomes `JOIN ... ON`. The Postgres schema provides
+//! the few SQLite names the queries use: the `nocase` collation, and
+//! `json_each`, `json_valid`, `json_extract` and `instr` for text.
 
 use std::borrow::Cow;
 
@@ -89,6 +91,29 @@ impl Pool {
         Ok(Conn::new(inner))
     }
 
+    /// Takes a lock that lasts while the returned guard lives, for jobs that
+    /// only one server on a database may run, such as the GitHub poll. On
+    /// Postgres it is a session advisory lock on a connection the guard
+    /// holds, so a server that dies or loses its network frees it. SQLite
+    /// has one server per file, so the lock always succeeds. `None` means
+    /// another server holds it.
+    pub async fn try_job_lock(&self, key: i64) -> Result<Option<JobLock>, sqlx::Error> {
+        match self {
+            Pool::Sqlite(_) => Ok(Some(JobLock { _conn: None })),
+            Pool::Postgres(p) => {
+                // Detached, so dropping the guard closes the connection and
+                // frees the lock, instead of handing a locked session back
+                // to the pool.
+                let mut c = p.acquire().await?.detach();
+                let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+                    .bind(key)
+                    .fetch_one(&mut c)
+                    .await?;
+                Ok(got.then_some(JobLock { _conn: Some(c) }))
+            }
+        }
+    }
+
     pub async fn close(&self) {
         match self {
             Pool::Sqlite(p) => p.close().await,
@@ -116,6 +141,23 @@ impl Pool {
         match self {
             Pool::Postgres(p) => Some(p),
             Pool::Sqlite(_) => None,
+        }
+    }
+}
+
+/// A held job lock. Dropping it closes its connection, which frees the
+/// lock.
+pub struct JobLock {
+    _conn: Option<PgConnection>,
+}
+
+impl JobLock {
+    /// Whether the connection that holds the lock still works. A laptop that
+    /// slept may have lost it, and with it the lock.
+    pub async fn alive(&mut self) -> bool {
+        match &mut self._conn {
+            None => true,
+            Some(c) => sqlx::query("SELECT 1").execute(&mut *c).await.is_ok(),
         }
     }
 }
@@ -227,7 +269,7 @@ impl Sql {
     fn for_backend(&self, b: Backend) -> Cow<'static, str> {
         match b {
             Backend::Sqlite => self.0.clone(),
-            Backend::Postgres => Cow::Owned(pg_placeholders(&self.0)),
+            Backend::Postgres => Cow::Owned(pg_placeholders(&self.0).replace("CROSS JOIN", "JOIN")),
         }
     }
 }
@@ -238,12 +280,26 @@ impl From<&'static str> for Sql {
     }
 }
 
-/// Turns each `?` outside quotes into `$1`, `$2` and so on.
+/// With `LLMTODO_SQL_DEBUG` set, prints each failed statement to stderr,
+/// for porting queries between backends.
+fn debug_failure<T>(r: Result<T, sqlx::Error>, sql: &str) -> Result<T, sqlx::Error> {
+    if let Err(e) = &r
+        && std::env::var_os("LLMTODO_SQL_DEBUG").is_some()
+        && !matches!(e, sqlx::Error::RowNotFound)
+    {
+        eprintln!("SQL failed: {e}\n{sql}\n");
+    }
+    r
+}
+
+/// Turns each `?` outside quotes into `$1`, `$2` and so on. A numbered
+/// `?3` becomes `$3`.
 pub fn pg_placeholders(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len() + 16);
     let mut n = 0;
     let mut quote: Option<char> = None;
-    for ch in sql.chars() {
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
         match quote {
             Some(q) => {
                 if ch == q {
@@ -257,9 +313,15 @@ pub fn pg_placeholders(sql: &str) -> String {
                     out.push(ch);
                 }
                 '?' => {
-                    n += 1;
                     out.push('$');
-                    out.push_str(&n.to_string());
+                    if chars.peek().is_some_and(char::is_ascii_digit) {
+                        while let Some(d) = chars.next_if(char::is_ascii_digit) {
+                            out.push(d);
+                        }
+                    } else {
+                        n += 1;
+                        out.push_str(&n.to_string());
+                    }
                 }
                 _ => out.push(ch),
             },
@@ -549,12 +611,18 @@ impl Query {
                     .into_iter()
                     .map(Row::Sqlite)
                     .collect()),
-                Raw::Pg(c) => Ok(bind_args!(sqlx::query(AssertSqlSafe(sql)), self.args)
-                    .fetch_all(c)
-                    .await?
+                Raw::Pg(c) => {
+                    let shown = sql.to_string();
+                    Ok(debug_failure(
+                        bind_args!(sqlx::query(AssertSqlSafe(sql)), self.args)
+                            .fetch_all(c)
+                            .await,
+                        &shown,
+                    )?
                     .into_iter()
                     .map(Row::Pg)
-                    .collect()),
+                    .collect())
+                }
             }
         })
     }
@@ -567,10 +635,16 @@ async fn execute_on(c: &mut Conn, sql: Sql, args: Vec<Arg>) -> Result<Done, sqlx
             .execute(c)
             .await?
             .rows_affected(),
-        Raw::Pg(c) => bind_args!(sqlx::query(AssertSqlSafe(sql)), args)
-            .execute(c)
-            .await?
-            .rows_affected(),
+        Raw::Pg(c) => {
+            let shown = sql.to_string();
+            debug_failure(
+                bind_args!(sqlx::query(AssertSqlSafe(sql)), args)
+                    .execute(c)
+                    .await,
+                &shown,
+            )?
+            .rows_affected()
+        }
     };
     c.changes += rows;
     Ok(Done { rows })
@@ -634,9 +708,13 @@ macro_rules! fetch_methods {
                             .await
                     }
                     Raw::Pg(c) => {
-                        bind_args!($ctor(AssertSqlSafe(sql)), self.args)
-                            .fetch_all(c)
-                            .await
+                        let shown = sql.to_string();
+                        debug_failure(
+                            bind_args!($ctor(AssertSqlSafe(sql)), self.args)
+                                .fetch_all(c)
+                                .await,
+                            &shown,
+                        )
                     }
                 }
             })
@@ -652,9 +730,13 @@ macro_rules! fetch_methods {
                             .await
                     }
                     Raw::Pg(c) => {
-                        bind_args!($ctor(AssertSqlSafe(sql)), self.args)
-                            .fetch_one(c)
-                            .await
+                        let shown = sql.to_string();
+                        debug_failure(
+                            bind_args!($ctor(AssertSqlSafe(sql)), self.args)
+                                .fetch_one(c)
+                                .await,
+                            &shown,
+                        )
                     }
                 }
             })
@@ -673,9 +755,13 @@ macro_rules! fetch_methods {
                             .await
                     }
                     Raw::Pg(c) => {
-                        bind_args!($ctor(AssertSqlSafe(sql)), self.args)
-                            .fetch_optional(c)
-                            .await
+                        let shown = sql.to_string();
+                        debug_failure(
+                            bind_args!($ctor(AssertSqlSafe(sql)), self.args)
+                                .fetch_optional(c)
+                                .await,
+                            &shown,
+                        )
                     }
                 }
             })
@@ -790,6 +876,10 @@ mod tests {
         assert_eq!(
             pg_placeholders("SELECT '?' , \"a?\" FROM t WHERE a = ? AND b IN (?, ?)"),
             "SELECT '?' , \"a?\" FROM t WHERE a = $1 AND b IN ($2, $3)"
+        );
+        assert_eq!(
+            pg_placeholders("a = ?1 OR b = ?2 OR c = ?1"),
+            "a = $1 OR b = $2 OR c = $1"
         );
     }
 }

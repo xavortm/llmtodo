@@ -15,7 +15,7 @@ pub async fn model_prices_raw(c: &mut Conn) -> ApiResult<Option<String>> {
 pub async fn bump_sync_dirty(c: &mut Conn) -> ApiResult<()> {
     backend::query(
         "INSERT INTO settings (key, value) VALUES ('sync_dirty', '1')
-             ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+             ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(settings.value AS INTEGER) + 1 AS TEXT)",
     )
     .execute(&mut *c)
     .await?;

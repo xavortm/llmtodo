@@ -92,6 +92,7 @@ async fn every_route_is_called_by_its_command() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::Database::Sqlite,
     })
     .await
     .unwrap();
@@ -353,6 +354,7 @@ async fn follow_resumes_after_a_server_restart() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::Database::Sqlite,
     })
     .await
     .unwrap();

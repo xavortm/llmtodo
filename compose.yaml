@@ -1,0 +1,24 @@
+# A throwaway Postgres for the shared-database tests (LLM-453). Its data
+# lives in memory and is gone when the container stops.
+#
+#   docker compose up -d --wait postgres
+#   LLMTODO_TEST_POSTGRES_URL=postgres://llmtodo:llmtodo@127.0.0.1:54329/llmtodo cargo test -p llmtodo-server
+#
+# The password is a local test value, not a secret.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: llmtodo
+      POSTGRES_PASSWORD: llmtodo
+      POSTGRES_DB: llmtodo
+    ports:
+      - "127.0.0.1:54329:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "max_connections=400"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llmtodo"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

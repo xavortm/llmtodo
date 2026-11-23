@@ -15,19 +15,24 @@ pub async fn source_hash(c: &mut Conn, url: &str) -> ApiResult<Option<String>> {
     )
 }
 
+/// Records a file. `content` holds its bytes on a shared database, so every
+/// server can serve it, and is `None` on SQLite, which keeps them in the
+/// data folder's `files/`.
 pub async fn insert_file(
     c: &mut Conn,
     hash: &str,
     mime: Option<String>,
     size: i64,
     url: &str,
+    content: Option<Vec<u8>>,
 ) -> ApiResult<()> {
-    backend::query("INSERT INTO files (hash, mime, size, original_url, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (hash) DO UPDATE SET original_url = coalesce(original_url, excluded.original_url)")
+    backend::query("INSERT INTO files (hash, mime, size, original_url, created_at, content) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (hash) DO UPDATE SET original_url = coalesce(files.original_url, excluded.original_url), content = coalesce(files.content, excluded.content)")
         .bind(hash)
         .bind(mime)
         .bind(size)
         .bind(url)
         .bind(now())
+        .bind(content)
         .execute(&mut *c)
         .await?;
     Ok(())
@@ -93,12 +98,12 @@ pub async fn find_human_unlinked(c: &mut Conn, name: &str) -> ApiResult<Option<S
 }
 
 pub async fn human_name_exists(c: &mut Conn, name: &str) -> ApiResult<Option<i64>> {
-    Ok(
-        backend::query_scalar("SELECT 1 FROM actors WHERE kind = 'human' AND name = ?")
-            .bind(name)
-            .fetch_optional(&mut *c)
-            .await?,
+    Ok(backend::query_scalar(
+        "SELECT CAST(1 AS BIGINT) FROM actors WHERE kind = 'human' AND name = ?",
     )
+    .bind(name)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
 pub async fn insert_actor(c: &mut Conn, id: &str, name: &str, lid: &str) -> ApiResult<()> {
@@ -295,7 +300,7 @@ pub async fn set_project_linear_id(c: &mut Conn, lid: &str, id: &str) -> ApiResu
 
 pub async fn project_slug_taken(c: &mut Conn, slug: &str) -> ApiResult<Option<i64>> {
     Ok(
-        backend::query_scalar("SELECT 1 FROM projects WHERE slug = ?")
+        backend::query_scalar("SELECT CAST(1 AS BIGINT) FROM projects WHERE slug = ?")
             .bind(slug)
             .fetch_optional(&mut *c)
             .await?,
@@ -406,13 +411,13 @@ pub async fn document_slug_taken(
     project_id: &str,
     slug: &str,
 ) -> ApiResult<Option<i64>> {
-    Ok(
-        backend::query_scalar("SELECT 1 FROM documents WHERE project_id = ? AND slug = ?")
-            .bind(project_id)
-            .bind(slug)
-            .fetch_optional(&mut *c)
-            .await?,
+    Ok(backend::query_scalar(
+        "SELECT CAST(1 AS BIGINT) FROM documents WHERE project_id = ? AND slug = ?",
     )
+    .bind(project_id)
+    .bind(slug)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -446,7 +451,7 @@ pub async fn insert_document(
 }
 
 pub async fn set_parent(c: &mut Conn, parent: &Option<String>, id: &str) -> ApiResult<()> {
-    backend::query("UPDATE issues SET parent_id = ? WHERE id = ? AND parent_id IS NOT ?")
+    backend::query("UPDATE issues SET parent_id = ? WHERE id = ? AND parent_id IS DISTINCT FROM ?")
         .bind(parent)
         .bind(id)
         .bind(parent)
@@ -506,7 +511,7 @@ pub async fn insert_relation(
 
 pub async fn changed_here(c: &mut Conn, issue_id: &str, actor: &str) -> ApiResult<Option<i64>> {
     Ok(backend::query_scalar(
-        "SELECT 1 FROM activity WHERE issue_id = ?1 AND actor_id IS NOT ?2
+        "SELECT CAST(1 AS BIGINT) FROM activity WHERE issue_id = ?1 AND actor_id IS DISTINCT FROM ?2
          AND seq > coalesce((SELECT max(seq) FROM activity WHERE issue_id = ?1 AND actor_id = ?2), 0) LIMIT 1",
     )
         .bind(issue_id)
@@ -569,7 +574,7 @@ pub async fn update_issue(
 ) -> ApiResult<()> {
     backend::query(
         "UPDATE issues SET linear_id = ?, title = ?, description = ?, description_version = ?, status_id = ?, priority = ?, assignee_id = ?,
-                 project_id = ?, milestone_id = ?, completed_at = ?, deleted_at = ?, updated_at = CASE WHEN ? THEN updated_at ELSE ? END WHERE id = ?",
+                 project_id = ?, milestone_id = ?, completed_at = ?, deleted_at = ?, updated_at = CASE WHEN ? = 1 THEN updated_at ELSE ? END WHERE id = ?",
     )
         .bind(lid)
         .bind(title)
@@ -638,7 +643,7 @@ pub async fn insert_issue(
 }
 
 pub async fn add_issue_key(c: &mut Conn, key: &str, id: &str) -> ApiResult<()> {
-    backend::query("INSERT OR IGNORE INTO issue_keys (key, issue_id) VALUES (?, ?)")
+    backend::query("INSERT INTO issue_keys (key, issue_id) VALUES (?, ?) ON CONFLICT DO NOTHING")
         .bind(key)
         .bind(id)
         .execute(&mut *c)
@@ -671,11 +676,13 @@ pub async fn clear_issue_labels(c: &mut Conn, id: &str) -> ApiResult<()> {
 }
 
 pub async fn add_issue_label(c: &mut Conn, id: &str, label_id: &str) -> ApiResult<()> {
-    backend::query("INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES (?, ?)")
-        .bind(id)
-        .bind(label_id)
-        .execute(&mut *c)
-        .await?;
+    backend::query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(label_id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 
@@ -779,6 +786,17 @@ pub async fn insert_comment(
         .execute(&mut *c)
         .await?;
     Ok(())
+}
+
+/// A file's bytes, when the database holds them.
+pub async fn file_content(c: &mut Conn, hash: &str) -> ApiResult<Option<Vec<u8>>> {
+    Ok(
+        backend::query_scalar::<Option<Vec<u8>>>("SELECT content FROM files WHERE hash = ?")
+            .bind(hash)
+            .fetch_optional(&mut *c)
+            .await?
+            .flatten(),
+    )
 }
 
 pub async fn file_mime(c: &mut Conn, hash: &str) -> ApiResult<Option<Option<String>>> {

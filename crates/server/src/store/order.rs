@@ -77,8 +77,8 @@ pub async fn delete_edges_of(c: &mut Conn, id: &str) -> ApiResult<()> {
 /// skips it.
 pub async fn insert_edge(c: &mut Conn, from: &str, to: &str, actor_id: &str) -> ApiResult<()> {
     backend::query(
-        "INSERT OR IGNORE INTO relations (id, type, from_id, to_id, created_by, created_at, source)
-         VALUES (?, 'blocks', ?, ?, ?, ?, 'order')",
+        "INSERT INTO relations (id, type, from_id, to_id, created_by, created_at, source)
+         VALUES (?, 'blocks', ?, ?, ?, ?, 'order') ON CONFLICT DO NOTHING",
     )
     .bind(new_id())
     .bind(from)

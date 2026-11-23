@@ -52,7 +52,7 @@ pub async fn resolve(conn: &mut Conn, r: &str) -> ApiResult<ProjectRow> {
 
 pub async fn rows(conn: &mut Conn, include_deleted: bool) -> ApiResult<Vec<ProjectRow>> {
     Ok(backend::query_as::<ProjectRow>(crate::sql!(
-        "SELECT {COLS} FROM projects WHERE (? OR deleted_at IS NULL) ORDER BY name COLLATE NOCASE"
+        "SELECT {COLS} FROM projects WHERE (? = 1 OR deleted_at IS NULL) ORDER BY name COLLATE NOCASE"
     ))
     .bind(include_deleted)
     .fetch_all(&mut *conn)
@@ -204,11 +204,13 @@ pub async fn insert(
 }
 
 pub async fn add_team(c: &mut Conn, project_id: &str, team_id: String) -> ApiResult<()> {
-    backend::query("INSERT OR IGNORE INTO project_teams (project_id, team_id) VALUES (?, ?)")
-        .bind(project_id)
-        .bind(team_id)
-        .execute(&mut *c)
-        .await?;
+    backend::query(
+        "INSERT INTO project_teams (project_id, team_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    )
+    .bind(project_id)
+    .bind(team_id)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 
@@ -307,11 +309,13 @@ pub async fn trash(c: &mut Conn, id: &str) -> ApiResult<()> {
 }
 
 pub async fn link_repo(c: &mut Conn, project_id: &str, repo: &str) -> ApiResult<()> {
-    backend::query("INSERT OR IGNORE INTO project_repos (project_id, repo) VALUES (?, ?)")
-        .bind(project_id)
-        .bind(repo)
-        .execute(&mut *c)
-        .await?;
+    backend::query(
+        "INSERT INTO project_repos (project_id, repo) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    )
+    .bind(project_id)
+    .bind(repo)
+    .execute(&mut *c)
+    .await?;
     Ok(())
 }
 

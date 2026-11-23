@@ -32,6 +32,8 @@ use jiff::Timestamp;
 use llmtodo_api_types::{DEFAULT_PORT, ServerInfo, VERSION};
 use tokio::sync::{Notify, broadcast};
 
+use crate::store::backend::Backend;
+
 use crate::state::{AppState, Inner};
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,9 @@ pub struct Config {
     pub host: Option<String>,
     /// Poll GitHub in the background. Off in tests.
     pub github_poll: bool,
+    /// Where the data lives: the SQLite file in the data folder, or a shared
+    /// Postgres database (LLM-450).
+    pub database: Database,
 }
 
 impl Config {
@@ -53,8 +58,62 @@ impl Config {
             port: DEFAULT_PORT,
             host: None,
             github_poll: true,
+            database: Database::Sqlite,
         }
     }
+}
+
+/// The database a server opens.
+#[derive(Clone, Default)]
+pub enum Database {
+    /// `llmtodo.db` in the data folder. The default.
+    #[default]
+    Sqlite,
+    /// A shared Postgres database. The URL holds the password, so it never
+    /// goes in a log or an error message.
+    Postgres { url: String },
+}
+
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Database::Sqlite => f.write_str("Sqlite"),
+            Database::Postgres { url } => write!(f, "Postgres({})", db::redact_url(url)),
+        }
+    }
+}
+
+/// The database for a test's data folder: a Postgres database of its own
+/// when `LLMTODO_TEST_POSTGRES_URL` is set, else SQLite. The folder keeps
+/// the database's URL, so a test that restarts its server opens the same
+/// data, and tests running at once never share it.
+#[doc(hidden)]
+pub async fn test_database(data_dir: &Path) -> Database {
+    match std::env::var("LLMTODO_TEST_POSTGRES_URL") {
+        Ok(admin) if !admin.is_empty() => {
+            let marker = data_dir.join("test-postgres-url");
+            let url = match std::fs::read_to_string(&marker) {
+                Ok(url) => url,
+                Err(_) => {
+                    let url = db::create_test_database(&admin)
+                        .await
+                        .expect("create a test database on LLMTODO_TEST_POSTGRES_URL");
+                    std::fs::create_dir_all(data_dir).ok();
+                    std::fs::write(&marker, &url).expect("write the test database marker");
+                    url
+                }
+            };
+            Database::Postgres { url }
+        }
+        _ => Database::Sqlite,
+    }
+}
+
+/// True when tests run against Postgres. Tests that open the SQLite file
+/// themselves skip then.
+#[doc(hidden)]
+pub fn testing_postgres() -> bool {
+    std::env::var("LLMTODO_TEST_POSTGRES_URL").is_ok_and(|u| !u.is_empty())
 }
 
 /// The data folder of the bare server binary: `LLMTODO_DATA_DIR`, else
@@ -144,11 +203,17 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         );
     }
 
-    let pool = db::open(&data_dir).await?;
+    let pool = match &config.database {
+        Database::Sqlite => db::open(&data_dir).await?,
+        Database::Postgres { url } => db::open_postgres(url).await?,
+    };
     store::actors::seed(&pool).await?;
-    let is_primary = db::get_setting(&pool, "sync_is_primary")
-        .await?
-        .is_none_or(|v| v != "0");
+    // A shared database has no primary: every server on it writes. The
+    // flag belongs to laptop handoff, which only SQLite has.
+    let is_primary = pool.backend() == Backend::Postgres
+        || db::get_setting(&pool, "sync_is_primary")
+            .await?
+            .is_none_or(|v| v != "0");
     let (events, _) = broadcast::channel(1024);
     let sent_seq = store::activity::max_seq(&pool)
         .await
@@ -190,6 +255,9 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
     let app = routes::router(state.clone());
     let st = state.clone();
     tokio::spawn(backup_loop(state.clone()));
+    if state.pool().backend() == Backend::Postgres {
+        tokio::spawn(db::listen_loop(state.clone()));
+    }
     if config.github_poll {
         tokio::spawn(github::poll_loop(state.clone()));
     }

@@ -1,0 +1,267 @@
+//! Copies a whole workspace from one database to another, on either backend
+//! (LLM-460, LLM-462). Postgres backups copy into a fresh SQLite file, and
+//! `llmtodo db migrate` copies between SQLite and Postgres both ways.
+//!
+//! IDs, keys and activity seqs stay the same. The search tables are not
+//! copied: the target's triggers fill them as the issues, comments and
+//! documents arrive.
+
+use crate::error::{ApiError, ApiResult};
+use crate::store::backend::{self, Arg, Backend, Conn};
+
+/// One table to copy: its name, the columns that give a stable order, and
+/// the columns that point at rows that may come later in the same table or
+/// in a later table. Those are written in a second pass.
+struct Table {
+    name: &'static str,
+    order: &'static str,
+    late: &'static [&'static str],
+}
+
+const fn t(name: &'static str, order: &'static str, late: &'static [&'static str]) -> Table {
+    Table { name, order, late }
+}
+
+/// Every table of a workspace, parents before children.
+const TABLES: &[Table] = &[
+    t("settings", "key", &[]),
+    t("actors", "id", &[]),
+    t("teams", "id", &["pr_open_status_id", "pr_merged_status_id"]),
+    t("statuses", "id", &[]),
+    t("labels", "id", &["group_id"]),
+    t("projects", "id", &[]),
+    t("project_teams", "project_id, team_id", &[]),
+    t("project_repos", "project_id, repo", &[]),
+    t("milestones", "id", &[]),
+    t("issues", "id", &["parent_id"]),
+    t("issue_keys", "key", &[]),
+    t("issue_labels", "issue_id, label_id", &[]),
+    t("relations", "id", &[]),
+    t("attachments", "id", &[]),
+    t("comments", "id", &["parent_id"]),
+    t("documents", "id", &[]),
+    t("revisions", "id", &[]),
+    t("activity", "seq", &[]),
+    t("claims", "id", &["stolen_from"]),
+    t("work_sessions", "id", &[]),
+    t("session_notes", "id", &[]),
+    t("saved_views", "id", &[]),
+    t("files", "hash", &[]),
+    t("file_sources", "url", &[]),
+    t("work_session_usage", "work_session_id, model", &[]),
+    t("transcript_usage_seen", "transcript, model", &[]),
+    t("transcript_time_seen", "transcript", &[]),
+    t("analyzing", "issue_id", &[]),
+    t("questions", "issue_id, position", &[]),
+    t("reviews", "id", &[]),
+];
+
+/// Laptop handoff state belongs to one SQLite file, so it never moves.
+const LOCAL_SETTINGS: &str = "key NOT LIKE 'sync\\_%' ESCAPE '\\'";
+
+const PAGE: i64 = 400;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Int,
+    Real,
+    Text,
+    Blob,
+}
+
+/// Rows copied per table.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct Report {
+    pub tables: Vec<(String, u64)>,
+}
+
+impl Report {
+    pub fn rows(&self, table: &str) -> u64 {
+        self.tables
+            .iter()
+            .find(|(t, _)| t == table)
+            .map_or(0, |(_, n)| *n)
+    }
+}
+
+async fn columns(c: &mut Conn, table: &str) -> ApiResult<Vec<(String, Kind)>> {
+    let rows: Vec<(String, String)> = match c.backend() {
+        Backend::Sqlite => {
+            backend::query_as("SELECT name, type FROM pragma_table_info(?) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut *c)
+                .await?
+        }
+        Backend::Postgres => {
+            backend::query_as(
+                "SELECT column_name::text, data_type::text FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = ? AND is_generated = 'NEVER'
+                 ORDER BY ordinal_position",
+            )
+            .bind(table)
+            .fetch_all(&mut *c)
+            .await?
+        }
+    };
+    if rows.is_empty() {
+        return Err(ApiError::internal(format!("table {table} is missing")));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|(name, ty)| {
+            let ty = ty.to_ascii_lowercase();
+            let kind = if ty.contains("int") {
+                Kind::Int
+            } else if ty.contains("real") || ty.contains("double") || ty.contains("float") {
+                Kind::Real
+            } else if ty.contains("blob") || ty.contains("bytea") {
+                Kind::Blob
+            } else {
+                Kind::Text
+            };
+            (name, kind)
+        })
+        .collect())
+}
+
+fn read(row: &backend::Row, col: &str, kind: Kind) -> ApiResult<Arg> {
+    Ok(match kind {
+        Kind::Int => Arg::Int(row.try_get(col)?),
+        Kind::Real => Arg::Real(row.try_get(col)?),
+        Kind::Text => Arg::Text(row.try_get(col)?),
+        Kind::Blob => Arg::Blob(row.try_get(col)?),
+    })
+}
+
+fn null(kind: Kind) -> Arg {
+    match kind {
+        Kind::Int => Arg::Int(None),
+        Kind::Real => Arg::Real(None),
+        Kind::Text => Arg::Text(None),
+        Kind::Blob => Arg::Blob(None),
+    }
+}
+
+fn is_null(a: &Arg) -> bool {
+    matches!(
+        a,
+        Arg::Int(None) | Arg::Real(None) | Arg::Text(None) | Arg::Blob(None)
+    )
+}
+
+/// Rows in the target's issues table, to refuse a copy over real data.
+pub async fn issue_count(c: &mut Conn) -> ApiResult<i64> {
+    Ok(backend::query_scalar("SELECT count(*) FROM issues")
+        .fetch_one(&mut *c)
+        .await?)
+}
+
+/// Copies every table from `from` into `to`, which must hold no issues. The
+/// rows the target's start-up wrote, such as the seeded actors, go first.
+/// Both connections should be transactions: `from` reads one snapshot, and
+/// `to` commits all or nothing.
+pub async fn copy_workspace(from: &mut Conn, to: &mut Conn) -> ApiResult<Report> {
+    if from.is_postgres() {
+        backend::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *from)
+            .await?;
+    }
+    if issue_count(to).await? > 0 {
+        return Err(ApiError::validation(
+            "the target database already holds issues",
+        ));
+    }
+    for table in TABLES.iter().rev() {
+        backend::query(crate::sql!("DELETE FROM {}", table.name))
+            .execute(&mut *to)
+            .await?;
+    }
+
+    let mut report = Report::default();
+    // (table, column, kind, id, value) for the second pass.
+    let mut late: Vec<(&'static str, String, Arg, Arg)> = Vec::new();
+    for table in TABLES {
+        let source = columns(from, table.name).await?;
+        let target = columns(to, table.name).await?;
+        let cols: Vec<(String, Kind)> = source
+            .into_iter()
+            .filter(|(n, _)| target.iter().any(|(t, _)| t == n))
+            .collect();
+        let list = cols
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let filter = if table.name == "settings" {
+            format!(" WHERE {LOCAL_SETTINGS}")
+        } else {
+            String::new()
+        };
+        let mut copied = 0u64;
+        let mut offset = 0i64;
+        loop {
+            let rows = backend::query(crate::sql!(
+                "SELECT {list} FROM {}{filter} ORDER BY {} LIMIT ? OFFSET ?",
+                table.name,
+                table.order
+            ))
+            .bind(PAGE)
+            .bind(offset)
+            .fetch_all(&mut *from)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut insert = backend::QueryBuilder::new("");
+            insert.push(crate::sql!("INSERT INTO {} ({list}) VALUES ", table.name).as_str());
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    insert.push(", ");
+                }
+                insert.push("(");
+                let id = if table.late.is_empty() {
+                    None
+                } else {
+                    Some(read(row, "id", Kind::Text)?)
+                };
+                for (j, (col, kind)) in cols.iter().enumerate() {
+                    if j > 0 {
+                        insert.push(", ");
+                    }
+                    let v = read(row, col, *kind)?;
+                    if table.late.contains(&col.as_str()) {
+                        if !is_null(&v) {
+                            late.push((table.name, col.clone(), v, id.clone().expect("late id")));
+                        }
+                        insert.push_bind(null(*kind));
+                    } else {
+                        insert.push_bind(v);
+                    }
+                }
+                insert.push(")");
+            }
+            insert.build().execute(&mut *to).await?;
+            copied += rows.len() as u64;
+            offset += PAGE;
+        }
+        report.tables.push((table.name.to_string(), copied));
+    }
+    for (table, col, value, id) in late {
+        backend::query(crate::sql!("UPDATE {table} SET {col} = ? WHERE id = ?"))
+            .bind(value)
+            .bind(id)
+            .execute(&mut *to)
+            .await?;
+    }
+    if to.is_postgres() {
+        // Explicit seqs leave the identity behind. The next one must follow
+        // the copied ones.
+        backend::query(
+            "SELECT setval(pg_get_serial_sequence('activity', 'seq'),
+                coalesce((SELECT max(seq) FROM activity), 0) + 1, false)",
+        )
+        .execute(&mut *to)
+        .await?;
+    }
+    Ok(report)
+}

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::store::backend::Row as DbRow;
-use crate::store::backend::{Conn, QueryBuilder};
+use crate::store::backend::{Backend, Conn, QueryBuilder};
 use base64::Engine;
 use llmtodo_api_types::{
     ANALYZING_EXPIRY_SECS, Actor, AnalyzingSummary, ClaimSummary, Issue, IssueKey, IssueLink,
@@ -84,7 +84,7 @@ impl IssueRow {
 }
 
 const SELECT: &str = "SELECT i.id, i.key, i.team_id, t.key AS team_key, i.number, i.title,
-    CASE WHEN ? THEN i.description END AS description, i.description_version, i.status_id, i.priority, i.assignee_id,
+    CASE WHEN ? = 1 THEN i.description END AS description, i.description_version, i.status_id, i.priority, i.assignee_id,
     i.project_id, p.slug AS project_slug, i.milestone_id, m.name AS milestone_name, i.parent_id, par.key AS parent_key,
     i.order_step, i.wanted_executor, i.waiting_on, i.estimate_minutes, i.estimate_cost_usd, i.created_by, i.created_at, i.updated_at, i.completed_at, i.deleted_at
     FROM issues i
@@ -381,16 +381,122 @@ pub async fn links(
     Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
 }
 
+/// The words of free text that a search uses: runs of letters, digits, `_`
+/// and inner `-`, with at least `min_len` characters.
+pub fn search_words(text: &str, min_len: usize) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|w| w.trim_matches('-'))
+        .filter(|w| w.chars().count() >= min_len)
+        .map(str::to_string)
+        .collect()
+}
+
 /// Turns free text into an FTS5 query of quoted terms, so punctuation in the
 /// text never breaks the query syntax.
 pub fn fts_terms(text: &str, min_len: usize, joiner: &str) -> Option<String> {
-    let terms: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .map(|w| w.trim_matches('-'))
-        .filter(|w| w.chars().count() >= min_len)
+    let terms: Vec<String> = search_words(text, min_len)
+        .iter()
         .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
         .collect();
     (!terms.is_empty()).then(|| terms.join(joiner))
+}
+
+/// A search the user asked for, as each backend runs it (LLM-455).
+pub struct Search {
+    /// SQLite: the FTS5 query. Postgres: the words, space-separated, for
+    /// `plainto_tsquery`, or each word on its own for duplicate search.
+    fts: String,
+    words: Vec<String>,
+}
+
+impl Search {
+    /// Full-text search: every word must appear.
+    pub fn text(text: &str) -> Option<Self> {
+        Some(Search {
+            fts: fts_terms(text, 1, " ")?,
+            words: search_words(text, 1),
+        })
+    }
+
+    /// Duplicate search: any word of 3 or more characters may appear inside
+    /// a longer word.
+    pub fn similar(text: &str) -> Option<Self> {
+        Some(Search {
+            fts: fts_terms(text, 3, " OR ")?,
+            words: search_words(text, 3),
+        })
+    }
+}
+
+/// Escapes `LIKE` wildcards. The words hold only letters, digits, `_` and
+/// `-`, so only `_` needs it.
+fn like_pattern(word: &str) -> String {
+    format!(
+        "%{}%",
+        word.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
+/// Pushes the `fts` common table for full-text search over `search_fts`,
+/// with `key` as its first column and a score that is higher for better
+/// matches. `filter` adds a condition on the matched rows.
+pub fn push_text_matches(
+    b: &mut QueryBuilder,
+    backend: Backend,
+    key: &str,
+    s: &Search,
+    filter: &str,
+) {
+    match backend {
+        Backend::Sqlite => {
+            b.push(format_args!(
+                "WITH fts AS MATERIALIZED (SELECT {key}, -rank AS score FROM search_fts WHERE search_fts MATCH "
+            ))
+            .push_bind(s.fts.clone())
+            .push(format_args!("{filter}) "));
+        }
+        Backend::Postgres => {
+            b.push(format_args!(
+                "WITH fts AS MATERIALIZED (SELECT {key}, CAST(ts_rank(tsv, q) AS DOUBLE PRECISION) AS score \
+                 FROM search_fts, plainto_tsquery('simple', "
+            ))
+            .push_bind(s.words.join(" "))
+            .push(format_args!(") q WHERE tsv @@ q{filter}) "));
+        }
+    }
+}
+
+/// Pushes the `fts` common table for duplicate search over `issues_trgm`.
+/// On Postgres a row matches when any word appears in it, and scores one
+/// per word it holds, plus pg_trgm's word similarity to break ties.
+fn push_similar_matches(b: &mut QueryBuilder, backend: Backend, s: &Search) {
+    match backend {
+        Backend::Sqlite => {
+            b.push("WITH fts AS MATERIALIZED (SELECT issue_id, -rank AS score FROM issues_trgm WHERE issues_trgm MATCH ")
+                .push_bind(s.fts.clone())
+                .push(") ");
+        }
+        Backend::Postgres => {
+            b.push("WITH fts AS MATERIALIZED (SELECT issue_id, CAST(");
+            for w in &s.words {
+                b.push("(CASE WHEN doc ILIKE ")
+                    .push_bind(like_pattern(w))
+                    .push(" THEN 1 ELSE 0 END) + ");
+            }
+            b.push("word_similarity(")
+                .push_bind(s.words.join(" "))
+                .push(", doc) AS DOUBLE PRECISION) AS score FROM issues_trgm WHERE ");
+            for (i, w) in s.words.iter().enumerate() {
+                if i > 0 {
+                    b.push(" OR ");
+                }
+                b.push("doc ILIKE ").push_bind(like_pattern(w));
+            }
+            b.push(") ");
+        }
+    }
 }
 
 const SORT_PRIORITY: &str = "CASE WHEN i.priority = 0 THEN 5 ELSE i.priority END";
@@ -495,10 +601,10 @@ fn push_key(b: &mut QueryBuilder, kind: KeyKind, v: &Value) -> ApiResult<()> {
     Ok(())
 }
 
-/// The FTS5 queries for text and duplicate search, when the query has them.
-fn search_terms(q: &IssueQuery) -> ApiResult<(Option<String>, Option<String>)> {
-    let ranked_text = q.text.as_deref().and_then(|t| fts_terms(t, 1, " "));
-    let ranked_similar = q.similar.as_deref().and_then(|t| fts_terms(t, 3, " OR "));
+/// The text and duplicate searches, when the query has them.
+fn search_terms(q: &IssueQuery) -> ApiResult<(Option<Search>, Option<Search>)> {
+    let ranked_text = q.text.as_deref().and_then(Search::text);
+    let ranked_similar = q.similar.as_deref().and_then(Search::similar);
     if q.text.is_some() && ranked_text.is_none() {
         return Err(ApiError::bad_request("text search needs at least one word"));
     }
@@ -512,12 +618,17 @@ fn search_terms(q: &IssueQuery) -> ApiResult<(Option<String>, Option<String>)> {
 
 /// Pushes the `fts` common table. FTS5 ranks only inside a direct MATCH
 /// query, so the matches are collected first. `rank` is lower for better
-/// matches.
-fn push_matches(b: &mut QueryBuilder, text: Option<&str>, similar: Option<&str>) {
+/// matches, so the score is its negative.
+fn push_matches(
+    b: &mut QueryBuilder,
+    backend: Backend,
+    text: Option<&Search>,
+    similar: Option<&Search>,
+) {
     if let Some(t) = text {
-        b.push("WITH fts AS MATERIALIZED (SELECT issue_id, -rank AS score FROM search_fts WHERE search_fts MATCH ").push_bind(t.to_string()).push(") ");
-    } else if let Some(t) = similar {
-        b.push("WITH fts AS MATERIALIZED (SELECT issue_id, -rank AS score FROM issues_trgm WHERE issues_trgm MATCH ").push_bind(t.to_string()).push(") ");
+        push_text_matches(b, backend, "issue_id", t, "");
+    } else if let Some(s) = similar {
+        push_similar_matches(b, backend, s);
     }
 }
 
@@ -666,7 +777,7 @@ fn push_field_filters(b: &mut QueryBuilder, q: &IssueQuery) -> ApiResult<()> {
         // Every filter the issue wants must appear in the query with the
         // same value, ignoring case. This matches
         // `WantedExecutor::satisfied_by`, and runs before paging.
-        b.push(" AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(i.wanted_executor) THEN i.wanted_executor ELSE '{}' END) w WHERE lower(w.value) IS NOT lower(json_extract(")
+        b.push(" AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(i.wanted_executor) THEN i.wanted_executor ELSE '{}' END) w WHERE lower(w.value) IS DISTINCT FROM lower(json_extract(")
             .push_bind(serde_json::to_string(want)?)
             .push(", '$.\"' || w.key || '\"')))");
     }
@@ -738,7 +849,12 @@ async fn build_query(
     let (ranked_text, ranked_similar) = search_terms(q)?;
     let mut b: QueryBuilder = QueryBuilder::new(prefix);
     let ranked = ranked_text.is_some() || ranked_similar.is_some();
-    push_matches(&mut b, ranked_text.as_deref(), ranked_similar.as_deref());
+    push_matches(
+        &mut b,
+        conn.backend(),
+        ranked_text.as_ref(),
+        ranked_similar.as_ref(),
+    );
     let keys = sort_keys(ranked, q);
     let after = q.cursor.as_deref().map(Cursor::decode).transpose()?;
     if let Some(c) = &after
@@ -799,8 +915,8 @@ pub async fn frontier(
 ) -> ApiResult<Vec<String>> {
     let base = "SELECT i.id FROM issues i JOIN statuses s ON s.id = i.status_id JOIN teams t ON t.id = i.team_id
         WHERE i.deleted_at IS NULL AND i.assignee_id IS NULL AND s.type NOT IN ('completed', 'canceled')
-        AND i.waiting_on IS NOT 'owner'
-        AND (s.review = 0 OR i.waiting_on IS 'agent')
+        AND i.waiting_on IS DISTINCT FROM 'owner'
+        AND (s.review = 0 OR i.waiting_on IS NOT DISTINCT FROM 'agent')
         AND NOT EXISTS (
             SELECT 1 FROM relations r JOIN issues b ON b.id = r.from_id JOIN statuses bs ON bs.id = b.status_id
             WHERE r.type = 'blocks' AND r.to_id = i.id AND b.deleted_at IS NULL AND bs.type NOT IN ('completed', 'canceled')
@@ -847,7 +963,7 @@ pub async fn frontier(
 pub async fn is_ancestor(conn: &mut Conn, ancestor: &str, id: &str) -> ApiResult<bool> {
     let found: Option<i64> = backend::query_scalar(
         "WITH RECURSIVE up(id) AS (SELECT ? UNION SELECT i.parent_id FROM issues i JOIN up ON i.id = up.id WHERE i.parent_id IS NOT NULL)
-         SELECT 1 FROM up WHERE id = ? LIMIT 1",
+         SELECT CAST(1 AS BIGINT) FROM up WHERE id = ? LIMIT 1",
     )
     .bind(id)
     .bind(ancestor)
@@ -1004,7 +1120,7 @@ pub async fn set_project(
     keep_milestone: bool,
     id: &str,
 ) -> ApiResult<()> {
-    backend::query("UPDATE issues SET project_id = ?, milestone_id = CASE WHEN ? THEN milestone_id ELSE NULL END WHERE id = ?")
+    backend::query("UPDATE issues SET project_id = ?, milestone_id = CASE WHEN ? = 1 THEN milestone_id ELSE NULL END WHERE id = ?")
         .bind(project_id)
         .bind(keep_milestone)
         .bind(id)

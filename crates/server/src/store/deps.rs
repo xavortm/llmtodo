@@ -87,10 +87,16 @@ impl Graph {
         }
         // Each query returns one string. sqlx hands over rows one at a time,
         // and 100,000 rows took 100 ms that way, against 15 ms as one string.
-        let edges: Option<String> = backend::query_scalar(
-            "SELECT group_concat(from_id || char(31) || to_id, char(31))
-             FROM relations WHERE type = 'blocks'",
-        )
+        // SQLite's group_concat is string_agg on Postgres. The separator is
+        // the unit separator, written into the SQL as a literal.
+        let agg = match conn.backend() {
+            backend::Backend::Sqlite => "group_concat",
+            backend::Backend::Postgres => "string_agg",
+        };
+        let edges: Option<String> = backend::query_scalar(crate::sql!(
+            "SELECT {agg}(from_id || '\u{1f}' || to_id, '\u{1f}')
+             FROM relations WHERE type = 'blocks'"
+        ))
         .fetch_one(&mut *conn)
         .await?;
         let edges = edges.unwrap_or_default();
@@ -98,8 +104,10 @@ impl Graph {
         // Looking issues up by ID costs about 3 µs each, and a scan of every
         // live issue about 0.4 µs each. So a small graph looks its issues
         // up, and a large one scans.
-        let node_fields = "group_concat(i.id || char(31) || i.team_id || char(31) || i.number
-            || char(31) || (s.type NOT IN ('completed', 'canceled')), char(31))";
+        let node_fields = format!(
+            "{agg}(i.id || '\u{1f}' || i.team_id || '\u{1f}' || i.number || '\u{1f}'
+            || CASE WHEN s.type NOT IN ('completed', 'canceled') THEN '1' ELSE '0' END, '\u{1f}')"
+        );
         let nodes: Option<String> = if on_edges.is_empty() {
             None
         } else if on_edges.len() <= SMALL_GRAPH {

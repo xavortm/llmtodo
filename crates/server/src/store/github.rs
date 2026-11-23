@@ -44,13 +44,13 @@ pub async fn attachment_count(c: &mut Conn, issue_id: &str) -> ApiResult<i64> {
 }
 
 pub async fn has_attachment(c: &mut Conn, issue_id: &str, url: &str) -> ApiResult<Option<i64>> {
-    Ok(
-        backend::query_scalar("SELECT 1 FROM attachments WHERE issue_id = ? AND url = ?")
-            .bind(issue_id)
-            .bind(url)
-            .fetch_optional(&mut *c)
-            .await?,
+    Ok(backend::query_scalar(
+        "SELECT CAST(1 AS BIGINT) FROM attachments WHERE issue_id = ? AND url = ?",
     )
+    .bind(issue_id)
+    .bind(url)
+    .fetch_optional(&mut *c)
+    .await?)
 }
 
 pub async fn save_poll(

@@ -128,12 +128,17 @@ async fn timed_walk(url: &str, http: &reqwest::Client, limit: u32) -> (Duration,
 #[tokio::test]
 #[ignore = "builds a large database"]
 async fn list_with_large_dependency_graphs() {
+    // SQLite only: it fills the SQLite file directly; LLM-465 times Postgres.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let running = llmtodo_server::start(llmtodo_server::Config {
         data_dir: dir.path().to_path_buf(),
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();

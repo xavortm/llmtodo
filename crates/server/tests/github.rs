@@ -92,6 +92,7 @@ async fn pull_requests_attach_and_move_issues() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();
@@ -234,6 +235,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();
@@ -395,6 +397,7 @@ async fn poll_reads_every_page_before_moving_the_poll_time() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::test_database(dir.path()).await,
     })
     .await
     .unwrap();

@@ -133,6 +133,7 @@ async fn another_folders_server_on_the_port_is_not_used() {
         port: 0,
         host: None,
         github_poll: false,
+        database: llmtodo_server::Database::Sqlite,
     })
     .await
     .unwrap();

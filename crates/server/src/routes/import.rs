@@ -36,12 +36,19 @@ pub async fn file(
     let mime: Option<String> = store::import::file_mime(&mut st.pool().acquire().await?, &hash)
         .await?
         .flatten();
-    // Streamed in chunks, so a big file neither sits in memory nor blocks
-    // an async worker while it is read.
-    let file = tokio::fs::File::open(st.data_dir.join("files").join(&hash))
-        .await
-        .map_err(|_| ApiError::not_found("file", &hash))?;
-    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    // A shared database, a backup or a move from Postgres holds the bytes
+    // in the row (LLM-458).
+    let body = match store::import::file_content(&mut st.pool().acquire().await?, &hash).await? {
+        Some(bytes) => axum::body::Body::from(bytes),
+        None => {
+            // Streamed in chunks, so a big file neither sits in memory nor
+            // blocks an async worker while it is read.
+            let file = tokio::fs::File::open(st.data_dir.join("files").join(&hash))
+                .await
+                .map_err(|_| ApiError::not_found("file", &hash))?;
+            axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file))
+        }
+    };
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
