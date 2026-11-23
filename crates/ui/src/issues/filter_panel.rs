@@ -458,6 +458,7 @@ fn check_box(checked: bool, theme: &Theme) -> Div {
 }
 
 impl FilterPanelView {
+    #[allow(clippy::too_many_arguments)]
     fn render_row(
         &self,
         section: &str,
