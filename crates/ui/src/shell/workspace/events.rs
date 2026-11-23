@@ -6,6 +6,9 @@ use crate::model::pipeline::FailedSave;
 /// The start of the status message while the server is offline.
 const OFFLINE_PREFIX: &str = "Offline: ";
 
+/// The status message while the app waits for its first connection.
+pub(super) const CONNECTING_MESSAGE: &str = "Connecting to the llmtodo server";
+
 impl Workspace {
     /// Applies one message from the API thread.
     pub fn apply_event(&mut self, event: backend::Event, cx: &mut Context<Self>) {
@@ -19,9 +22,9 @@ impl Workspace {
                 });
                 let url = url.trim_start_matches("http://").to_string();
                 // The right side of the status bar shows "Live · url", so
-                // the left side says nothing. A reconnect clears the
-                // offline message.
-                if self.message.starts_with(OFFLINE_PREFIX) {
+                // the left side says nothing. The connection clears the
+                // start-up and offline messages.
+                if self.message == CONNECTING_MESSAGE || self.message.starts_with(OFFLINE_PREFIX) {
                     self.message = SharedString::default();
                 }
                 self.set_connection(Connection::Online(url.into()), cx);

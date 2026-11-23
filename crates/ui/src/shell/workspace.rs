@@ -761,7 +761,7 @@ impl Workspace {
         use futures::StreamExt as _;
         self.backend = Some(backend);
         self.set_connection(Connection::Connecting, cx);
-        self.message = "Connecting to the llmtodo server".into();
+        self.message = events::CONNECTING_MESSAGE.into();
         // The thread starts with no open task.
         self.request(backend::Request::Open {
             id: self.history_for,
