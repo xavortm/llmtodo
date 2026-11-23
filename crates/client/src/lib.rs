@@ -31,6 +31,34 @@ pub enum ClientError {
 }
 
 impl ClientError {
+    /// The server, or a server that could not start, cannot reach its
+    /// shared database (LLM-470). The message names the host when known.
+    pub fn database_unreachable(host: Option<&str>, reason: &str) -> Self {
+        let message = match host {
+            Some(host) => format!("Shared database unreachable at {host}: {reason}"),
+            None => format!("Shared database unreachable: {reason}"),
+        };
+        ClientError::Api {
+            status: ErrorCode::DatabaseUnreachable.http_status(),
+            detail: ErrorDetail {
+                code: ErrorCode::DatabaseUnreachable,
+                message,
+                details: serde_json::json!({ "database_host": host, "reason": reason }),
+            },
+        }
+    }
+
+    /// For an error about the shared database: its host, when known. The
+    /// outer `None` means the error is about something else.
+    pub fn lost_database(&self) -> Option<Option<String>> {
+        match self {
+            ClientError::Api { detail, .. } if detail.code == ErrorCode::DatabaseUnreachable => {
+                Some(detail.details["database_host"].as_str().map(str::to_string))
+            }
+            _ => None,
+        }
+    }
+
     pub fn code(&self) -> ErrorCode {
         match self {
             ClientError::Api { detail, .. } => detail.code,
@@ -862,19 +890,43 @@ impl Connect {
                 self.data_dir.display()
             )));
         };
+        let log = self.data_dir.join("server-stderr.log");
+        let log_start = std::fs::metadata(&log).map_or(0, |m| m.len());
         spawn_server(bin, &self.data_dir)?;
         for _ in 0..100 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             if let Some((c, _)) = find_server(&self.data_dir, &self.context).await {
                 return Ok(c);
             }
+            // A server that cannot reach its shared database exits at
+            // once, and says why on its last line (LLM-470).
+            if let Some(e) = database_failure(&log, log_start) {
+                return Err(e);
+            }
         }
-        let log = self.data_dir.join("server-stderr.log");
         Err(ClientError::Unreachable(format!(
             "started the server, but it did not answer within 5 seconds; see {}",
             log.display()
         )))
     }
+}
+
+/// The lost-database error that a server started by this client printed
+/// to its log after byte `from`, if any. The server prints errors as JSON
+/// bodies, because its stdout is not a terminal.
+fn database_failure(log: &Path, from: u64) -> Option<ClientError> {
+    use std::io::{Read as _, Seek as _};
+    let mut file = std::fs::File::open(log).ok()?;
+    file.seek(std::io::SeekFrom::Start(from)).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    text.lines().rev().find_map(|line| {
+        let body: ErrorBody = serde_json::from_str(line.trim()).ok()?;
+        (body.error.code == ErrorCode::DatabaseUnreachable).then(|| ClientError::Api {
+            status: ErrorCode::DatabaseUnreachable.http_status(),
+            detail: body.error,
+        })
+    })
 }
 
 /// Returns a client for the server named in `server.json`, and its health,
@@ -1098,6 +1150,37 @@ mod tests {
         );
         let err = client.health().await.unwrap_err();
         assert_eq!(err.code(), ErrorCode::Unreachable, "{err}");
+    }
+
+    #[test]
+    fn a_server_that_lost_its_database_says_so_in_its_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("server-stderr.log");
+        std::fs::write(
+            &log,
+            "{\"error\":{\"code\":\"database_unreachable\",\"message\":\"old\"}}\n",
+        )
+        .unwrap();
+        let start = std::fs::metadata(&log).unwrap().len();
+        assert!(
+            database_failure(&log, start).is_none(),
+            "an old line does not count"
+        );
+        let body = ClientError::database_unreachable(Some("db.example.com/llmtodo"), "refused");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        use std::io::Write as _;
+        writeln!(f, "2026-11-23 INFO starting").unwrap();
+        writeln!(f, "{}", serde_json::to_string(&body.to_body()).unwrap()).unwrap();
+        let e = database_failure(&log, start).expect("the new line counts");
+        assert_eq!(e.exit_code(), 7);
+        assert_eq!(
+            e.lost_database(),
+            Some(Some("db.example.com/llmtodo".into()))
+        );
+        assert!(
+            e.to_string()
+                .contains("Shared database unreachable at db.example.com")
+        );
     }
 
     #[test]

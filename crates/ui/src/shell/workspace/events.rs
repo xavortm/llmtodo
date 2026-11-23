@@ -6,14 +6,39 @@ use crate::model::pipeline::FailedSave;
 /// The start of the status message while the server is offline.
 const OFFLINE_PREFIX: &str = "Offline: ";
 
+/// The start of the status message while the shared database is away.
+const DATABASE_DOWN_PREFIX: &str = "Shared database unreachable";
+
+/// The status message while the shared database is away, such as
+/// `Shared database unreachable at ep-x.neon.tech/neondb: timed out. Retrying`.
+pub(super) fn database_down_message(host: Option<&str>, reason: &str) -> String {
+    match host {
+        Some(host) => format!("{DATABASE_DOWN_PREFIX} at {host}: {reason}. Retrying"),
+        None => format!("{DATABASE_DOWN_PREFIX}: {reason}. Retrying"),
+    }
+}
+
 /// The status message while the app waits for its first connection.
 pub(super) const CONNECTING_MESSAGE: &str = "Connecting to the llmtodo server";
 
 impl Workspace {
     /// Applies one message from the API thread.
     pub fn apply_event(&mut self, event: backend::Event, cx: &mut Context<Self>) {
+        // Any answer means the server, and its database, are awake.
+        if !matches!(
+            event,
+            backend::Event::Offline { .. } | backend::Event::DatabaseDown { .. }
+        ) {
+            let now = cx.background_executor().now();
+            self.activity.answer(now);
+        }
         match event {
             backend::Event::Connected { url, database } => {
+                self.activity.set_shared(
+                    database
+                        .as_ref()
+                        .is_some_and(|d| d.backend == llmtodo_api_types::DatabaseBackend::Postgres),
+                );
                 let view = self.settings_view.clone();
                 cx.defer(move |cx| view.update(cx, |view, cx| view.set_database(database, cx)));
                 self.store.update(cx, |store, _| {
@@ -24,7 +49,10 @@ impl Workspace {
                 // The right side of the status bar shows "Live · url", so
                 // the left side says nothing. The connection clears the
                 // start-up and offline messages.
-                if self.message == CONNECTING_MESSAGE || self.message.starts_with(OFFLINE_PREFIX) {
+                if self.message == CONNECTING_MESSAGE
+                    || self.message.starts_with(OFFLINE_PREFIX)
+                    || self.message.starts_with(DATABASE_DOWN_PREFIX)
+                {
                     self.message = SharedString::default();
                 }
                 self.set_connection(Connection::Online(url.into()), cx);
@@ -34,6 +62,25 @@ impl Workspace {
             backend::Event::Offline { reason } => {
                 self.message = format!("{OFFLINE_PREFIX}{reason}. Retrying").into();
                 self.set_connection(Connection::Offline(reason.into()), cx);
+                self.activity.offline();
+                self.set_loading(None, cx);
+            }
+            backend::Event::DatabaseDown { host, reason } => {
+                self.message = database_down_message(host.as_deref(), &reason).into();
+                self.set_connection(
+                    Connection::DatabaseDown {
+                        host: host.map(Into::into),
+                        reason: reason.into(),
+                    },
+                    cx,
+                );
+                self.activity.offline();
+                self.set_loading(None, cx);
+            }
+            backend::Event::Loading { loaded, total } => {
+                let now = cx.background_executor().now();
+                self.activity.loading(loaded, total, now);
+                self.set_loading(Some((loaded, total)), cx);
             }
             backend::Event::Snapshot(snapshot) => {
                 // The API thread already mapped the issues.
@@ -51,10 +98,14 @@ impl Workspace {
                     self.load_open(catalog, issues, cx);
                 } else {
                     self.load(catalog, issues, cx);
+                    self.activity.loaded();
+                    self.set_loading(None, cx);
                 }
                 self.loaded_tracker(cx);
             }
             backend::Event::SnapshotRest(rest) => {
+                self.activity.loaded();
+                self.set_loading(None, cx);
                 // None after a tracker switch: the rest is the old one's.
                 if self.partial_snapshot.is_some() {
                     self.load_rest(rest.issues, cx);
@@ -144,7 +195,84 @@ impl Workspace {
                 summary,
             } => self.on_write_failed(key, kind, message, stale, summary, cx),
         }
+        self.sync_activity(cx);
         cx.notify();
+    }
+
+    /// Starts over for a new connection: the app waits for its server.
+    pub(super) fn start_activity(&mut self, cx: &mut Context<Self>) {
+        let data_dir = {
+            let store = self.store.read(cx);
+            store
+                .trackers
+                .get(store.tracker)
+                .map(|t| t.data_dir.clone())
+        };
+        let shared = match (&self.shared_dir, data_dir) {
+            (Some(shared), Some(open)) => *shared == open,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        self.activity = Default::default();
+        self.activity.set_shared(shared);
+        let now = cx.background_executor().now();
+        self.activity.connecting(now);
+        self.set_loading(None, cx);
+        self.sync_activity(cx);
+    }
+
+    /// Names the data folder whose tracker uses the shared database, from
+    /// the config, so the first connect can say the database is waking.
+    pub fn set_shared_dir(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.shared_dir = dir;
+        if self.backend.is_some() {
+            self.start_activity(cx);
+        }
+    }
+
+    /// The first load's progress for the empty list. Only the empty list
+    /// shows it, so only then does a change redraw the rows.
+    fn set_loading(&mut self, loading: Option<(u64, Option<u64>)>, cx: &mut Context<Self>) {
+        self.store.update(cx, |store, cx| {
+            if store.loading == loading {
+                return;
+            }
+            let shows = store.is_empty() || loading.is_none() || store.loading.is_none();
+            store.loading = loading;
+            if shows {
+                store.touch_all();
+                cx.notify();
+            }
+        });
+    }
+
+    /// Marks the rows whose writes waited past the delay, and draws again
+    /// when the next wait reaches it.
+    pub(super) fn sync_activity(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let slow: Vec<IssueId> = self.activity.slow_writes(now).collect();
+        self.store.update(cx, |store, cx| {
+            let before = store.revision();
+            store.set_saving(slow);
+            if store.revision() != before {
+                cx.notify();
+            }
+        });
+        if self.activity_timer.is_some() {
+            return;
+        }
+        let Some(wait) = self.activity.next_change(now) else {
+            return;
+        };
+        self.activity_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                this.activity_timer = None;
+                this.sync_activity(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Puts in list copies of issues. They carry no detail, so the detail

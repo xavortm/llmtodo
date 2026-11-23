@@ -28,6 +28,12 @@ pub enum Connection {
     Connecting,
     Online(SharedString),
     Offline(SharedString),
+    /// The server answers, but cannot reach its shared database (LLM-470):
+    /// its host when known, and the reason.
+    DatabaseDown {
+        host: Option<SharedString>,
+        reason: SharedString,
+    },
 }
 
 pub struct IssueStore {
@@ -75,6 +81,11 @@ pub struct IssueStore {
     /// The server's base URL, such as `http://127.0.0.1:7878`, once it
     /// connected. The preview loads stored files from it.
     pub server_url: Option<SharedString>,
+    /// The issues whose writes waited long enough to show (LLM-470).
+    saving: std::collections::HashSet<IssueId>,
+    /// How far the first load got: issues read, and of how many once the
+    /// server counted them. `None` once it is done.
+    pub loading: Option<(u64, Option<u64>)>,
     /// The trackers the sidebar lists, and which one is open. The workspace
     /// switches between them.
     pub trackers: Vec<Tracker>,
@@ -177,6 +188,8 @@ impl IssueStore {
             connection: Connection::Connecting,
             view: None,
             server_url: None,
+            saving: Default::default(),
+            loading: None,
             trackers: Vec::new(),
             tracker: 0,
             revision: 0,
@@ -215,6 +228,25 @@ impl IssueStore {
             }
         }
         StoreChange::Issues(ids)
+    }
+
+    /// Whether the row of `id` shows that its writes are saving.
+    pub fn is_saving(&self, id: IssueId) -> bool {
+        self.saving.contains(&id)
+    }
+
+    /// Sets which rows show that they are saving. Only the rows that change
+    /// redraw.
+    pub fn set_saving(&mut self, ids: impl IntoIterator<Item = IssueId>) {
+        let ids: std::collections::HashSet<IssueId> = ids.into_iter().collect();
+        if ids == self.saving {
+            return;
+        }
+        let changed: Vec<IssueId> = ids.symmetric_difference(&self.saving).copied().collect();
+        self.saving = ids;
+        for id in changed {
+            self.note(Some(id));
+        }
     }
 
     /// Records a change to everything: the catalog, the connection, the

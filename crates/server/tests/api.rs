@@ -4437,3 +4437,34 @@ async fn fts_rowid_migration_keeps_search_results() {
     assert_search_rows_consistent(&mut db).await;
     db.close().await.unwrap();
 }
+
+/// LLM-470: the app's first load asks for a count, to show its progress.
+/// Only the first page carries it, and only when asked.
+#[tokio::test]
+async fn an_issue_query_counts_its_matches_on_the_first_page() {
+    let t = T::new().await;
+    for n in 0..5 {
+        t.issue(&format!("Task {n}"), json!({})).await;
+    }
+    t.issue("Fix the login page", json!({})).await;
+    let who = owner();
+    let query = |body: Value| t.ok(&who, "POST", "/v1/issues/query", body);
+    let plain = query(json!({ "limit": 2 })).await;
+    assert!(
+        plain.get("total").is_none(),
+        "no count unless asked: {plain}"
+    );
+    let first = query(json!({ "limit": 2, "with_total": true, "order": "id" })).await;
+    assert_eq!(first["total"], 6);
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let second =
+        query(json!({ "limit": 2, "with_total": true, "order": "id", "cursor": cursor })).await;
+    assert!(second.get("total").is_none(), "a later page has no count");
+    // The count follows the filters, and a text search.
+    let found = query(json!({ "text": "login", "with_total": true })).await;
+    assert_eq!(found["total"], 1);
+    let trashed = query(json!({ "trashed": true, "with_total": true })).await;
+    assert_eq!(trashed["total"], 0);
+    t.stop().await;
+}

@@ -875,6 +875,20 @@ pub async fn query_ids(conn: &mut Conn, me: &Actor, q: &IssueQuery) -> ApiResult
         .collect()
 }
 
+/// How many issues a query matches on all its pages, in one statement
+/// (LLM-470). It reads no cursor and no limit.
+pub async fn count(conn: &mut Conn, me: &Actor, q: &IssueQuery) -> ApiResult<u64> {
+    let q = IssueQuery {
+        cursor: None,
+        limit: None,
+        ..q.clone()
+    };
+    let (mut b, _, _) = build_query(conn, me, &q, "SELECT count(*) FROM (", false).await?;
+    b.push(") AS matched");
+    let n: i64 = b.build_query_scalar().fetch_one(&mut *conn).await?;
+    Ok(n.max(0) as u64)
+}
+
 /// Builds the SQL of an issue query after `prefix`. Returns it with the sort
 /// keys and the page size. Without `paged`, the SQL has no limit.
 async fn build_query(

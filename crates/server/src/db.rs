@@ -38,6 +38,26 @@ pub fn url_host(url: &str) -> String {
     rest.split('?').next().unwrap_or(rest).to_string()
 }
 
+/// The server could not connect to its shared database, so it did not
+/// start (LLM-470). `llmtodo server run` exits with code 7 on it, like a
+/// client that cannot reach the server.
+#[derive(Debug, thiserror::Error)]
+#[error("Shared database unreachable at {host}: {reason}")]
+pub struct Unreachable {
+    /// The host, port and database name, with no credentials.
+    pub host: String,
+    pub reason: String,
+}
+
+/// How long a request waits for a Postgres connection. The pool retries a
+/// refused connection until then, so this is also how long a request takes
+/// to fail while the database is away (LLM-470). A database that sleeps
+/// wakes well within it.
+pub const ACQUIRE_WAIT: Duration = Duration::from_secs(10);
+
+/// How long the server waits at start for its first Postgres connection.
+const START_CONNECT_WAIT: Duration = Duration::from_secs(15);
+
 /// Connects to a shared Postgres database and runs pending migrations.
 ///
 /// With a data folder, a backup goes there before a migration of a database
@@ -45,6 +65,27 @@ pub fn url_host(url: &str) -> String {
 pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result<Pool> {
     use sqlx::postgres::PgPoolOptions;
     let shown = redact_url(url);
+    let unreachable = |e: &sqlx::Error| {
+        tracing::warn!(url = %shown, error = %pg_error(e), "cannot reach Postgres");
+        anyhow::Error::new(Unreachable {
+            host: url_host(url),
+            reason: pg_error(e),
+        })
+    };
+    // One plain connection first. The pool would retry a refused
+    // connection for its whole acquire timeout, and the server would hang
+    // at start instead of saying the database is unreachable. A database
+    // that sleeps, as on Neon, wakes within this wait.
+    {
+        use sqlx::Connection as _;
+        match tokio::time::timeout(START_CONNECT_WAIT, sqlx::PgConnection::connect(url)).await {
+            Ok(Ok(c)) => {
+                c.close().await.ok();
+            }
+            Ok(Err(e)) => return Err(unreachable(&e)),
+            Err(_) => return Err(unreachable(&sqlx::Error::PoolTimedOut)),
+        }
+    }
     // A ping before each use would cost a round trip per request. Only a
     // connection idle for 30 seconds gets one, because a laptop that slept,
     // or a host such as Neon that suspended an idle database, may have
@@ -62,10 +103,10 @@ pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result
             })
         })
         .idle_timeout(Duration::from_secs(4 * 60))
-        .acquire_timeout(Duration::from_secs(30))
+        .acquire_timeout(ACQUIRE_WAIT)
         .connect(url)
         .await
-        .map_err(|e| anyhow::anyhow!("connect to Postgres at {shown}: {}", pg_error(&e)))?;
+        .map_err(|e| unreachable(&e))?;
     let pool = Pool::Postgres(pg.clone());
     let newest_known = PG_MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0);
     let has_table: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
@@ -258,11 +299,15 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<Pool> {
 }
 
 pub async fn schema_version(pool: &Pool) -> i64 {
+    try_schema_version(pool).await.unwrap_or(0)
+}
+
+/// The schema version, or the error that kept the query from running.
+pub async fn try_schema_version(pool: &Pool) -> Result<i64, sqlx::Error> {
     // Both migrators record their versions in _sqlx_migrations.
     backend::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success")
         .fetch_one(pool)
         .await
-        .unwrap_or(0)
 }
 
 /// Writes a consistent copy with `VACUUM INTO` and trims old copies of the

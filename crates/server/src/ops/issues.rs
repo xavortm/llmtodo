@@ -29,9 +29,15 @@ pub async fn query(c: &mut Conn, actor: &Actor, q: IssueQuery) -> ApiResult<Page
     for (item, (_, score)) in items.iter_mut().zip(found.iter()) {
         item.score = *score;
     }
+    // Only the first page counts. A later page has the count already.
+    let total = match (q.with_total, &q.cursor) {
+        (true, None) => Some(issues::count(c, actor, &q).await?),
+        _ => None,
+    };
     Ok(Page {
         items,
         next_cursor: next,
+        total,
     })
 }
 
@@ -288,6 +294,7 @@ fn merge_query(mut base: IssueQuery, extra: IssueQuery) -> IssueQuery {
     base.filter.narrow(extra.filter);
     base.trashed |= extra.trashed;
     base.include_description |= extra.include_description;
+    base.with_total |= extra.with_total;
     macro_rules! take {
         ($($f:ident),*) => { $( if extra.$f.is_some() { base.$f = extra.$f; } )* };
     }

@@ -63,7 +63,7 @@ pub fn schema() -> Value {
     let exit_codes = json!({
         "0": "success", "1": "unknown error", "2": "bad flags or arguments", "3": "not found",
         "4": "claim held by another session", "5": "stale version on a description or document write",
-        "6": "validation failed", "7": "server unreachable and could not start", "8": "input needed, but --no-input is set",
+        "6": "validation failed", "7": "server unreachable and could not start, or its shared database unreachable", "8": "input needed, but --no-input is set",
         "9": "this machine is not the primary", "10": "patch matched zero times or more than once", "11": "forbidden, such as prune by an agent"
     });
     let error_codes: serde_json::Map<String, Value> = llmtodo_api_types::ErrorCode::ALL
