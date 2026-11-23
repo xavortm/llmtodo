@@ -1,6 +1,6 @@
 # Architecture
 
-One local server owns the SQLite file, and every client reaches it over HTTP and WebSocket. This page states which crate and which server layer may depend on which. `SPEC.md` holds the product scope and the decisions.
+One local server owns the database, and every client reaches it over HTTP and WebSocket. The database is a SQLite file by default, or a shared Postgres database (LLM-450). This page states which crate and which server layer may depend on which. `SPEC.md` holds the product scope and the decisions.
 
 Each rule below either holds today or is a target. I checked every rule against the `Cargo.toml` files and the code at commit `cbfb271`.
 
@@ -13,7 +13,7 @@ The workspace has eight crates. The last column lists the only workspace crates 
 | `core` | Domain types, ID types, issue keys, Markdown helpers, owner question parsing, the installed app bundle's path and commit, the standard data folder's path | nothing |
 | `api-types` | Request and response types, the route table, error codes and exit codes | `core` |
 | `client` | Typed HTTP client. It starts the server when none is running. It holds what every client shares: the live event stream, the data folder choice and the caller's identity | `core`, `api-types` |
-| `server` | axum API, SQLite through sqlx, GitHub sync, Linear import, laptop sync | `core`, `api-types` |
+| `server` | axum API, SQLite or Postgres through sqlx, GitHub sync, Linear import, laptop sync | `core`, `api-types` |
 | `cli` | The `llmtodo` binary | `core`, `api-types`, `client`, `server` |
 | `ui` | The GPUI desktop app's views and model, as a library | `core`, `api-types`, `client` |
 | `app` | The `llmtodo-app` binary: `main.rs` and start-up | `ui` |
@@ -66,9 +66,18 @@ These rules hold, and `crates/server/tests/layers.rs` fails when one breaks:
 
 A domain noun has the same module name in every layer: `issues`, `claims`, `relations`, `questions`, `documents`, `views`, `sessions`, `sync` and the others. A few modules hold a pair of nouns, such as statuses inside `teams` and milestones inside `projects`.
 
-We will not add repository traits. SQLite is a settled decision, so a layer over it would add cost and no benefit.
-
 The other findings of LLM-122 add more targets, and this page gains each one when its work lands.
+
+## The database backend layer (target, LLM-450)
+
+The server runs on SQLite or on a shared Postgres database (decision 50 in `SPEC.md`). These rules are targets until LLM-452 and the Postgres tasks land:
+
+- One backend layer in `store` owns the pool and the connection types. Nothing outside it names a sqlx driver type, such as `SqliteConnection` or `PgConnection`. `layers.rs` checks this.
+- `ops` and `routes` take our own connection and transaction types, and never know which backend runs.
+- SQL that differs by backend sits next to its twin in the same `store` module, so a reader sees both forms of a query in one place. Most SQL is the same on both.
+- Each backend has its own migration folder. A test checks that both schemas have the same tables and columns.
+- `Write` stays the one write path on both backends. On Postgres it also sends the `NOTIFY` for live events.
+- Outside the backend layer, nothing branches on the backend, except for features that exist on one side only: laptop sync (SQLite) and the cross-server event listener and job locks (Postgres).
 
 ## The app's layers
 
