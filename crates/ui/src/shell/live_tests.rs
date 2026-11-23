@@ -922,13 +922,19 @@ fn backend_loads_the_trash_and_saved_views_and_reads_a_view() {
         Event::Snapshot(s) => Some(s.raw.clone()),
         _ => None,
     });
-    let trashed: Vec<_> = snapshot
-        .issues
+    let open: Vec<_> = snapshot.issues.iter().map(|i| i.key.to_string()).collect();
+    assert_eq!(open, ["LLM-1"], "the open issues come first");
+    // LLM-347: the Trash follows the open issues.
+    let rest = live.wait(&mut events, "the rest", |e| match e {
+        Event::SnapshotRest(r) => Some(r.raw.clone()),
+        _ => None,
+    });
+    let trashed: Vec<_> = rest
         .iter()
         .filter(|i| i.deleted_at.is_some())
         .map(|i| i.key.to_string())
         .collect();
-    assert_eq!(trashed, ["LLM-2"], "the snapshot holds the Trash");
+    assert_eq!(trashed, ["LLM-2"], "the rest holds the Trash");
     assert!(snapshot.catalog.views.is_empty());
 
     // A view saved from the app, then read back by name.
@@ -1361,8 +1367,9 @@ fn closing_the_last_step_refreshes_the_closed_steps_before_it_live() {
     set(&second, "Done");
 
     let (backend, mut events) = live.backend();
+    // The closed steps come with the rest of the snapshot (LLM-347).
     let held = live.wait(&mut events, "snapshot", |e| match e {
-        Event::Snapshot(s) => s
+        Event::SnapshotRest(r) => r
             .issues
             .iter()
             .find(|i| i.key.as_ref() == first)
@@ -1904,4 +1911,92 @@ fn a_refused_review_move_brings_a_short_summary() {
         Some("LLM-1 needs review steps and checks before User review.")
     );
     assert!(message.contains("llmtodo issue review set"), "{message}");
+}
+
+/// Copies LLM-1 into `count` issues with the `sqlite3` tool. One in ten
+/// stays open, one in ten goes to the Trash and the rest are Done, as in a
+/// tracker that has run for a while.
+fn seed_many(live: &Live, count: usize) {
+    let sql = format!(
+        "WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v + 1 FROM n WHERE v < {count})
+         INSERT INTO issues (id, team_id, number, key, title, description, status_id, wanted_executor, created_at, updated_at, deleted_at)
+         SELECT printf('00000000-0000-4000-8000-%012d', n.v), i.team_id, n.v, 'LLM-' || n.v, 'Issue ' || n.v, '',
+           CASE WHEN n.v % 10 = 0 THEN i.status_id
+             ELSE (SELECT s.id FROM statuses s WHERE s.team_id = i.team_id AND s.type = 'completed' LIMIT 1) END,
+           '{{}}', i.created_at, i.updated_at,
+           CASE WHEN n.v % 10 = 5 THEN i.updated_at END
+         FROM n, issues i WHERE i.number = 1;
+         INSERT INTO issue_keys (key, issue_id) SELECT key, id FROM issues WHERE number > 1;"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .arg(live.dir.path().join("llmtodo.db"))
+        .arg(sql)
+        .output()
+        .expect("run sqlite3");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// LLM-347: the time from the app's connect to each frame of the list
+/// after a load, on 50,000 issues of which about 5,000 are open.
+///
+/// ```sh
+/// cargo test -p llmtodo-ui time_to_first_list_frame -- --ignored --nocapture
+/// ```
+#[gpui_kit::test]
+#[ignore = "builds a large database and prints timings"]
+fn time_to_first_list_frame_50k(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+
+    let live = Live::new();
+    seed_many(&live, 50_000);
+    cx.update(crate::init);
+    let (handle, view) = cx.update(|cx| {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                Default::default(),
+                size(px(1400.), px(900.)),
+            ))),
+            ..Default::default()
+        };
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| crate::shell::workspace::Workspace::new(window, cx))
+        })
+        .expect("open test window")
+    });
+    let start = std::time::Instant::now();
+    let (_backend, mut events) = live.backend();
+    loop {
+        let event = live
+            .rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(120), events.next()).await })
+            .expect("an event in time")
+            .expect("events go on");
+        let name = match &event {
+            Event::Snapshot(s) => format!("snapshot of {} issues", s.issues.len()),
+            Event::SnapshotRest(r) => format!("rest of {} issues", r.issues.len()),
+            _ => String::new(),
+        };
+        let last = !matches!(&event, Event::Snapshot(s) if s.partial);
+        view.update(cx, |this, cx| this.apply_event(event, cx));
+        if name.is_empty() {
+            continue;
+        }
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let held = cx.read(|cx| view.read(cx).store().read(cx).len());
+        println!(
+            "{:>10.2?}  {name} drawn, the store holds {held}",
+            start.elapsed()
+        );
+        if last {
+            break;
+        }
+    }
+    cx.update(|cx| cx.quit());
 }

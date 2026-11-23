@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc as fmpsc;
 use llmtodo_client::types::{
     ActivityEvent, ActivityQuery, ClientContext, ErrorCode, HistoryQuery, Issue, IssueDetail,
-    IssueGit, IssueOrder, IssueQuery, Label, Project, QuestionEntry, QuestionQuery, ReleaseRequest,
-    RestoreRequest, Team, UpdateIssue,
+    IssueFilter, IssueGit, IssueOrder, IssueQuery, Label, Project, QuestionEntry, QuestionQuery,
+    ReleaseRequest, RestoreRequest, StatusType, Team, UpdateIssue,
 };
 use llmtodo_client::types::{ActivityField, DocumentId, EntityType, IssueId};
 use llmtodo_client::types::{
@@ -76,9 +76,22 @@ pub struct Loaded {
     pub catalog: crate::model::data::Catalog,
     pub issues: Vec<crate::model::data::Issue>,
     pub questions: Vec<QuestionEntry>,
+    /// LLM-347: the issues are only the open ones. The closed and trashed
+    /// issues follow in [`Event::SnapshotRest`].
+    pub partial: bool,
     /// Tests: the snapshot as the server sent it.
     #[cfg(test)]
     pub raw: Snapshot,
+}
+
+/// The closed and trashed issues of a snapshot whose open issues came
+/// first, mapped to that snapshot's catalog.
+#[derive(Debug, Clone)]
+pub struct Rest {
+    pub issues: Vec<crate::model::data::Issue>,
+    /// Tests: the issues as the server sent them.
+    #[cfg(test)]
+    pub raw: Vec<Issue>,
 }
 
 impl Snapshot {
@@ -97,6 +110,7 @@ impl Snapshot {
             catalog,
             issues,
             questions: self.questions,
+            partial: false,
             #[cfg(test)]
             raw,
         }
@@ -211,7 +225,10 @@ pub enum Event {
     Offline {
         reason: String,
     },
+    /// Everything, or only the open issues when `partial` is set.
     Snapshot(Box<Loaded>),
+    /// The closed and trashed issues of the partial snapshot just before.
+    SnapshotRest(Box<Rest>),
     /// Statuses, labels, teams, projects, views or documents changed. No
     /// issues come with it: the app maps the issues it holds again.
     Catalog(Box<CatalogData>),
@@ -1107,39 +1124,74 @@ async fn dependents(client: &Client, key: &str) -> Result<Vec<Issue>, String> {
     Ok(issues)
 }
 
+/// Sends the open issues first, so the list shows before the closed and
+/// trashed issues load (LLM-347). Those follow as [`Event::SnapshotRest`].
+/// Both reads start at once, and live events wait until both are sent.
 async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
     // ID order: a write between two pages never moves an issue across the
     // page edge. The app sorts the list itself. Descriptions stay out: they
     // are most of a snapshot's size, and the app fetches one when a task
     // opens.
-    let query = IssueQuery {
+    let by_id = IssueQuery {
         order: Some(IssueOrder::Id),
         ..Default::default()
     };
+    let open = IssueQuery {
+        filter: IssueFilter {
+            open: true,
+            ..Default::default()
+        },
+        ..by_id.clone()
+    };
+    // Open and closed together hold every live issue. An issue that opens
+    // or closes between the two reads comes again with the live events.
+    let closed = IssueQuery {
+        filter: IssueFilter {
+            status_types: vec![StatusType::Completed, StatusType::Canceled],
+            ..Default::default()
+        },
+        ..by_id.clone()
+    };
     let trash = IssueQuery {
         trashed: true,
-        ..query.clone()
+        ..by_id
     };
     let open_questions = QuestionQuery::default();
-    let (catalog, mut issues, trashed, questions) = tokio::try_join!(
-        catalog_data(client),
-        client.query_all(&query),
-        client.query_all(&trash),
-        client.questions(&open_questions)
-    )
-    .map_err(|e| e.to_string())?;
-    issues.extend(trashed);
-    let issues = last_copy_of_each(issues, |i| i.key.to_string());
+    let first = async {
+        let (catalog, issues, questions) = tokio::try_join!(
+            catalog_data(client),
+            client.query_all(&open),
+            client.questions(&open_questions)
+        )?;
+        let mut loaded = Snapshot {
+            catalog,
+            issues,
+            questions,
+        }
+        .load();
+        loaded.partial = true;
+        let catalog = loaded.catalog.clone();
+        send(events, Event::Snapshot(Box::new(loaded)));
+        Ok(catalog)
+    };
+    let rest = async {
+        let (mut issues, trashed) =
+            tokio::try_join!(client.query_all(&closed), client.query_all(&trash))?;
+        issues.extend(trashed);
+        Ok(last_copy_of_each(issues, |i| i.key.to_string()))
+    };
+    let (catalog, rest) = tokio::try_join!(first, rest).map_err(|e: ClientError| e.to_string())?;
+    let issues = rest
+        .iter()
+        .map(|i| crate::model::data::Issue::from_api(i, &catalog))
+        .collect();
     send(
         events,
-        Event::Snapshot(Box::new(
-            Snapshot {
-                catalog,
-                issues,
-                questions,
-            }
-            .load(),
-        )),
+        Event::SnapshotRest(Box::new(Rest {
+            issues,
+            #[cfg(test)]
+            raw: rest,
+        })),
     );
     Ok(())
 }
