@@ -548,10 +548,10 @@ async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, ev
                             stale: false,
                             summary: None,
                         });
-                        state.pending.keys.insert(key);
+                        state.pending.owe(key);
                     }
                     Some(Request::Fetch { key }) => {
-                        state.pending.keys.insert(key);
+                        state.pending.owe(key);
                     }
                     Some(Request::Open { id }) => state.open = id,
                     Some(Request::ViewIssues { name } | Request::DeleteView { name }) => {
@@ -741,7 +741,7 @@ async fn session(
                 Some(Request::Reload) => snapshot(&client, events).await?,
                 Some(Request::Fetch { key }) => {
                     if let Err(e) = refresh(&client, &key, events).await {
-                        state.pending.keys.insert(key);
+                        state.pending.owe(key);
                         return Err(e);
                     }
                 }
@@ -749,7 +749,7 @@ async fn session(
                 Some(Request::Write { key, write, kind }) => {
                     let open = state.open;
                     if let Err(e) = apply_write(&client, &key, write, kind, open, events).await {
-                        state.pending.keys.insert(key);
+                        state.pending.owe(key);
                         return Err(e);
                     }
                 }
@@ -949,6 +949,10 @@ const CHANGES_DEPENDENTS: &[ActivityField] = &[
 #[derive(Default, Clone)]
 struct Pending {
     keys: BTreeSet<String>,
+    /// The keys in `keys` that the app asked for, or whose write failed. A
+    /// reload does not settle them: its snapshot carries no text, so the
+    /// app would keep its early change. They are fetched after it.
+    owed: BTreeSet<String>,
     /// Issues whose change can move the depth of the tasks that wait for
     /// them. Those tasks get no event of their own.
     dependents_of: BTreeSet<String>,
@@ -987,8 +991,16 @@ impl Pending {
         }
     }
 
+    /// An issue the app must get a fresh copy of, with its text, even
+    /// when a reload comes first.
+    fn owe(&mut self, key: String) {
+        self.owed.insert(key.clone());
+        self.keys.insert(key);
+    }
+
     fn is_empty(&self) -> bool {
         self.keys.is_empty()
+            && self.owed.is_empty()
             && self.dependents_of.is_empty()
             && self.children_of.is_empty()
             && !self.catalog
@@ -998,6 +1010,7 @@ impl Pending {
     /// Adds the work in `other`.
     fn merge(&mut self, other: Pending) {
         self.keys.extend(other.keys);
+        self.owed.extend(other.owed);
         self.dependents_of.extend(other.dependents_of);
         self.children_of.extend(other.children_of);
         self.catalog |= other.catalog;
@@ -1041,10 +1054,11 @@ async fn flush(
         snapshot(client, events).await?;
         pending.reload = false;
         pending.catalog = false;
-        pending.keys.clear();
+        // The snapshot settles every other key. The owed ones still need
+        // their text, so they refresh below.
+        pending.keys = pending.owed.clone();
         pending.dependents_of.clear();
         pending.children_of.clear();
-        return Ok(());
     }
     if pending.catalog {
         catalog(client, events).await?;
@@ -1064,6 +1078,7 @@ async fn flush(
         let keys: Vec<String> = pending.keys.iter().cloned().collect();
         let open_key = refresh_rows(client, keys, open, events).await?;
         pending.keys.clear();
+        pending.owed.clear();
         // Every event on an issue shows in its history, so the open task's
         // history follows each refresh of it, once per batch of events.
         if let Some(key) = open_key {

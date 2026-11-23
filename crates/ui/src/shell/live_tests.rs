@@ -208,6 +208,15 @@ fn llm_1_text(event: &Event) -> Option<(String, i64)> {
     })
 }
 
+/// LLM-1's description and version in a copy that carries its text. A
+/// snapshot leaves the text out, so it never matches.
+fn llm_1_fetched_text(event: &Event) -> Option<(String, i64)> {
+    let issue = issues_in(event)
+        .into_iter()
+        .find(|i| i.key.to_string() == "LLM-1")?;
+    Some((issue.description?, issue.description_version))
+}
+
 /// Starts a server on `dir`. Right after a stop, the lock file can still
 /// read as held for a moment while other tests run in parallel, so a start
 /// that finds it held tries again for a few seconds.
@@ -867,7 +876,9 @@ fn backend_fails_a_save_while_the_server_is_down_and_refetches() {
 }
 
 /// The live connection stays up, but the save's request fails. The thread
-/// reports the failure, reconnects and fetches the issue again.
+/// reports the failure, reconnects and fetches the issue again. The cut can
+/// land while the first load still runs; the reconnect then reloads, and
+/// the snapshot carries no text, so the test waits for the fetched copy.
 #[test]
 fn backend_fails_a_save_whose_request_is_cut_and_refetches() {
     let live = Live::new();
@@ -896,7 +907,37 @@ fn backend_fails_a_save_whose_request_is_cut_and_refetches() {
     live.wait(&mut events, "reconnect", |e| {
         matches!(e, Event::Connected { .. }).then_some(())
     });
-    let (text, _) = live.wait(&mut events, "the server's copy", llm_1_text);
+    let (text, _) = live.wait(&mut events, "the server's copy", llm_1_fetched_text);
+    assert_eq!(text, "First text.\n");
+}
+
+/// LLM-466: a save fails before the thread ever connected, so the connect
+/// loads a full snapshot. The snapshot has no text, and the app would keep
+/// its early change, so the thread still fetches the issue with its text.
+#[test]
+fn backend_fetches_a_failed_save_again_after_a_reload() {
+    let mut live = Live::new();
+    live.stop();
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "offline", |e| {
+        matches!(e, Event::Offline { .. }).then_some(())
+    });
+    backend.write("LLM-1", save("Owner text.\n", 1), WriteKind::Description);
+    let stale = live.wait(&mut events, "the failed save", |e| match e {
+        Event::WriteFailed {
+            kind: WriteKind::Description,
+            stale,
+            ..
+        } => Some(*stale),
+        _ => None,
+    });
+    assert!(!stale);
+
+    live.start_again();
+    live.wait(&mut events, "the snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    let (text, _) = live.wait(&mut events, "the server's copy", llm_1_fetched_text);
     assert_eq!(text, "First text.\n");
 }
 
