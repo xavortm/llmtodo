@@ -1115,6 +1115,15 @@ pub async fn add_key(c: &mut Conn, key: &str, id: &str) -> ApiResult<()> {
 }
 
 /// The statement of [`add_key`].
+/// Keeps another key for an issue, unless some issue already has it.
+pub fn add_alias_query(key: &str, id: &str) -> backend::Query {
+    backend::query(
+        "INSERT INTO issue_keys (key, issue_id) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
+    )
+    .bind(key)
+    .bind(id)
+}
+
 pub fn add_key_query(key: &str, id: &str) -> backend::Query {
     backend::query("INSERT INTO issue_keys (key, issue_id) VALUES (?, ?)")
         .bind(key)

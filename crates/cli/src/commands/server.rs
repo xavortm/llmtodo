@@ -62,6 +62,7 @@ pub async fn run(app: &App, cmd: ServerCmd) -> CliResult {
                 port,
                 host: None,
                 github_poll: !no_github,
+                offline_copy: true,
                 database,
             })
             .await

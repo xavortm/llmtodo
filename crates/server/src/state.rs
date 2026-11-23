@@ -56,6 +56,13 @@ pub struct Inner {
     /// Actors are never changed or deleted, so an entry stays true until
     /// `sync pull` swaps the database (LLM-469).
     pub actor_cache: std::sync::Mutex<std::collections::HashMap<String, Actor>>,
+    /// Offline mode on a shared database: the local copy, the outbox and
+    /// the Postgres pool (LLM-471). `None` on SQLite, and on Postgres when
+    /// the server keeps no copy.
+    pub shared: Option<Arc<crate::offline::Shared>>,
+    /// Builds the router, for replaying offline changes through it. Set by
+    /// `lib.rs`, so nothing outside `routes` names the routes module.
+    pub router: std::sync::OnceLock<fn(AppState) -> axum::Router>,
 }
 
 impl std::ops::Deref for AppState {
@@ -106,6 +113,60 @@ impl Inner {
 
     pub fn primary(&self) -> bool {
         self.is_primary.load(Ordering::SeqCst)
+    }
+
+    /// True while the server works on its offline copy (LLM-471).
+    pub fn is_offline(&self) -> bool {
+        self.shared.as_ref().is_some_and(|s| s.is_offline())
+    }
+
+    /// True on a shared database, online or offline.
+    pub fn is_shared(&self) -> bool {
+        self.shared.is_some() || self.pool().backend() == backend::Backend::Postgres
+    }
+
+    /// The Postgres pool, also while the server is offline and serves its
+    /// copy. `None` on SQLite, and before the first connection.
+    pub fn postgres_pool(&self) -> Option<Pool> {
+        match &self.shared {
+            Some(s) => s.pg(),
+            None => {
+                let p = self.pool();
+                (p.backend() == backend::Backend::Postgres).then_some(p)
+            }
+        }
+    }
+}
+
+impl AppState {
+    /// A second state over `pg` that replays offline changes (LLM-471). It
+    /// is a plain online server with no clients: its writes take their own
+    /// locks, and its live events reach nobody. The real server reloads its
+    /// clients after the replay.
+    pub fn replay_twin(&self, pg: Pool) -> AppState {
+        let (events, _) = broadcast::channel(16);
+        let twin = AppState(Arc::new(Inner {
+            pool_slot: std::sync::RwLock::new(pg),
+            host: self.host.clone(),
+            database_host: self.database_host.clone(),
+            data_dir: self.data_dir.clone(),
+            events,
+            sent_seq: tokio::sync::Mutex::new(i64::MAX),
+            started_at: self.started_at,
+            shutdown: Notify::new(),
+            is_primary: AtomicBool::new(true),
+            writes: Default::default(),
+            write_queue: Default::default(),
+            route_log: Default::default(),
+            last_request: std::sync::atomic::AtomicI64::new(Timestamp::now().as_second()),
+            actor_cache: Default::default(),
+            shared: None,
+            router: std::sync::OnceLock::new(),
+        }));
+        if let Some(r) = self.router.get() {
+            let _ = twin.router.set(*r);
+        }
+        twin
     }
 }
 
@@ -294,6 +355,12 @@ impl<'a> Write<'a> {
             queue,
             _guard: guard,
         })
+    }
+
+    /// True while the server works on its offline copy. An issue created
+    /// then gets a provisional key (LLM-471).
+    pub fn offline(&self) -> bool {
+        self.state.is_offline()
     }
 
     /// Marks this write as bookkeeping only, so a sync push need not carry it.
@@ -586,9 +653,20 @@ impl<'a> Write<'a> {
             }
             self.flush_events().await?;
         }
-        self.tx.commit().await?;
+        if let Err(e) = self.tx.commit().await {
+            // The commit may have landed before the connection dropped, so
+            // the request must not run again on the offline copy (LLM-471).
+            let mut err = ApiError::from(e);
+            if err.code == ErrorCode::DatabaseUnreachable {
+                err.details["commit_unknown"] = serde_json::Value::Bool(true);
+            }
+            return Err(err);
+        }
         // The next writer may start now. Sending events needs no write.
         drop(self.queue);
+        if pg && let Some(shared) = &self.state.shared {
+            shared.changed();
+        }
         if let Some(mine) = self.max_seq {
             // Writes commit in seq order, because each holds the write lock.
             // They can reach this point out of order, so each one sends
@@ -613,6 +691,12 @@ impl<'a> Write<'a> {
 /// Jumping to the newest seq instead would skip a local write that commits
 /// during the read, and its client would never hear of it.
 pub async fn send_remote(state: &AppState) {
+    if let Some(shared) = &state.shared {
+        shared.changed();
+    }
+    if state.is_offline() {
+        return;
+    }
     let mut sent = state.sent_seq.lock().await;
     send_after(state, &mut sent).await;
 }

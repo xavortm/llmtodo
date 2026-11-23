@@ -509,6 +509,7 @@ mod tests {
             port: 0,
             host: Some("mac-a".into()),
             github_poll: false,
+            offline_copy: false,
             database: crate::Database::Sqlite,
         })
         .await
@@ -575,6 +576,7 @@ mod tests {
             port: 0,
             host: Some("mac-a".into()),
             github_poll: false,
+            offline_copy: false,
             database: crate::Database::Sqlite,
         })
         .await

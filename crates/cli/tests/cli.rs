@@ -16,6 +16,7 @@ impl T {
             port: 0,
             host: None,
             github_poll: false,
+            offline_copy: false,
             database: llmtodo_server::Database::Sqlite,
         })
         .await

@@ -41,6 +41,7 @@ async fn start(dir: &std::path::Path) -> llmtodo_server::Running {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::test_database(dir).await,
     })
     .await

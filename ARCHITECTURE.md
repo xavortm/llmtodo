@@ -82,6 +82,7 @@ The server runs on SQLite or on a shared Postgres database (decision 50 in `SPEC
 - A pooled Postgres connection may read beside itself on other connections only with a permit, and half the pool has permits. So connections that wait for others can never hold the whole pool.
 - Copying a whole workspace between backends lives in `store/transfer.rs`. Postgres backups and `llmtodo db migrate` use it.
 - Outside the backend layer, code branches on the backend only for features that exist on one side: laptop sync, the file folder and the parallel reads on SQLite's side, and the listener, the job lock and the idle pause on Postgres's side.
+- Offline mode on Postgres (LLM-471) lives in `offline.rs`, at the `ops` level beside `github.rs`. Its SQL is in `store/outbox.rs` and `store/transfer.rs`. It runs as one router layer: offline, the layer runs writes on the SQLite copy and records them in the outbox. Replay sends each outbox row through the router again, on a second `AppState` over Postgres, so it takes the same `routes` and `ops` path as a live request. `lib.rs` hands it the router as a function in `Inner::router`, so `offline.rs` never names `routes`. Offline writes go through the SQLite side of `Write`.
 
 ## The app's layers
 

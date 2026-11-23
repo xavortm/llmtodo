@@ -10,6 +10,7 @@ pub mod import;
 pub mod issues;
 pub mod labels;
 pub mod live;
+pub mod outbox;
 pub mod projects;
 pub mod prune;
 pub mod questions;
@@ -137,6 +138,8 @@ fn handlers() -> Vec<(Method, &'static str, MethodRouter<AppState>)> {
         on::<ep::GithubSync, _>(github::sync_now),
         on::<ep::ImportLinear, _>(import::linear),
         on::<ep::File, _>(import::file),
+        on::<ep::Outbox, _>(outbox::list),
+        on::<ep::DropOutbox, _>(outbox::drop_row),
         on::<ep::Prune, _>(prune::prune),
     ]
 }
@@ -198,6 +201,7 @@ pub fn router(state: AppState) -> Router {
             )
         })
         .layer(middleware::from_fn_with_state(state.clone(), record_route))
+        .layer(middleware::from_fn_with_state(state.clone(), offline))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             name_lost_database,
@@ -218,6 +222,15 @@ async fn record_route(
         log.push(format!("{} {}", req.method(), path.as_str()));
     }
     next.run(req).await
+}
+
+/// Offline mode on a shared database (LLM-471): see `offline::layer`.
+async fn offline(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    crate::offline::layer(st, req, next).await
 }
 
 /// Names the shared database's host in a lost-database error, so the CLI

@@ -141,10 +141,23 @@ pub async fn create(
             store::teams::reserve_number(w.c(), n, &team.id).await?;
             n
         }
+        // Offline, the copy's counter may lag the shared one, and the
+        // number never shows: the key is provisional (LLM-471).
+        None if w.offline() => store::outbox::next_free_number(w.c(), &team.id).await?,
         None => store::teams::allocate_number(w.c(), &team.id).await?,
     };
-    let key = format!("{}-{number}", team.key);
-    let id = new_id();
+    // Offline, the shared database gives the real key on replay. Until
+    // then the issue has a provisional one, such as `LLM-~1` (LLM-471).
+    let key = if w.offline() {
+        let n = store::outbox::last_provisional(w.c(), &team.key).await? + 1;
+        llmtodo_core::IssueKey::provisional(&team.key, n).to_string()
+    } else {
+        format!("{}-{number}", team.key)
+    };
+    // A create made offline keeps its ID when it replays, and its
+    // provisional key stays as an alias.
+    let replayed = crate::offline::replay_issue();
+    let id = replayed.as_ref().map_or_else(new_id, |(id, _)| id.clone());
     let t = now();
     let completed = (!status.kind().is_open()).then(|| t.clone());
     let priority = req.priority.unwrap_or(Priority::None).as_number() as i64;
@@ -175,6 +188,12 @@ pub async fn create(
     // inserts wait for the end of the write (LLM-469).
     w.defer_insert(store::issues::add_key_query(&key, &id))
         .await?;
+    if let Some((_, Some(alias))) = &replayed
+        && alias != &key
+    {
+        w.defer_insert(store::issues::add_alias_query(alias, &id))
+            .await?;
+    }
     let actor = w.ctx.actor_id();
     let session = w.ctx.session().map(str::to_string);
     w.defer_insert(revisions::first_revision_query(
@@ -248,7 +267,14 @@ pub async fn create(
 }
 
 pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateIssue) -> ApiResult<String> {
-    let row = issues::resolve_live(w.c(), r).await?;
+    // An offline change to an issue trashed meanwhile still applies, so the
+    // trash keeps it (LLM-471).
+    let row = if crate::offline::replaying() {
+        let id = issues::resolve_id(w.c(), r).await?;
+        issues::row(w.c(), &id).await?
+    } else {
+        issues::resolve_live(w.c(), r).await?
+    };
     apply_fields(w, &row, req, false).await?;
 
     Ok(row.id)

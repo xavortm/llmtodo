@@ -235,6 +235,9 @@ pub enum Event {
         host: Option<String>,
         reason: String,
     },
+    /// The server went offline or online on its shared database, or the
+    /// count of changes that wait moved (LLM-471).
+    Sync(llmtodo_api_types::SyncState),
     /// The first load runs: `loaded` issues have come so far, of `total`
     /// once the server counted them. [`Event::SnapshotRest`] ends it.
     Loading {
@@ -1019,6 +1022,7 @@ async fn session(
                     state.pending.add(&event);
                 }
                 live::Signal::Reload => state.pending.reload = true,
+                live::Signal::Sync(sync) => send(events, Event::Sync(sync)),
                 // The server dropped some events for this socket. Read them
                 // from the activity log, which costs far less than a full
                 // snapshot. Later events on the socket may repeat some of
@@ -1878,6 +1882,7 @@ mod tests {
                 host: Some("db.example.com/llmtodo".into()),
                 round_trip_ms: 1.0,
                 unreachable: None,
+                sync: Default::default(),
             },
         };
         assert_eq!(Lost::from_health(&health), None);

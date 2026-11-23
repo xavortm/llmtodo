@@ -258,3 +258,47 @@ fn the_first_connect_to_a_shared_database_says_it_is_waking(cx: &mut TestAppCont
     });
     assert_eq!(wait(&view, cx), None);
 }
+
+/// LLM-471: offline on a shared database, the status bar says how many
+/// changes wait, then that they sync, then Live again.
+#[gpui_kit::test]
+fn offline_mode_shows_the_changes_that_wait(cx: &mut TestAppContext) {
+    use llmtodo_api_types::SyncState;
+    let (handle, view) = open(cx);
+    let set = |sync: SyncState, cx: &mut TestAppContext| {
+        view.update(cx, |this, cx| this.apply_event(Event::Sync(sync), cx));
+    };
+    assert!(!has(handle, "status-sync", cx));
+    set(
+        SyncState {
+            offline: true,
+            waiting: 3,
+            ..Default::default()
+        },
+        cx,
+    );
+    assert!(has(handle, "status-sync", cx));
+    assert!(matches!(
+        cx.read(|cx| view.read(cx).store().read(cx).connection.clone()),
+        Connection::Online(_)
+    ));
+    set(
+        SyncState {
+            offline: true,
+            syncing: true,
+            waiting: 3,
+            ..Default::default()
+        },
+        cx,
+    );
+    assert!(has(handle, "status-sync", cx));
+    set(
+        SyncState {
+            failed: 1,
+            ..Default::default()
+        },
+        cx,
+    );
+    assert!(!has(handle, "status-sync", cx));
+    assert!(has(handle, "status-refused", cx));
+}

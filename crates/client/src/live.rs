@@ -47,6 +47,9 @@ pub enum Signal {
     /// The server dropped some events for this socket. The database is the
     /// same, so the caller catches up from its last seq.
     Lagged,
+    /// The server went offline or online on its shared database, or the
+    /// count of waiting changes moved (LLM-471).
+    Sync(llmtodo_api_types::SyncState),
 }
 
 /// One live socket, after the hello.
@@ -133,6 +136,7 @@ impl Connection {
                         Ok(WsMessage::Event { event }) => return Ok(Signal::Event(event)),
                         Ok(WsMessage::Reload) => return Ok(Signal::Reload),
                         Ok(WsMessage::Lagged) => return Ok(Signal::Lagged),
+                        Ok(WsMessage::Sync { state }) => return Ok(Signal::Sync(state)),
                         _ => {}
                     }
                 }
@@ -384,6 +388,7 @@ where
         let behind = match conn.next().await.map_err(Ended::Lost)? {
             Signal::Event(e) => Some(e.seq) > q.after_seq,
             Signal::Reload | Signal::Lagged => true,
+            Signal::Sync(_) => false,
         };
         if behind && read_gap(q).await? {
             return Ok(());

@@ -51,6 +51,7 @@ impl Server {
             port: 0,
             host: Some(host.into()),
             github_poll: false,
+            offline_copy: false,
             database: llmtodo_server::Database::Postgres {
                 url: db_url.to_string(),
             },
@@ -457,6 +458,7 @@ async fn a_round_trip_through_postgres_keeps_every_row() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::Database::Sqlite,
     })
     .await

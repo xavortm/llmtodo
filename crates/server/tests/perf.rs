@@ -139,6 +139,7 @@ async fn list_with_large_dependency_graphs() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::test_database(dir.path()).await,
     })
     .await

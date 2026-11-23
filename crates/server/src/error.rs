@@ -69,6 +69,7 @@ impl IntoResponse for ApiError {
                 .as_str()
                 .unwrap_or(&self.message)
                 .to_string(),
+            commit_unknown: self.details["commit_unknown"].as_bool().unwrap_or(false),
         });
         let body = ErrorBody {
             error: ErrorDetail {
@@ -90,6 +91,9 @@ impl IntoResponse for ApiError {
 #[derive(Debug, Clone)]
 pub struct LostDatabase {
     pub reason: String,
+    /// The connection dropped during the commit, so the write may have
+    /// landed. Offline mode must not run it again on the copy (LLM-471).
+    pub commit_unknown: bool,
 }
 
 /// The reason a database error means the server lost its database, or

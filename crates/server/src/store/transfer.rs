@@ -84,7 +84,28 @@ impl Report {
     }
 }
 
+/// Each table's columns, per backend. One process runs one build, so the
+/// schema does not change while it runs, and a refresh of the offline copy
+/// skips the lookups (LLM-471).
+type ColumnCache =
+    std::sync::Mutex<std::collections::HashMap<(Backend, String), Vec<(String, Kind)>>>;
+static COLUMNS: std::sync::OnceLock<ColumnCache> = std::sync::OnceLock::new();
+
 async fn columns(c: &mut Conn, table: &str) -> ApiResult<Vec<(String, Kind)>> {
+    let cache = COLUMNS.get_or_init(Default::default);
+    let key = (c.backend(), table.to_string());
+    if let Some(cols) = cache.lock().expect("column cache").get(&key) {
+        return Ok(cols.clone());
+    }
+    let cols = load_columns(c, table).await?;
+    cache
+        .lock()
+        .expect("column cache")
+        .insert(key, cols.clone());
+    Ok(cols)
+}
+
+async fn load_columns(c: &mut Conn, table: &str) -> ApiResult<Vec<(String, Kind)>> {
     let rows: Vec<(String, String)> = match c.backend() {
         Backend::Sqlite => {
             backend::query_as("SELECT name, type FROM pragma_table_info(?) ORDER BY cid")
@@ -299,4 +320,196 @@ pub async fn counts(c: &mut Conn) -> ApiResult<Vec<(String, u64)>> {
         out.push((table.name.to_string(), n as u64));
     }
     Ok(out)
+}
+
+/// The rows of a set of issues, table by table, for the offline copy's
+/// refresh (LLM-471). `{ids}` stands for the list of issue IDs. A refresh
+/// deletes in reverse order and copies in this order, so the subqueries
+/// that name `comments` and `work_sessions` still find their rows.
+pub const ISSUE_ROWS: &[(&str, &str)] = &[
+    ("issues", "id IN ({ids})"),
+    ("issue_keys", "issue_id IN ({ids})"),
+    ("issue_labels", "issue_id IN ({ids})"),
+    ("relations", "from_id IN ({ids}) OR to_id IN ({ids})"),
+    ("attachments", "issue_id IN ({ids})"),
+    ("comments", "issue_id IN ({ids})"),
+    (
+        "revisions",
+        "(entity_type = 'issue' AND entity_id IN ({ids})) OR (entity_type = 'comment' AND entity_id IN (SELECT id FROM comments WHERE issue_id IN ({ids})))",
+    ),
+    ("claims", "issue_id IN ({ids})"),
+    ("work_sessions", "issue_id IN ({ids})"),
+    (
+        "work_session_usage",
+        "work_session_id IN (SELECT id FROM work_sessions WHERE issue_id IN ({ids}))",
+    ),
+    ("session_notes", "issue_id IN ({ids})"),
+    ("analyzing", "issue_id IN ({ids})"),
+    ("questions", "issue_id IN ({ids})"),
+    ("reviews", "issue_id IN ({ids})"),
+];
+
+/// The tables that hold no issue rows: the catalog, documents and views.
+/// They are small, so a refresh copies them whole when any of them changed.
+pub const CATALOG_ROWS: &[&str] = &[
+    "settings",
+    "actors",
+    "teams",
+    "statuses",
+    "labels",
+    "projects",
+    "project_teams",
+    "project_repos",
+    "milestones",
+    "documents",
+    "saved_views",
+];
+
+/// A filter from [`ISSUE_ROWS`], with one placeholder per ID for each
+/// `{ids}`.
+fn scoped(filter: &str, ids: &[String]) -> (String, Vec<Arg>) {
+    let marks = vec!["?"; ids.len()].join(", ");
+    let n = filter.matches("{ids}").count();
+    let args = (0..n)
+        .flat_map(|_| ids.iter().map(|i| Arg::Text(Some(i.clone()))))
+        .collect();
+    (filter.replace("{ids}", &marks), args)
+}
+
+/// Replaces the rows of `table` that match `filter` in `to` with the ones
+/// in `from`. `filter` is constant SQL with `?` placeholders for `args`.
+/// The target should have foreign keys off, since rows arrive in table
+/// order and a parent may come later.
+async fn replace_where(
+    from: &mut Conn,
+    to: &mut Conn,
+    table: &'static str,
+    filter: &str,
+    args: &[Arg],
+) -> ApiResult<u64> {
+    let order = TABLES
+        .iter()
+        .find(|t| t.name == table)
+        .map_or("rowid", |t| t.order);
+    let source = columns(from, table).await?;
+    let target = columns(to, table).await?;
+    let cols: Vec<(String, Kind)> = source
+        .into_iter()
+        .filter(|(n, _)| target.iter().any(|(t, _)| t == n))
+        .collect();
+    let list = cols
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let local = if table == "settings" {
+        format!(" AND {LOCAL_SETTINGS}")
+    } else {
+        String::new()
+    };
+    let mut delete = backend::QueryBuilder::new("");
+    delete.push(crate::sql!("DELETE FROM {table} WHERE ({filter}){local}").as_str());
+    let mut q = delete.build();
+    for a in args {
+        q = q.bind(a.clone());
+    }
+    q.execute(&mut *to).await?;
+    let mut copied = 0u64;
+    let mut offset = 0i64;
+    loop {
+        let mut select = backend::QueryBuilder::new("");
+        select.push(
+            crate::sql!(
+                "SELECT {list} FROM {table} WHERE ({filter}){local} ORDER BY {order} LIMIT ? OFFSET ?"
+            )
+            .as_str(),
+        );
+        let mut q = select.build();
+        for a in args {
+            q = q.bind(a.clone());
+        }
+        let rows = q.bind(PAGE).bind(offset).fetch_all(&mut *from).await?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut insert = backend::QueryBuilder::new("");
+        insert.push(crate::sql!("INSERT INTO {table} ({list}) VALUES ").as_str());
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                insert.push(", ");
+            }
+            insert.push("(");
+            for (j, (col, kind)) in cols.iter().enumerate() {
+                if j > 0 {
+                    insert.push(", ");
+                }
+                insert.push_bind(read(row, col, *kind)?);
+            }
+            insert.push(")");
+        }
+        insert.build().execute(&mut *to).await?;
+        copied += rows.len() as u64;
+        if (rows.len() as i64) < PAGE {
+            break;
+        }
+        offset += PAGE;
+    }
+    Ok(copied)
+}
+
+/// Copies the rows of `issue_ids` from `from` into `to`, in place of the
+/// ones `to` holds. An issue that `from` no longer has, such as a pruned
+/// one, leaves `to` too.
+pub async fn refresh_issues(from: &mut Conn, to: &mut Conn, issue_ids: &[String]) -> ApiResult<()> {
+    for chunk in issue_ids.chunks(100) {
+        // Delete children first, then copy parents first.
+        for (table, filter) in ISSUE_ROWS.iter().rev() {
+            let (f, args) = scoped(filter, chunk);
+            let mut q = backend::QueryBuilder::new("");
+            q.push(crate::sql!("DELETE FROM {table} WHERE {f}").as_str());
+            let mut q = q.build();
+            for a in args {
+                q = q.bind(a);
+            }
+            q.execute(&mut *to).await?;
+        }
+        for (table, filter) in ISSUE_ROWS {
+            let (f, args) = scoped(filter, chunk);
+            replace_where(from, to, table, &f, &args).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies the teams whole. A new issue or a team move advances its team's
+/// number counter, which an issue's own rows do not carry.
+pub async fn refresh_teams(from: &mut Conn, to: &mut Conn) -> ApiResult<()> {
+    replace_where(from, to, "teams", "1 = 1", &[]).await?;
+    Ok(())
+}
+
+/// Copies the catalog tables whole, and the revisions of documents.
+pub async fn refresh_catalog(from: &mut Conn, to: &mut Conn) -> ApiResult<()> {
+    for table in CATALOG_ROWS {
+        replace_where(from, to, table, "1 = 1", &[]).await?;
+    }
+    replace_where(from, to, "revisions", "entity_type = 'document'", &[]).await?;
+    Ok(())
+}
+
+/// Copies the activity rows after `seq`, up to `upto`.
+pub async fn refresh_activity(
+    from: &mut Conn,
+    to: &mut Conn,
+    seq: i64,
+    upto: i64,
+) -> ApiResult<u64> {
+    replace_where(
+        from,
+        to,
+        "activity",
+        "seq > ? AND seq <= ?",
+        &[Arg::Int(Some(seq)), Arg::Int(Some(upto))],
+    )
+    .await
 }

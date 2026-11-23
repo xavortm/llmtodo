@@ -97,11 +97,12 @@ fn nothing_outside_routes_imports_routes() {
     let found: Vec<_> = code_lines(&src())
         .into_iter()
         .filter(|(f, _, t)| {
-            // lib.rs mounts the router, which is the one allowed use.
+            // lib.rs mounts the router, and hands it to offline replay,
+            // which is the one allowed use.
             !f.starts_with(&routes)
                 && t.contains("routes::")
                 && !t.contains("api_types::routes::")
-                && !(f.ends_with("lib.rs") && t.contains("routes::router("))
+                && !(f.ends_with("lib.rs") && t.contains("routes::router"))
         })
         .collect();
     fail("only lib.rs may name routes", &found);

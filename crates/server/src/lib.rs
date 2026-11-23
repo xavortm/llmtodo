@@ -15,6 +15,8 @@ pub mod delta;
 pub mod error;
 pub mod github;
 pub mod import;
+pub mod merge;
+pub mod offline;
 pub mod ops;
 pub mod routes;
 pub mod state;
@@ -49,6 +51,10 @@ pub struct Config {
     /// Where the data lives: the SQLite file in the data folder, or a shared
     /// Postgres database (LLM-450).
     pub database: Database,
+    /// On a shared database, keep a local copy and work on it while the
+    /// database is out of reach (LLM-471). `llmtodo server run` turns it
+    /// on. Tests leave it off unless they test offline mode.
+    pub offline_copy: bool,
 }
 
 impl Config {
@@ -59,6 +65,7 @@ impl Config {
             host: None,
             github_poll: true,
             database: Database::Sqlite,
+            offline_copy: true,
         }
     }
 }
@@ -203,14 +210,19 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         );
     }
 
-    let pool = match &config.database {
-        Database::Sqlite => db::open(&data_dir).await?,
-        Database::Postgres { url } => db::open_postgres(url, Some(&data_dir)).await?,
+    let (pool, shared) = match &config.database {
+        Database::Sqlite => (db::open(&data_dir).await?, None),
+        Database::Postgres { url } if config.offline_copy => {
+            let s = offline::start(url, &data_dir).await?;
+            (s.pool, Some(Arc::new(s.shared)))
+        }
+        Database::Postgres { url } => (db::open_postgres(url, Some(&data_dir)).await?, None),
     };
     store::actors::seed(&pool).await?;
     // A shared database has no primary: every server on it writes. The
     // flag belongs to laptop handoff, which only SQLite has.
     let is_primary = pool.backend() == Backend::Postgres
+        || shared.is_some()
         || db::get_setting(&pool, "sync_is_primary")
             .await?
             .is_none_or(|v| v != "0");
@@ -236,11 +248,17 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         route_log: Default::default(),
         last_request: std::sync::atomic::AtomicI64::new(Timestamp::now().as_second()),
         actor_cache: Default::default(),
+        shared,
+        router: std::sync::OnceLock::new(),
     }));
+    let _ = state.router.set(routes::router);
 
-    ops::claims::sweep_review_claims(&state)
-        .await
-        .map_err(|e| anyhow::anyhow!("end claims on review tickets: {}", e.message))?;
+    // Offline, the copy takes no writes outside the outbox.
+    if !state.is_offline() {
+        ops::claims::sweep_review_claims(&state)
+            .await
+            .map_err(|e| anyhow::anyhow!("end claims on review tickets: {}", e.message))?;
+    }
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", config.port))
         .await
@@ -261,9 +279,10 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
     let app = routes::router(state.clone());
     let st = state.clone();
     tokio::spawn(backup_loop(state.clone()));
-    if state.pool().backend() == Backend::Postgres {
+    if state.is_shared() {
         tokio::spawn(db::listen_loop(state.clone()));
     }
+    offline::spawn(&state);
     if config.github_poll {
         tokio::spawn(github::poll_loop(state.clone()));
     }
@@ -282,6 +301,14 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
             std::fs::remove_file(&path).ok();
         }
         st.pool().close().await;
+        if let Some(shared) = &st.shared {
+            if let Some(p) = shared.pg() {
+                p.close().await;
+            }
+            if let Some(m) = shared.mirror() {
+                m.close().await;
+            }
+        }
         tracing::info!("llmtodo server stopped");
         Ok(())
     });
@@ -323,6 +350,10 @@ async fn backup_loop(state: AppState) {
             _ = state.shutdown.notified() => return,
         }
         first = false;
+        // Offline, the pool is the local copy, which is no backup.
+        if state.is_offline() {
+            continue;
+        }
         let has_data = match state.pool().acquire().await {
             Ok(mut c) => store::issues::count_all(&mut c).await.unwrap_or(0),
             Err(_) => 0,

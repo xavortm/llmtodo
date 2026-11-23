@@ -10,7 +10,7 @@ The full guide to the `llmtodo` CLI for agents. `SKILL.md` in this folder has th
 - **Set a session ID** before you claim: `export LLMTODO_SESSION=$CLAUDE_CODE_SESSION_ID`. The CLI reads Claude Code's session ID on its own, but a release must match the session that claimed.
 - **Give each subagent its own session.** Subagents can inherit the parent's session ID, and a claim by the same session succeeds again with `changed: false`. Set `LLMTODO_SESSION=$CLAUDE_CODE_SESSION_ID-<subagent-name>` in each subagent's brief. A repeated claim prints a warning on stderr.
 - **Never prompt.** Pass `--no-input`. Commands that delete ask first, so pass `-y` when you mean it.
-- **Exit codes are stable.** 3 not found, 4 claim held by another session, 5 stale version, 6 validation, 10 patch matched zero or several times. The full list is in the reference.
+- **Exit codes are stable.** 3 not found, 4 claim held by another session, 5 stale version, 6 validation, 10 patch matched zero or several times, 12 needs the network (offline on a shared database). The full list is in the reference.
 - **Agents may do anything except prune.** Trash and restore are fine. Prune is the owner's.
 - **Workflow states are fields, not labels.** Mark a ticket ready with `-w agent`, never with a label such as `ready-for-agent`. The section "Use fields for workflow states" lists the field for each state.
 - `.llmtodo.toml` at the git root sets the default team and project, so most commands need neither flag. `llmtodo init` writes it. See "Set up a repo" in `SKILL.md`.
@@ -363,7 +363,17 @@ Rules:
 - **Use the direct connection string.** On Neon, turn off connection pooling in the Connect dialog. The host must not contain `-pooler`, because live updates need a direct connection.
 - **Only the main data folder.** The choice in `config.toml` applies only to the main data folder. A folder set with `LLMTODO_DATA_DIR` for a test or preview always keeps its own SQLite file. `db use` and `db migrate` refuse there with exit code 6.
 - **Laptop handoff is SQLite only.** `llmtodo sync` refuses on a shared database, because every laptop already sees the same data.
-- **Offline.** On Postgres a laptop with no network has no tracker. The server never falls back to SQLite on its own.
+- **Offline.** On Postgres the server keeps a local copy, `mirror.db`, in the data folder. With no network it works on the copy. Reads and most writes go on as usual. Writes wait in an outbox and replay by themselves when the network is back. `llmtodo db status` shows `offline` and `waiting`. See "Work offline" below.
+
+### Work offline
+
+What works offline on a shared database, and what does not:
+
+- **Works:** every read, and every write except those below: create, update, comment, relations, order, labels, projects, documents, notes, and the review section.
+- **Online only:** `issue claim`, `issue claim --steal`, `issue release`, `sync`, `db migrate`, `db use`, `prune`, `import linear` and `github sync`. They fail with exit code 12, `needs_network`. Two laptops could both win a claim made offline. Wait until you are online, then try again. Do not work on a ticket you could not claim.
+- **New issues** get a provisional key, such as `LLM-~1`. Use it as usual. After replay the issue gets its real key, and the provisional key still resolves.
+- **Clashes.** A field changed on both laptops keeps the later change, and the activity log records a `sync_conflict` event. A description changed on both laptops merges. When both changed the same lines, the issue gets a `+++ Sync conflict` section with the offline text, and waits on the owner. Comments always apply.
+- **Refused changes.** A change the shared database refuses on replay stays in the outbox, marked failed. `llmtodo db outbox` lists the outbox. `llmtodo db outbox drop <id> -y` discards one row. Drop a row only after the owner says so.
 
 ## Search
 

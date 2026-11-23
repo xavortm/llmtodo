@@ -147,6 +147,7 @@ async fn requests_on_a_remote_database() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::Database::Postgres { url: slow_url },
     })
     .await

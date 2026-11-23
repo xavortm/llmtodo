@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
+use llmtodo_api_types::{ErrorCode, ErrorDetail};
 use llmtodo_client::database::{self as dbcfg, Backend};
 use serde_json::json;
 
@@ -58,6 +59,22 @@ pub enum DbCmd {
         #[arg(long)]
         replace: bool,
     },
+    /// List the changes made offline on a shared database: the ones that
+    /// wait to replay, and the ones the shared database refused.
+    Outbox {
+        #[command(subcommand)]
+        cmd: Option<OutboxCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum OutboxCmd {
+    /// Discard one change from the outbox, such as one the shared database
+    /// refused. Only after the owner says so. It asks first; pass `-y`.
+    Drop {
+        /// The row's `id` from `llmtodo db outbox`.
+        id: i64,
+    },
 }
 
 pub async fn run(app: &App, cmd: DbCmd) -> CliResult {
@@ -71,7 +88,53 @@ pub async fn run(app: &App, cmd: DbCmd) -> CliResult {
         }
         DbCmd::Use { backend } => use_backend(app, backend.backend()).await,
         DbCmd::Migrate { to, replace } => migrate(app, to.backend(), replace).await,
+        DbCmd::Outbox { cmd: None } => {
+            let c = app.client().await?;
+            app.out.ser(&c.outbox().await?);
+            Ok(())
+        }
+        DbCmd::Outbox {
+            cmd: Some(OutboxCmd::Drop { id }),
+        } => {
+            app.confirm(&format!(
+                "Discard offline change {id}? It never reaches the shared database."
+            ))?;
+            let c = app.client().await?;
+            app.out.ser(&c.drop_outbox(id).await?);
+            Ok(())
+        }
     }
+}
+
+/// `db use` and `db migrate` stop the server and open the databases
+/// themselves. While the server works offline, or holds offline changes,
+/// that would set the changes aside, so both refuse (LLM-471).
+async fn check_online(app: &App) -> CliResult {
+    let Some((_, health)) =
+        llmtodo_client::find_server(&app.data_dir, &app.detected.identity.context).await
+    else {
+        return Ok(());
+    };
+    let sync = health.database.sync;
+    if !sync.offline && sync.waiting == 0 && sync.failed == 0 {
+        return Ok(());
+    }
+    let message = if sync.offline {
+        "This command needs the shared database. Try again when you are online.".to_string()
+    } else {
+        format!(
+            "{} offline changes wait in the outbox; let them replay, or drop them with `llmtodo db outbox drop`, first",
+            sync.waiting + sync.failed
+        )
+    };
+    Err(CliError::Client(llmtodo_client::ClientError::Api {
+        status: ErrorCode::NeedsNetwork.http_status(),
+        detail: ErrorDetail {
+            code: ErrorCode::NeedsNetwork,
+            message,
+            details: json!({ "offline": sync.offline, "waiting": sync.waiting, "failed": sync.failed }),
+        },
+    }))
 }
 
 async fn status(app: &App) -> CliResult {
@@ -229,6 +292,7 @@ fn current(_app: &App) -> CliResult<Backend> {
 
 async fn use_backend(app: &App, to: Backend) -> CliResult {
     check_main_folder(app)?;
+    check_online(app).await?;
     let mut moved = None;
     if to == Backend::Postgres {
         let url = stored_url()?;
@@ -261,6 +325,7 @@ async fn use_backend(app: &App, to: Backend) -> CliResult {
 
 async fn migrate(app: &App, to: Backend, replace: bool) -> CliResult {
     check_main_folder(app)?;
+    check_online(app).await?;
     let from = current(app)?;
     if from == to {
         return Err(CliError::Validation(format!(

@@ -295,6 +295,9 @@ endpoints! {
     // import and files
     ImportLinear: Post "/v1/import/linear" [long], "Import or update everything from Linear. Idempotent by Linear ID", (t::LinearImportRequest), (t::ImportReport), "import linear";
     File: Get "/v1/files/{hash}", "A stored file, such as an image copied from Linear", -, -, "file get";
+    // offline mode (LLM-471)
+    Outbox: Get "/v1/outbox", "Changes made offline that wait to replay, and those the shared database refused", -, (t::Outbox), "db outbox";
+    DropOutbox: Delete "/v1/outbox/{id}", "Discard one change from the outbox. Only after the owner says so", -, (t::Outbox), "db outbox drop";
     // admin
     Prune: Post "/v1/prune" [long], "Permanently delete trashed issues or old revisions. Owner only", (t::PruneRequest), (t::PruneReport), "prune";
 }

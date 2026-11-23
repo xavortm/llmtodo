@@ -150,6 +150,7 @@ open_enum!(
         PrMergedStatus => "pr_merged_status",
         SessionNote => "session_note",
         Settings => "settings",
+        SyncConflict => "sync_conflict",
     }
 );
 

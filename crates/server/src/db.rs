@@ -157,6 +157,19 @@ pub async fn open_postgres(url: &str, data_dir: Option<&Path>) -> anyhow::Result
     Ok(pool)
 }
 
+/// True when one plain connection to `url` opens within `wait`. Offline
+/// mode tries this before it opens a pool again (LLM-471).
+pub async fn reachable(url: &str, wait: Duration) -> bool {
+    use sqlx::Connection as _;
+    match tokio::time::timeout(wait, sqlx::PgConnection::connect(url)).await {
+        Ok(Ok(c)) => {
+            c.close().await.ok();
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A connection error without the URL, which sqlx can include.
 fn pg_error(e: &sqlx::Error) -> String {
     match e {
@@ -228,8 +241,10 @@ pub fn ts(t: Timestamp) -> String {
     t.strftime("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
+/// The time of this write. A change made offline keeps its own time when
+/// it replays on the shared database (LLM-471).
 pub fn now() -> String {
-    ts(Timestamp::now())
+    crate::offline::replay_time().unwrap_or_else(|| ts(Timestamp::now()))
 }
 
 pub fn parse_ts(s: &str) -> Timestamp {
@@ -363,6 +378,27 @@ pub async fn open_sqlite_file(path: &Path) -> anyhow::Result<Pool> {
         .with_context(|| format!("open database {}", path.display()))?;
     MIGRATOR.run(&sqlite).await.context("run migrations")?;
     Ok(Pool::Sqlite(sqlite))
+}
+
+/// Opens the offline copy of a shared database, a SQLite file with the
+/// same schema plus the outbox (LLM-471). It serves every request while
+/// the server is offline, so it gets a full pool.
+pub async fn open_mirror_file(path: &Path) -> anyhow::Result<Pool> {
+    let sqlite = SqlitePoolOptions::new()
+        .max_connections(8)
+        .connect_with(options(path))
+        .await
+        .with_context(|| format!("open the offline copy {}", path.display()))?;
+    MIGRATOR
+        .run(&sqlite)
+        .await
+        .context("run migrations on the offline copy")?;
+    let pool = Pool::Sqlite(sqlite);
+    let mut c = pool.acquire().await?;
+    crate::store::outbox::create_table(&mut c)
+        .await
+        .map_err(|e| anyhow::anyhow!("create the outbox: {}", e.message))?;
+    Ok(pool)
 }
 
 /// Copies a whole database into a new SQLite file at `path`. A Postgres
@@ -532,11 +568,25 @@ pub async fn listen_loop(state: crate::state::AppState) {
     let mut pause = Duration::from_millis(500);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     loop {
-        let Some(pg) = state.pool().postgres().cloned() else {
-            return;
+        // Offline, nothing listens. The pool is replaced when the network
+        // comes back, so the loop picks up the new one (LLM-471).
+        let Some(pg) = state.postgres_pool().and_then(|p| p.postgres().cloned()) else {
+            if state.shared.is_none() {
+                return;
+            }
+            tokio::select! {
+                _ = tick.tick() => continue,
+                _ = &mut shutdown => return,
+            }
         };
-        if pg.is_closed() {
-            return;
+        if state.is_offline() || pg.is_closed() {
+            if state.shared.is_none() {
+                return;
+            }
+            tokio::select! {
+                _ = tick.tick() => continue,
+                _ = &mut shutdown => return,
+            }
         }
         // Wait for a live client.
         if state.events.receiver_count() == 0 {
@@ -570,8 +620,11 @@ pub async fn listen_loop(state: crate::state::AppState) {
                         // The stop closes the pool, and an open listener
                         // would keep that close waiting.
                         _ = tick.tick() => {
-                            if pg.is_closed() {
-                                return;
+                            if pg.is_closed() || state.is_offline() {
+                                if state.shared.is_none() {
+                                    return;
+                                }
+                                break;
                             }
                             if state.events.receiver_count() == 0 {
                                 alone += Duration::from_millis(250);

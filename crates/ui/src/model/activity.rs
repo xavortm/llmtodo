@@ -12,6 +12,35 @@ use std::time::{Duration, Instant};
 
 use crate::model::data::IssueId;
 
+/// The status bar's text for offline mode on a shared database (LLM-471):
+/// `Offline · 3 changes waiting`, then `Syncing 3…`. `None` while online
+/// with nothing to replay, when the bar shows `Live`.
+pub fn sync_text(s: llmtodo_api_types::SyncState) -> Option<String> {
+    let changes = |n: u64| match n {
+        1 => "1 change".to_string(),
+        n => format!("{n} changes"),
+    };
+    if s.syncing {
+        Some(format!("Syncing {}…", s.waiting))
+    } else if s.offline {
+        Some(match s.waiting {
+            0 => "Offline".to_string(),
+            n => format!("Offline · {} waiting", changes(n)),
+        })
+    } else {
+        None
+    }
+}
+
+/// The status bar's note for offline changes the shared database refused.
+pub fn refused_text(s: llmtodo_api_types::SyncState) -> Option<String> {
+    match s.failed {
+        0 => None,
+        1 => Some("1 change refused".into()),
+        n => Some(format!("{n} changes refused")),
+    }
+}
+
 /// How long a wait lasts before the app shows it.
 pub const SHOW_AFTER: Duration = Duration::from_millis(400);
 
@@ -215,6 +244,37 @@ pub fn loading_text(loaded: u64, total: Option<u64>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn offline_mode_reads_as_one_short_line() {
+        use super::{refused_text, sync_text};
+        use llmtodo_api_types::SyncState;
+        let s = |offline, syncing, waiting, failed| SyncState {
+            offline,
+            syncing,
+            waiting,
+            failed,
+        };
+        assert_eq!(sync_text(s(false, false, 0, 0)), None, "Live shows instead");
+        assert_eq!(sync_text(s(true, false, 0, 0)).as_deref(), Some("Offline"));
+        assert_eq!(
+            sync_text(s(true, false, 1, 0)).as_deref(),
+            Some("Offline · 1 change waiting")
+        );
+        assert_eq!(
+            sync_text(s(true, false, 3, 0)).as_deref(),
+            Some("Offline · 3 changes waiting")
+        );
+        assert_eq!(
+            sync_text(s(true, true, 3, 0)).as_deref(),
+            Some("Syncing 3…")
+        );
+        assert_eq!(
+            refused_text(s(false, false, 0, 2)).as_deref(),
+            Some("2 changes refused")
+        );
+        assert_eq!(refused_text(s(false, false, 0, 0)), None);
+    }
+
     use super::*;
 
     fn id(n: u128) -> IssueId {

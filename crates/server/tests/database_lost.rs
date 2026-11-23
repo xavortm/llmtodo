@@ -84,6 +84,7 @@ async fn a_lost_database_is_named_and_the_server_keeps_answering() {
         port: 0,
         host: None,
         github_poll: false,
+        offline_copy: false,
         database: llmtodo_server::Database::Postgres { url: proxied },
     })
     .await
