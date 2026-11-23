@@ -101,6 +101,9 @@ pub async fn open(data_dir: &Path) -> anyhow::Result<SqlitePool> {
     crate::ops::questions::backfill(&pool)
         .await
         .map_err(|e| anyhow::anyhow!("fill the questions table: {}", e.message))?;
+    crate::store::revisions::compact(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("store old revisions as deltas: {}", e.message))?;
     Ok(pool)
 }
 

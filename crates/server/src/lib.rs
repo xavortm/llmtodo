@@ -11,6 +11,7 @@ macro_rules! sql {
 }
 
 pub mod db;
+pub mod delta;
 pub mod error;
 pub mod github;
 pub mod import;

@@ -134,7 +134,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 - **Document**: Markdown inside a project.
 - **Actor**, **claim** and **work session**: see the section on actors below.
 - **Saved view**: a named issue query. The app and `issue query --view <name>` both use it.
-- **Revision**: a full copy of a description, document or comment body at one version.
+- **Revision**: the text of a description, document or comment body at one version.
 - **Activity event**: one field change, with the actor, the session and the time.
 - **Settings**: workspace name, default team, GitHub poll interval and similar values.
 
@@ -283,7 +283,7 @@ Gap review additions:
 - In the app (LLM-301), each level has one fixed Lucide icon: an octagon alert for urgent and signal bars for high, medium and low. The list's Priority column shows the icon, and nothing for none. It hides after the waiting column when room runs short. The right-click menu, the task view's Priority button, `p` and `:priority <level>` set it, on every marked task too. `:sort priority`, `:group priority` and the filter word `priority:<level>` work like their status versions. A saved view keeps one priority, because the server's query takes one.
 - An issue takes at most one label from each label group.
 - Attachments are links (PRs, commits, URLs) and local file paths.
-- The server stores every description and document revision, plus an activity log of field changes. `issue history` lists revisions. `issue restore --revision` brings one back.
+- The server stores every description and document revision, plus an activity log of field changes. `issue history` lists revisions. `issue restore --revision` brings one back. Only the newest revision and every 32nd version are stored in full. Each other revision is a line delta against the next newer one, so an edit costs about the size of the change (LLM-346).
 - Writes that change a description or document carry the version they were based on. The server rejects a write based on an old version. Status, label and assignee changes skip this check.
 - A description patch replaces a section, chosen by heading text or `+++` title, or replaces an exact string that must match once.
 
