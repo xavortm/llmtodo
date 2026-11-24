@@ -93,7 +93,7 @@ async fn free_for_agents(w: &mut Write<'_>, row: &IssueRow, reason: &str) -> Api
 pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<String> {
     let row = issues::resolve_live(w.c(), r).await?;
     let key = row.key.clone();
-    let status = teams::status_by_id(w.c(), &row.status_id).await?;
+    let status = w.status(&row.status_id).await?;
     if !status.review {
         return Err(refuse(
             "not_in_review",
@@ -139,7 +139,8 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             apply_waiting_on(w, &row, Some(WaitingOn::Agent), false).await?;
         }
         ReviewVerdict::Approved => {
-            let done = teams::first_of_type(w.c(), &row.team_id, StatusType::Completed)
+            let done = w
+                .first_of_type(&row.team_id, StatusType::Completed)
                 .await?
                 .ok_or_else(|| {
                     ApiError::validation(format!("{key}'s team has no completed status"))
@@ -147,7 +148,8 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             set_status(w, &row, &done).await?;
         }
         ReviewVerdict::ChangesRequested => {
-            let todo = teams::first_of_type(w.c(), &row.team_id, StatusType::Unstarted)
+            let todo = w
+                .first_of_type(&row.team_id, StatusType::Unstarted)
                 .await?
                 .ok_or_else(|| {
                     ApiError::validation(format!("{key}'s team has no unstarted status"))
@@ -159,4 +161,30 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
     }
     touch_updated(w, &row.id).await?;
     Ok(row.id)
+}
+
+/// Answers the reviews of several issues in one write, in order (LLM-518).
+/// Each answer runs in its own savepoint, so a refused one leaves the
+/// others in place. It returns the issue ID or the refusal of each. A lost
+/// database ends the whole write.
+pub async fn submit_many(
+    w: &mut Write<'_>,
+    answers: Vec<ReviewItem>,
+) -> ApiResult<Vec<(String, ApiResult<String>)>> {
+    let mut out = Vec::with_capacity(answers.len());
+    for item in answers {
+        let mark = w.savepoint().await?;
+        match submit(w, &item.issue, item.review).await {
+            Ok(id) => {
+                w.release().await?;
+                out.push((item.issue, Ok(id)));
+            }
+            Err(e) if e.code == ErrorCode::DatabaseUnreachable => return Err(e),
+            Err(e) => {
+                w.rollback_to(mark).await?;
+                out.push((item.issue, Err(e)));
+            }
+        }
+    }
+    Ok(out)
 }

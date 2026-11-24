@@ -262,6 +262,11 @@ async fn every_route_is_called_by_its_command() {
         "issue review answer",
         &["issue", "review", "answer", "LLM-1", "approve"],
     );
+    // Several keys go in one write (LLM-518).
+    h.run(
+        "issue review answer",
+        &["issue", "review", "answer", "LLM-1", "LLM-2", "approve"],
+    );
     let c = h.run(
         "issue comment add",
         &["issue", "comment", "add", "LLM-1", "--body", "hi"],

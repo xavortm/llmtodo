@@ -758,3 +758,64 @@ async fn the_migration_ends_claims_on_review_tickets() {
     assert!(v["claim"].is_object());
     t.stop().await;
 }
+
+/// LLM-518: one request answers several reviews. A refused answer leaves
+/// the others in place.
+#[tokio::test]
+async fn one_request_answers_many_reviews() {
+    let t = T::new().await;
+    let a = t.issue(SECTION).await;
+    let b = t.issue(SECTION).await;
+    let c = t.issue(SECTION).await;
+    let not_in_review = t.issue(SECTION).await;
+    for k in [&a, &b, &c] {
+        t.to_review(k).await;
+    }
+    let v = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/reviews",
+            json!({ "answers": [
+                { "issue": a, "verdict": "approved" },
+                { "issue": not_in_review, "verdict": "approved" },
+                { "issue": b, "verdict": "changes_requested" },
+                { "issue": "ALX-999", "verdict": "approved" },
+                { "issue": c, "verdict": "approved", "feedback": "Nice." },
+            ] }),
+        )
+        .await;
+    let out = v.as_array().unwrap();
+    assert_eq!(out.len(), 5, "{v}");
+    assert_eq!(out[0]["issue"], a.as_str());
+    assert_eq!(out[0]["result"]["status"]["name"], "Done", "{v}");
+    assert_eq!(out[1]["error"]["details"]["reason"], "not_in_review");
+    assert_eq!(out[2]["error"]["details"]["reason"], "feedback_missing");
+    assert_eq!(out[3]["error"]["code"], "not_found");
+    assert_eq!(out[4]["result"]["key"], c.as_str());
+    assert_eq!(out[4]["result"]["status"]["name"], "Done");
+
+    // The refused answer wrote nothing, and B still waits for one.
+    let r = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{b}/review"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r["status"], "User review");
+    assert_eq!(r["answers"], json!([]));
+    let (s, v) = t.answer(&b, "approved", "").await;
+    assert!(s < 300, "{v}");
+    let r = t
+        .ok(
+            &owner(),
+            "GET",
+            &format!("/v1/issues/{c}/review"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r["answers"][0]["feedback"], "Nice.");
+    t.stop().await;
+}

@@ -324,6 +324,15 @@ pub struct Write<'a> {
     _guard: OwnedRwLockReadGuard<()>,
 }
 
+/// What a [`Write`] held when a savepoint opened.
+pub struct Mark {
+    pending: usize,
+    max_seq: Option<i64>,
+    updated: usize,
+    deferred: usize,
+    touched: usize,
+}
+
 impl<'a> Write<'a> {
     pub async fn begin(state: &AppState, ctx: &'a Ctx) -> ApiResult<Self> {
         // Take the guard before the check, so a pull cannot start between them.
@@ -427,6 +436,47 @@ impl<'a> Write<'a> {
         } else {
             q.execute(&mut self.tx).await?;
         }
+        Ok(())
+    }
+
+    /// Opens a savepoint, so one step of a batch can fail and leave the
+    /// others in place (LLM-518). End it with [`Write::release`] or
+    /// [`Write::rollback_to`].
+    pub async fn savepoint(&mut self) -> ApiResult<Mark> {
+        backend::query("SAVEPOINT step")
+            .execute(&mut self.tx)
+            .await?;
+        Ok(Mark {
+            pending: self.pending.len(),
+            max_seq: self.max_seq,
+            updated: self.updated.len(),
+            deferred: self.deferred.len(),
+            touched: self.touched.len(),
+        })
+    }
+
+    /// Keeps what the step since [`Write::savepoint`] did.
+    pub async fn release(&mut self) -> ApiResult<()> {
+        backend::query("RELEASE SAVEPOINT step")
+            .execute(&mut self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Undoes the step since `mark`: its rows, and the events, touches and
+    /// deferred inserts it recorded.
+    pub async fn rollback_to(&mut self, mark: Mark) -> ApiResult<()> {
+        backend::query("ROLLBACK TO SAVEPOINT step")
+            .execute(&mut self.tx)
+            .await?;
+        backend::query("RELEASE SAVEPOINT step")
+            .execute(&mut self.tx)
+            .await?;
+        self.pending.truncate(mark.pending);
+        self.max_seq = mark.max_seq;
+        self.updated.truncate(mark.updated);
+        self.deferred.truncate(mark.deferred);
+        self.touched.truncate(mark.touched);
         Ok(())
     }
 
