@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement, Styled as _,
     Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
@@ -573,20 +573,96 @@ impl Render for Sidebar {
                 sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
                 events.emit(ViewEvent::PickScope(target.clone()), window, cx);
             });
-            // A project row has a menu with the project colors.
+            // A project row has a menu with the project colors, and drags
+            // onto another project row to take its place (LLM-524).
             column = column.child(match &scope {
-                Scope::Project(slug) => row
-                    .context_menu(color_menu(
-                        self.store.clone(),
-                        self.events.clone(),
-                        slug.clone(),
-                    ))
-                    .into_any_element(),
+                Scope::Project(slug) => {
+                    with_project_drag(row, slug, catalog, self.events.clone(), cx)
+                        .context_menu(color_menu(
+                            self.store.clone(),
+                            self.events.clone(),
+                            slug.clone(),
+                        ))
+                        .into_any_element()
+                }
                 _ => row.into_any_element(),
             });
         }
         column
     }
+}
+
+/// A project being dragged in the sidebar. It renders as the small card
+/// that follows the pointer.
+#[derive(Clone)]
+pub struct DraggedProject {
+    pub slug: SharedString,
+    pub name: SharedString,
+    /// Its place in the project order, to tell up from down.
+    pub ix: usize,
+}
+
+impl Render for DraggedProject {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        h_flex()
+            .px_2()
+            .py_1()
+            .text_sm()
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .shadow_md()
+            .child(self.name.clone())
+    }
+}
+
+/// Lets a project row be dragged, and take drops of other projects. While
+/// a project hovers it, a line on the row's top edge, or its bottom edge
+/// when the project comes from above, shows where it lands.
+fn with_project_drag<E: StatefulInteractiveElement>(
+    row: E,
+    slug: &SharedString,
+    catalog: &Catalog,
+    events: ViewEvents,
+    cx: &App,
+) -> E {
+    let Some(ix) = catalog.projects.iter().position(|p| p.key == *slug) else {
+        return row;
+    };
+    let dragged = DraggedProject {
+        slug: slug.clone(),
+        name: catalog.projects[ix].name.clone(),
+        ix,
+    };
+    let line = cx.theme().foreground;
+    let onto = slug.clone();
+    row.on_drag(dragged, |dragged, _, _, cx| {
+        gpui_kit::AppContext::new(cx, |_| dragged.clone())
+    })
+    .drag_over::<DraggedProject>(move |s, dragged, _, _| {
+        use std::cmp::Ordering::*;
+        match dragged.ix.cmp(&ix) {
+            Greater => s.border_t_2().border_color(line),
+            Less => s.border_b_2().border_color(line),
+            Equal => s,
+        }
+    })
+    .on_drop(move |dragged: &DraggedProject, window, cx| {
+        if dragged.slug == onto {
+            return;
+        }
+        events.emit(
+            ViewEvent::MoveProject {
+                slug: dragged.slug.clone(),
+                onto: onto.clone(),
+            },
+            window,
+            cx,
+        );
+    })
 }
 
 /// The right-click menu of a project row: None and the preset colors.

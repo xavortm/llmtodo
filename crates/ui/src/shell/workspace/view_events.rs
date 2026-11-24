@@ -46,6 +46,10 @@ impl Workspace {
                 self.message = self.set_project_color(&slug, color, cx).into();
                 cx.notify();
             }
+            ViewEvent::MoveProject { slug, onto } => {
+                self.message = self.move_project(&slug, &onto, cx).into();
+                cx.notify();
+            }
             ViewEvent::EditDescription => self.edit_description(&EditDescription, window, cx),
             ViewEvent::ShowPreview => self.show_preview(window, cx),
             ViewEvent::SetTab(ix) => self.set_tab(ix, cx),

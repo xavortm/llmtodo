@@ -218,6 +218,52 @@ pub async fn update(w: &mut Write<'_>, r: &str, req: UpdateProject) -> ApiResult
     Ok(p.id)
 }
 
+/// Sets the order of the live projects: the listed ones first, the rest
+/// after them in their old order. Each project whose place changes gets an
+/// `order` event, which tells the app and the offline copy to read the
+/// catalog again.
+pub async fn set_order(w: &mut Write<'_>, req: ProjectOrder) -> ApiResult<()> {
+    let mut listed: Vec<projects::ProjectRow> = Vec::new();
+    for r in &req.projects {
+        let p = projects::resolve(w.c(), r).await?;
+        if p.deleted_at.is_some() {
+            return Err(ApiError::validation(format!(
+                "project {} is in the trash",
+                p.slug
+            )));
+        }
+        if listed.iter().any(|q| q.id == p.id) {
+            return Err(ApiError::validation(format!(
+                "project {} is listed twice",
+                p.slug
+            )));
+        }
+        listed.push(p);
+    }
+    let rest: Vec<projects::ProjectRow> = projects::rows(w.c(), false)
+        .await?
+        .into_iter()
+        .filter(|p| !listed.iter().any(|q| q.id == p.id))
+        .collect();
+    for (position, p) in listed.iter().chain(&rest).enumerate() {
+        let position = position as i64;
+        if p.position == position {
+            continue;
+        }
+        store::projects::set_position(w.c(), position, &p.id).await?;
+        w.event(
+            EntityType::Project,
+            &p.id,
+            None,
+            ActivityField::Order,
+            j(p.position),
+            j(position),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn delete(w: &mut Write<'_>, r: &str) -> ApiResult<String> {
     let p = projects::resolve(w.c(), r).await?;
     store::projects::trash(w.c(), &p.id).await?;

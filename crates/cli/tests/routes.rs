@@ -150,6 +150,7 @@ async fn every_route_is_called_by_its_command() {
     );
     h.run("project list", &["project", "list"]);
     h.run("project view", &["project", "view", "alpha"]);
+    h.run("project order", &["project", "order", "alpha"]);
     h.run(
         "project update",
         &["project", "update", "alpha", "--description", "d"],

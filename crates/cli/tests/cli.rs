@@ -1120,6 +1120,29 @@ async fn projects_have_an_icon_and_a_color() {
     t.stop().await;
 }
 
+/// LLM-524: `project order` puts the listed projects first, and
+/// `project list` follows the order. An unknown project exits with 3.
+#[tokio::test(flavor = "multi_thread")]
+async fn project_order_sets_the_list_order() {
+    let t = T::new().await;
+    for name in ["Alpha", "Beta", "Gamma"] {
+        t.json("s1", &["project", "create", name]);
+    }
+    let slugs = |v: Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["slug"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let set = t.json("s1", &["project", "order", "gamma", "alpha"]);
+    assert_eq!(slugs(set), ["gamma", "alpha", "beta"]);
+    let list = t.json("s1", &["project", "list"]);
+    assert_eq!(slugs(list), ["gamma", "alpha", "beta"]);
+    assert_eq!(t.code("s1", &["project", "order", "nope"]), 3);
+    t.stop().await;
+}
+
 /// LLM-461: the database choice belongs to the main data folder. A test or
 /// preview folder reports SQLite and refuses to switch, so it can never
 /// write to a shared database by mistake.

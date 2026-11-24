@@ -4518,3 +4518,77 @@ async fn an_issue_query_counts_its_matches_on_the_first_page() {
     assert_eq!(trashed["total"], 0);
     t.stop().await;
 }
+
+/// LLM-524: the owner orders projects. Until then they sort by name. The
+/// listed ones come first, the rest keep their order after them, and a new
+/// project goes last.
+#[tokio::test]
+async fn projects_keep_the_order_the_owner_sets() {
+    let t = T::new().await;
+    let o = owner();
+    for name in ["Zeta", "Alpha", "Mid", "Beta"] {
+        t.ok(&o, "POST", "/v1/projects", json!({ "name": name }))
+            .await;
+    }
+    let slugs = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["slug"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let list = t.ok(&o, "GET", "/v1/projects", json!(null)).await;
+    assert_eq!(slugs(&list), ["alpha", "beta", "mid", "zeta"], "by name");
+
+    let set = t
+        .ok(
+            &o,
+            "PUT",
+            "/v1/projects/order",
+            json!({ "projects": ["zeta", "Mid"] }),
+        )
+        .await;
+    assert_eq!(slugs(&set), ["zeta", "mid", "alpha", "beta"]);
+    let list = t.ok(&o, "GET", "/v1/projects", json!(null)).await;
+    assert_eq!(slugs(&list), ["zeta", "mid", "alpha", "beta"]);
+    assert_eq!(list[1]["position"], 1);
+
+    // A new project goes last once there is an order.
+    t.ok(&o, "POST", "/v1/projects", json!({ "name": "Aaa" }))
+        .await;
+    let list = t.ok(&o, "GET", "/v1/projects", json!(null)).await;
+    assert_eq!(slugs(&list), ["zeta", "mid", "alpha", "beta", "aaa"]);
+
+    // Each moved project logs an order event.
+    let moved = t.ok(&o, "GET", "/v1/activity?limit=200", json!(null)).await;
+    let orders = moved["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["entity_type"] == "project" && e["field"] == "order")
+        .count();
+    // zeta 0 → 0 is no move; mid, alpha and beta move.
+    assert_eq!(orders, 3, "an order event per moved project: {moved}");
+
+    assert_eq!(
+        t.err(
+            &o,
+            "PUT",
+            "/v1/projects/order",
+            json!({ "projects": ["zeta", "zeta"] })
+        )
+        .await,
+        "validation"
+    );
+    assert_eq!(
+        t.err(
+            &o,
+            "PUT",
+            "/v1/projects/order",
+            json!({ "projects": ["nope"] })
+        )
+        .await,
+        "not_found"
+    );
+    t.stop().await;
+}

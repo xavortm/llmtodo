@@ -1105,3 +1105,60 @@ fn the_palette_sets_a_project_color(cx: &mut TestAppContext) {
     run(handle, &view, "project-color nope red", cx);
     cx.read(|cx| assert_eq!(view.read(cx).message(), "Unknown project: nope"));
 }
+
+/// LLM-524: a project row dragged onto another takes its place. The
+/// sidebar shows the new order at once, and the whole order goes to the
+/// server.
+#[gpui_kit::test]
+fn dragging_a_project_onto_another_reorders_them(cx: &mut TestAppContext) {
+    use crate::model::backend::{Backend, Request};
+    let (handle, view) = open(cx);
+    let (backend, mut requests) = Backend::detached();
+    view.update(cx, |this, _| this.attach_backend(backend));
+    let order = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            view.read(cx)
+                .store()
+                .read(cx)
+                .catalog
+                .projects
+                .iter()
+                .map(|p| p.key.to_string())
+                .collect()
+        })
+    };
+    assert_eq!(order(cx), ["app", "server"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("cmd-b", cx);
+        window.render_frame(cx);
+        let top = |window: &mut gpui_kit::Window, id: &'static str| window.find(id).bounds().top();
+        assert!(top(window, "sidebar-project:app") < top(window, "sidebar-project:server"));
+        window.drag_to("sidebar-project:server", "sidebar-project:app", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let top = |id: &'static str| window.find(id).bounds().top();
+        assert!(
+            top("sidebar-project:server") < top("sidebar-project:app"),
+            "the sidebar shows the new order"
+        );
+    })
+    .unwrap();
+    assert_eq!(order(cx), ["server", "app"]);
+    let sent: Vec<(String, Vec<String>)> = std::iter::from_fn(|| requests.try_recv().ok())
+        .filter_map(|r| match r {
+            Request::SetProjectOrder { moved, projects } => Some((moved, projects)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [(
+            "server".to_string(),
+            vec!["server".to_string(), "app".to_string()]
+        )]
+    );
+    cx.read(|cx| assert_eq!(view.read(cx).message(), "Moved Server"));
+}

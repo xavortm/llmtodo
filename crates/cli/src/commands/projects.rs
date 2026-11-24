@@ -64,6 +64,14 @@ pub enum ProjectCmd {
         /// Keep only names that contain this text, such as `rocket`.
         filter: Option<String>,
     },
+    /// Set the order of projects, as the app's sidebar shows them. The
+    /// listed ones come first, in this order. The rest keep their order
+    /// after them.
+    Order {
+        /// Project slugs, IDs or names, first first.
+        #[arg(required = true)]
+        projects: Vec<String>,
+    },
     /// Move a project to the trash.
     Delete {
         project: String,
@@ -149,6 +157,7 @@ pub async fn run(app: &App, cmd: ProjectCmd) -> CliResult {
             };
             app.out.ser(&c.update_project(&project, &u).await?)
         }
+        ProjectCmd::Order { projects } => app.out.ser(&c.set_project_order(projects).await?),
         ProjectCmd::Delete { project } => {
             app.confirm(&format!("Move project {project} to the trash?"))?;
             app.out.ser(&c.delete_project(&project).await?)

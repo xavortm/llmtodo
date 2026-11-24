@@ -228,6 +228,7 @@ endpoints! {
     // projects
     Projects: Get "/v1/projects", "List projects", (t::ProjectQuery), (Vec<t::Project>), "project list";
     CreateProject: Post "/v1/projects", "Create a project", (t::CreateProject), (t::Project), "project create";
+    SetProjectOrder: Put "/v1/projects/order", "Set the order of projects: the listed ones first, the rest after", (t::ProjectOrder), (Vec<t::Project>), "project order";
     Project: Get "/v1/projects/{project}", "Read one project", -, (t::Project), "project view";
     UpdateProject: Patch "/v1/projects/{project}", "Change a project", (t::UpdateProject), (t::Project), "project update";
     DeleteProject: Delete "/v1/projects/{project}", "Move a project to the trash", -, (t::Project), "project delete";

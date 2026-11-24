@@ -820,15 +820,17 @@ impl Catalog {
                 (p.slug.clone().into(), teams)
             })
             .collect();
-        let mut projects: Vec<Place> = projects
-            .iter()
-            .filter(|p| p.deleted_at.is_none())
+        // The order the owner set (LLM-524), then by name.
+        let mut live: Vec<&llmtodo_client::types::Project> =
+            projects.iter().filter(|p| p.deleted_at.is_none()).collect();
+        live.sort_by_key(|p| (p.position, p.name.to_lowercase()));
+        let projects: Vec<Place> = live
+            .into_iter()
             .map(|p| Place {
                 key: p.slug.clone().into(),
                 name: p.name.clone().into(),
             })
             .collect();
-        projects.sort_by_key(|p| p.name.to_lowercase());
         let teams = teams
             .iter()
             .map(|t| {

@@ -469,9 +469,21 @@ pub struct Project {
     /// The icon's color as `#rrggbb`. Without one, the icon is monochrome.
     #[serde(default)]
     pub color: Option<String>,
+    /// The project's place in the order the owner set. Lists sort by it,
+    /// then by name.
+    #[serde(default)]
+    pub position: i64,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub deleted_at: Option<Timestamp>,
+}
+
+/// A new order for projects. The listed projects come first, in this
+/// order. The rest keep their order after them. Each entry is a slug, ID or
+/// name, and may appear once.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectOrder {
+    pub projects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -65,6 +65,12 @@ pub enum ViewEvent {
         slug: String,
         color: Option<String>,
     },
+    /// The owner dropped project `slug` on project `onto` in the sidebar.
+    /// It takes that project's place.
+    MoveProject {
+        slug: SharedString,
+        onto: SharedString,
+    },
     // The task view.
     EditDescription,
     ShowPreview,

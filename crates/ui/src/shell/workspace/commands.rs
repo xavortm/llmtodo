@@ -50,6 +50,41 @@ impl Workspace {
 
     /// Colors a project in the app at once, and asks the server to save it.
     /// Returns the message to show.
+    /// Moves project `slug` to the place of project `onto`, as a drop in
+    /// the sidebar does. The sidebar shows the new order at once, and the
+    /// server stores it (LLM-524). Returns the status message.
+    pub(crate) fn move_project(
+        &mut self,
+        slug: &str,
+        onto: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let projects = &self.store.read(cx).catalog.projects;
+        let from = projects.iter().position(|p| p.key.as_ref() == slug);
+        let to = projects.iter().position(|p| p.key.as_ref() == onto);
+        let (Some(from), Some(to)) = (from, to) else {
+            return format!("Unknown project: {slug}");
+        };
+        if from == to {
+            return String::new();
+        }
+        let name = projects[from].name.clone();
+        let order = self.store.update(cx, |store, cx| {
+            let projects = &mut store.catalog.projects;
+            let moved = projects.remove(from);
+            projects.insert(to, moved);
+            let order: Vec<String> = projects.iter().map(|p| p.key.to_string()).collect();
+            store.touch_all();
+            cx.notify();
+            order
+        });
+        self.request(backend::Request::SetProjectOrder {
+            moved: slug.to_string(),
+            projects: order,
+        });
+        format!("Moved {name}")
+    }
+
     pub(crate) fn set_project_color(
         &mut self,
         slug: &str,

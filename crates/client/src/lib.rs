@@ -521,6 +521,11 @@ impl Client {
     pub async fn create_project(&self, c: &CreateProject) -> Result<Project> {
         self.call::<ep::CreateProject, _>((), c).await
     }
+    /// Puts the listed projects first, in this order; the rest follow.
+    pub async fn set_project_order(&self, projects: Vec<String>) -> Result<Vec<Project>> {
+        self.call::<ep::SetProjectOrder, _>((), &ProjectOrder { projects })
+            .await
+    }
     pub async fn update_project(&self, r: &str, u: &UpdateProject) -> Result<Project> {
         self.call::<ep::UpdateProject, _>(r, u).await
     }

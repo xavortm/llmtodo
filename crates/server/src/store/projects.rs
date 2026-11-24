@@ -18,9 +18,10 @@ pub struct ProjectRow {
     pub local_path: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
+    pub position: i64,
 }
 
-const COLS: &str = "id, slug, name, description, state, created_at, updated_at, deleted_at, local_path, icon, color";
+const COLS: &str = "id, slug, name, description, state, created_at, updated_at, deleted_at, local_path, icon, color, position";
 
 /// Turns a name into a slug: lower case, words joined by `-`.
 pub fn slugify(name: &str) -> String {
@@ -52,7 +53,7 @@ pub async fn resolve(conn: &mut Conn, r: &str) -> ApiResult<ProjectRow> {
 
 pub async fn rows(conn: &mut Conn, include_deleted: bool) -> ApiResult<Vec<ProjectRow>> {
     Ok(backend::query_as::<ProjectRow>(crate::sql!(
-        "SELECT {COLS} FROM projects WHERE (? = 1 OR deleted_at IS NULL) ORDER BY name COLLATE NOCASE"
+        "SELECT {COLS} FROM projects WHERE (? = 1 OR deleted_at IS NULL) ORDER BY position, name COLLATE NOCASE"
     ))
     .bind(include_deleted)
     .fetch_all(&mut *conn)
@@ -90,6 +91,7 @@ pub async fn all_to_api(conn: &mut Conn, rows: Vec<ProjectRow>) -> ApiResult<Vec
             local_path: p.local_path,
             icon: p.icon,
             color: p.color,
+            position: p.position,
             state: p.state.parse().unwrap_or(ProjectState::Backlog),
             created_at: parse_ts(&p.created_at),
             updated_at: parse_ts(&p.updated_at),
@@ -190,7 +192,9 @@ pub async fn insert(
     state: &str,
     t: &str,
 ) -> ApiResult<()> {
-    backend::query("INSERT INTO projects (id, slug, name, description, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    // Until the owner orders projects, every position is 0 and they sort by
+    // name. Once they have, a new project goes after every other one.
+    backend::query("INSERT INTO projects (id, slug, name, description, state, created_at, updated_at, position) VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT CASE WHEN COALESCE(MAX(position), 0) = 0 THEN 0 ELSE MAX(position) + 1 END FROM projects))")
         .bind(id)
         .bind(slug)
         .bind(name)
@@ -237,6 +241,16 @@ pub async fn set_icon(c: &mut Conn, icon: Option<&str>, id: &str) -> ApiResult<(
 pub async fn set_color(c: &mut Conn, color: Option<&str>, id: &str) -> ApiResult<()> {
     backend::query("UPDATE projects SET color = ? WHERE id = ?")
         .bind(color)
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+/// Sets a project's place in the order.
+pub async fn set_position(c: &mut Conn, position: i64, id: &str) -> ApiResult<()> {
+    backend::query("UPDATE projects SET position = ? WHERE id = ?")
+        .bind(position)
         .bind(id)
         .execute(&mut *c)
         .await?;

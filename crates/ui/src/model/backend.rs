@@ -194,6 +194,14 @@ pub enum Request {
         slug: String,
         color: Option<String>,
     },
+    /// Set the order of projects, every live one, first first. `moved`
+    /// names the project the owner moved, for a failure's message, which
+    /// comes back as `ProjectFailed`. The order comes back as a catalog
+    /// change.
+    SetProjectOrder {
+        moved: String,
+        projects: Vec<String>,
+    },
     /// Create an issue. The answer is the new issue, then `Created`.
     Create(Box<CreateIssue>),
     /// Read again whether this machine is the primary copy.
@@ -803,7 +811,7 @@ fn refuse(request: Request, state: &mut State, events: &Events) {
                 },
             );
         }
-        Request::SetProjectColor { slug, .. } => {
+        Request::SetProjectColor { slug, .. } | Request::SetProjectOrder { moved: slug, .. } => {
             send(
                 events,
                 Event::ProjectFailed {
@@ -1302,6 +1310,19 @@ async fn handle(
                 },
             };
             send(events, event);
+        }
+        Request::SetProjectOrder { moved, projects } => {
+            match client.set_project_order(projects).await {
+                Ok(_) => {}
+                Err(e) if fatal(&e) => return Err(lost(e).into()),
+                Err(e) => send(
+                    events,
+                    Event::ProjectFailed {
+                        slug: moved,
+                        message: e.to_string(),
+                    },
+                ),
+            }
         }
         Request::SetProjectColor { slug, color } => {
             let update = llmtodo_client::types::UpdateProject {

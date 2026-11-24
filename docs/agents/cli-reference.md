@@ -477,6 +477,12 @@ List the icon names a project can use. It needs no server
 
 - `<filter>`: Keep only names that contain this text, such as `rocket`
 
+### `llmtodo project order`
+
+Set the order of projects, as the app's sidebar shows them. The listed ones come first, in this order. The rest keep their order after them
+
+- `<projects>` (repeatable): Project slugs, IDs or names, first first
+
 ### `llmtodo project delete`
 
 Move a project to the trash
@@ -866,6 +872,7 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | DELETE | `/v1/labels/{label}` | `label delete` | Delete a label and remove it from issues |
 | GET | `/v1/projects` | `project list` | List projects |
 | POST | `/v1/projects` | `project create` | Create a project |
+| PUT | `/v1/projects/order` | `project order` | Set the order of projects: the listed ones first, the rest after |
 | GET | `/v1/projects/{project}` | `project view` | Read one project |
 | PATCH | `/v1/projects/{project}` | `project update` | Change a project |
 | DELETE | `/v1/projects/{project}` | `project delete` | Move a project to the trash |

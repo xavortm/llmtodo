@@ -19,6 +19,17 @@ pub async fn list_projects(
     Ok(Json(projects::all_to_api(&mut c, rows).await?))
 }
 
+pub async fn set_project_order(
+    State(st): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<ProjectOrder>,
+) -> ApiResult<Json<Vec<Project>>> {
+    let mut w = Write::begin(&st, &ctx).await?;
+    ops::projects::set_order(&mut w, req).await?;
+    w.commit().await?;
+    list_projects(State(st), Query(ProjectQuery::default())).await
+}
+
 pub async fn view_project(
     State(st): State<AppState>,
     Path(r): Path<String>,

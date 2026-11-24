@@ -80,6 +80,7 @@ fn handlers() -> Vec<(Method, &'static str, MethodRouter<AppState>)> {
         on::<ep::DeleteLabel, _>(labels::delete_label),
         on::<ep::Projects, _>(projects::list_projects),
         on::<ep::CreateProject, _>(projects::create_project),
+        on::<ep::SetProjectOrder, _>(projects::set_project_order),
         on::<ep::Project, _>(projects::view_project),
         on::<ep::UpdateProject, _>(projects::update_project),
         on::<ep::DeleteProject, _>(projects::delete_project),
