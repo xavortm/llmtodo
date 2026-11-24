@@ -963,3 +963,58 @@ fn answered_and_approved_fields_are_dropped(cx: &mut TestAppContext) {
     assert_eq!(inbox_keys(&view, cx), ["LLM-111 Q1"]);
     assert_eq!(sizes(cx).0, 1, "the answered question's field is gone");
 }
+
+/// A real option button with a long label, in a column narrower than it.
+struct LongOption;
+
+impl gpui_kit::Render for LongOption {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{
+            InteractiveElement as _, ParentElement as _, Styled as _, TestSupportExt as _,
+        };
+        gpui_kit::div().w(gpui_kit::px(240.)).child(
+            gpui_kit::div()
+                .id("long-option-column")
+                .test_support()
+                .w_full()
+                .child(crate::inbox::option_button(
+                    "long-option".into(),
+                    false,
+                    "a",
+                    "The window switches to that book: its panes, tabs and inspector. \
+                     Other books stay closed until you open one of their scenes.",
+                    cx,
+                )),
+        )
+    }
+}
+
+/// A long option wraps inside its card instead of running past the edge
+/// (the clipped options on LLM-504).
+#[gpui_kit::test]
+fn a_long_option_wraps_inside_its_card(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let handle = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| LongOption))
+            .unwrap()
+            .0
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let column = window.find("long-option-column").bounds();
+        let button = window.find("long-option").bounds();
+        assert!(
+            button.right() <= column.right(),
+            "the option ends inside its column: {button:?} in {column:?}"
+        );
+        assert!(
+            button.size.height > gpui_kit::px(32.),
+            "the wrapped option grows taller: {button:?}"
+        );
+    })
+    .unwrap();
+}

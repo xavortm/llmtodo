@@ -345,10 +345,26 @@ pub fn option_button(
         .text_xs()
         .font_weight(gpui_kit::FontWeight::BOLD)
         .child(letter);
+    // A long option wraps inside the card instead of running past its edge.
+    // The button's own fixed height and `nowrap` would clip it, so the
+    // height grows from a 2rem minimum and the label wraps. On one line the
+    // vertical padding equals the horizontal, the same insets as before.
     inbox_button(id, picked, cx)
+        .h_auto()
+        .min_h_8()
+        .max_w_full()
         .px_1p5()
+        .py_1p5()
         .toggled(picked)
-        .child(h_flex().gap_1p5().child(square).child(label))
+        .child(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .items_start()
+                .gap_1p5()
+                .child(square)
+                .child(div().flex_1().min_w_0().whitespace_normal().child(label)),
+        )
 }
 
 /// One question card: the question, its context, and the controls that
