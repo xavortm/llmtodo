@@ -261,6 +261,7 @@ endpoints! {
     UndoAnswer: Post "/v1/issues/{issue}/questions/{id}/undo-answer", "Reopen an answered owner question, unless someone acted on the answer", -, (t::IssueDetail), "issue undo-answer";
     Review: Get "/v1/issues/{issue}/review", "The review section and every review answer of an issue", -, (t::ReviewState), "issue review show";
     SubmitReview: Post "/v1/issues/{issue}/review", "Approve or request changes on an issue in User review", (t::SubmitReview), (t::IssueDetail), "issue review answer";
+    SubmitReviews: Post "/v1/reviews", "Answer the reviews of several issues in one write; each answer is taken or refused on its own", (t::SubmitReviews), (Vec<t::ReviewOutcome>), "issue review answer";
     Analyze: Post "/v1/issues/{issue}/analyze", "Mark or unmark this session as analyzing an issue", (t::AnalyzeRequest), (t::AnalyzeResponse), "issue analyze";
     AddComment: Post "/v1/issues/{issue}/comments", "Add a comment", (t::CreateComment), (t::Comment), "issue comment add";
     UpdateComment: Patch "/v1/comments/{id}", "Edit a comment", (t::UpdateComment), (t::Comment), "issue comment update";

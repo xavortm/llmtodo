@@ -168,6 +168,7 @@ llmtodo issue review wait                    # blocks until the next answer, the
 llmtodo issue review wait ABC-12             # only answers on ABC-12
 llmtodo issue review wait --after-seq 812    # answers after the last one you handled
 llmtodo issue review answer ABC-12 approve   # answer as the owner does in the app
+llmtodo issue review answer ABC-12 ABC-14 ABC-15 approve   # several in one write; exit 6 if any is refused
 llmtodo issue review answer ABC-12 request-changes -m "The text is too small."
 ```
 

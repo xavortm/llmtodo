@@ -346,9 +346,9 @@ Write the `+++ Review` section. It replaces the section if there is one. Use sho
 
 ### `llmtodo issue review answer`
 
-Answer the review of an issue in User review. `approve` moves it to Done, or, with an open PR, leaves it waiting on an agent to merge. `request-changes` needs --feedback and moves it to Todo for an agent
+Answer the review of an issue in User review. `approve` moves it to Done, or, with an open PR, leaves it waiting on an agent to merge. `request-changes` needs --feedback and moves it to Todo for an agent. Several keys send every answer in one write, and print one result per key. A refused answer leaves the others in place, and the exit code is then 6
 
-- `<key>`
+- `<keys>` (repeatable)
 - `<verdict>`: `approve` or `request-changes`
 - `-m, --feedback <feedback>`: What to change, or a note on the approval
 
@@ -897,6 +897,7 @@ Send a raw API request, such as `llmtodo api GET /v1/teams`
 | POST | `/v1/issues/{issue}/questions/{id}/undo-answer` | `issue undo-answer` | Reopen an answered owner question, unless someone acted on the answer |
 | GET | `/v1/issues/{issue}/review` | `issue review show` | The review section and every review answer of an issue |
 | POST | `/v1/issues/{issue}/review` | `issue review answer` | Approve or request changes on an issue in User review |
+| POST | `/v1/reviews` | `issue review answer` | Answer the reviews of several issues in one write; each answer is taken or refused on its own |
 | POST | `/v1/issues/{issue}/analyze` | `issue analyze` | Mark or unmark this session as analyzing an issue |
 | POST | `/v1/issues/{issue}/comments` | `issue comment add` | Add a comment |
 | PATCH | `/v1/comments/{id}` | `issue comment update` | Edit a comment |

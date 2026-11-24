@@ -671,6 +671,11 @@ impl Client {
     pub async fn submit_review(&self, r: &str, req: &SubmitReview) -> Result<IssueDetail> {
         self.call::<ep::SubmitReview, _>(r, req).await
     }
+    /// Answers the reviews of several issues in one write. Each answer is
+    /// taken or refused on its own.
+    pub async fn submit_reviews(&self, req: &SubmitReviews) -> Result<Vec<ReviewOutcome>> {
+        self.call::<ep::SubmitReviews, _>((), req).await
+    }
     pub async fn analyze(&self, r: &str, req: &AnalyzeRequest) -> Result<AnalyzeResponse> {
         self.call::<ep::Analyze, _>(r, req).await
     }

@@ -68,14 +68,27 @@ impl Workspace {
             }
             cx.notify();
         });
+        // LLM-518: one request for the whole batch, so a shared database
+        // runs one write instead of one per task.
+        let mut answers = Vec::with_capacity(send.len());
         for id in &send {
+            let Some(key) = self.store.read(cx).get(*id).map(|i| i.key.clone()) else {
+                continue;
+            };
             let feedback = self.answers.read(cx).feedback_text(*id, cx);
             let review = SubmitReview {
                 verdict: ReviewVerdict::Approved,
                 feedback,
             };
-            self.send(*id, Write::Review(review), WriteKind::Review, cx);
+            answers.push((key.to_string(), review));
+            self.pipeline.note_sent(*id, key);
+            let now = cx.background_executor().now();
+            self.activity.write_sent(*id, now);
         }
+        if let Some(backend) = &self.backend {
+            backend.reviews(answers);
+        }
+        self.sync_activity(cx);
         self.message = format!("Approving {}{skipped}", tasks(send.len())).into();
         self.review_batch = Some(ReviewBatch {
             waiting: send,

@@ -110,6 +110,7 @@ fn handlers() -> Vec<(Method, &'static str, MethodRouter<AppState>)> {
         on::<ep::Release, _>(claims::release),
         on::<ep::Review, _>(reviews::state),
         on::<ep::SubmitReview, _>(reviews::submit),
+        on::<ep::SubmitReviews, _>(reviews::submit_many),
         on::<ep::Analyze, _>(analyzing::analyze),
         on::<ep::Questions, _>(questions::list),
         on::<ep::UndoAnswer, _>(questions::undo_answer),

@@ -793,6 +793,35 @@ pub struct SubmitReview {
     pub feedback: String,
 }
 
+/// Review answers on several issues, sent as one write (LLM-518).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SubmitReviews {
+    pub answers: Vec<ReviewItem>,
+}
+
+/// One answer in [`SubmitReviews`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewItem {
+    /// The issue, by key or ID.
+    pub issue: String,
+    #[serde(flatten)]
+    pub review: SubmitReview,
+}
+
+/// The outcome of one answer in [`SubmitReviews`], in request order. One
+/// refused answer leaves the others in place.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewOutcome {
+    /// The issue as the request named it.
+    pub issue: String,
+    /// The issue's list copy after the answer, when the server took it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Issue>,
+    /// Why the server refused the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorDetail>,
+}
+
 /// The review state of one ticket.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewState {

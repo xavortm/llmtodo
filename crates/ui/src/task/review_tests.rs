@@ -68,13 +68,27 @@ fn message(view: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
 fn sent(requests: &mut UnboundedReceiver<Request>) -> Vec<(String, ReviewVerdict, String)> {
     let mut out = Vec::new();
     while let Ok(r) = requests.try_recv() {
-        if let Request::Write {
-            key,
-            write: Write::Review(r),
-            kind: WriteKind::Review,
-        } = r
-        {
-            out.push((key, r.verdict, r.feedback));
+        match r {
+            Request::Write {
+                key,
+                write: Write::Review(r),
+                kind: WriteKind::Review,
+            } => out.push((key, r.verdict, r.feedback)),
+            Request::Reviews(answers) => {
+                out.extend(answers.into_iter().map(|(k, r)| (k, r.verdict, r.feedback)));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The keys of each batch of review answers sent as one request.
+fn sent_batches(requests: &mut UnboundedReceiver<Request>) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    while let Ok(r) = requests.try_recv() {
+        if let Request::Reviews(answers) = r {
+            out.push(answers.into_iter().map(|(k, _)| k).collect());
         }
     }
     out
@@ -639,7 +653,11 @@ fn approve_in_the_menu_sends_every_marked_review_task(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(sent_keys(&mut requests), ["LLM-104", "LLM-105", "LLM-106"]);
+    // LLM-518: the batch goes out as one request.
+    assert_eq!(
+        sent_batches(&mut requests),
+        [["LLM-104", "LLM-105", "LLM-106"]]
+    );
     assert_eq!(message(&view, cx), "Approving 3 tasks");
     // The open task's panel shows its answer on the way.
     assert!(sending(&view, "LLM-105", cx));

@@ -2192,3 +2192,78 @@ fn time_to_first_list_frame_50k(cx: &mut gpui_kit::TestAppContext) {
     }
     cx.update(|cx| cx.quit());
 }
+
+/// LLM-518: review answers on several tasks go out as one request, and
+/// each task still hears its own result.
+#[test]
+fn backend_sends_review_answers_in_one_request() {
+    let live = Live::new();
+    let owner = live.client(None);
+    let section =
+        "+++ Review\n### Steps to reproduce\n1. Open it.\n\n### What to check\n- It opens.\n+++\n";
+    live.rt.block_on(async {
+        for _ in 0..2 {
+            owner
+                .create_issue(
+                    &serde_json::from_value(json!({
+                        "team": "LLM",
+                        "title": "In review",
+                        "description": section,
+                        "status": "In Review",
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let (backend, mut events) = live.backend();
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    let approve = || llmtodo_api_types::SubmitReview {
+        verdict: llmtodo_api_types::ReviewVerdict::Approved,
+        feedback: String::new(),
+    };
+    backend.reviews(vec![
+        ("LLM-2".into(), approve()),
+        ("LLM-1".into(), approve()),
+        ("LLM-3".into(), approve()),
+    ]);
+    let mut copies = Vec::new();
+    let mut results = Vec::new();
+    while results.len() < 3 {
+        let event = live.wait(&mut events, "review results", |e| match e {
+            Event::Issues(_) | Event::WriteDone { .. } | Event::WriteFailed { .. } => {
+                Some(e.clone())
+            }
+            _ => None,
+        });
+        match event {
+            Event::Issues(issues) if results.is_empty() => copies.extend(issues),
+            Event::WriteDone { key, kind, .. } => results.push((key, kind, None)),
+            Event::WriteFailed {
+                key, kind, message, ..
+            } => results.push((key, kind, Some(message))),
+            _ => {}
+        }
+    }
+    // The fresh copies came before the results.
+    let done: Vec<_> = copies
+        .iter()
+        .map(|i| (i.key.to_string(), i.status.name.clone()))
+        .collect();
+    assert!(done.contains(&("LLM-2".into(), "Done".into())), "{done:?}");
+    assert!(done.contains(&("LLM-3".into(), "Done".into())), "{done:?}");
+    assert_eq!(results[0], ("LLM-2".into(), WriteKind::Review, None));
+    assert_eq!(results[1].0, "LLM-1");
+    assert!(
+        results[1]
+            .2
+            .as_deref()
+            .unwrap()
+            .contains("not a review status"),
+        "{results:?}"
+    );
+    assert_eq!(results[2], ("LLM-3".into(), WriteKind::Review, None));
+}

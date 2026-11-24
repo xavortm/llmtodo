@@ -24,8 +24,12 @@ pub enum ReviewCmd {
     /// Answer the review of an issue in User review. `approve` moves it to
     /// Done, or, with an open PR, leaves it waiting on an agent to merge.
     /// `request-changes` needs --feedback and moves it to Todo for an agent.
+    /// Several keys send every answer in one write, and print one result
+    /// per key. A refused answer leaves the others in place, and the exit
+    /// code is then 6.
     Answer {
-        key: String,
+        #[arg(required = true, num_args = 1..)]
+        keys: Vec<String>,
         /// `approve` or `request-changes`.
         verdict: ReviewVerdict,
         /// What to change, or a note on the approval.
@@ -65,7 +69,7 @@ pub async fn run(app: &App, c: &llmtodo_client::Client, cmd: ReviewCmd) -> CliRe
             show(app, &c.review(&key).await?);
         }
         ReviewCmd::Answer {
-            key,
+            mut keys,
             verdict,
             feedback,
         } => {
@@ -73,6 +77,10 @@ pub async fn run(app: &App, c: &llmtodo_client::Client, cmd: ReviewCmd) -> CliRe
                 verdict,
                 feedback: feedback.unwrap_or_default(),
             };
+            if keys.len() > 1 {
+                return answer_many(app, c, keys, req).await;
+            }
+            let key = keys.remove(0);
             let d = c.submit_review(&key, &req).await?;
             let i = &d.issue;
             app.out.ser(&json!({
@@ -87,6 +95,45 @@ pub async fn run(app: &App, c: &llmtodo_client::Client, cmd: ReviewCmd) -> CliRe
             after_seq,
             timeout,
         } => wait(app, c, key, after_seq, timeout).await?,
+    }
+    Ok(())
+}
+
+/// Answers the reviews of several issues in one write (LLM-518).
+async fn answer_many(
+    app: &App,
+    c: &llmtodo_client::Client,
+    keys: Vec<String>,
+    review: SubmitReview,
+) -> CliResult {
+    let req = SubmitReviews {
+        answers: keys
+            .into_iter()
+            .map(|issue| ReviewItem {
+                issue,
+                review: review.clone(),
+            })
+            .collect(),
+    };
+    let outcomes = c.submit_reviews(&req).await?;
+    let refused = outcomes.iter().filter(|o| o.error.is_some()).count();
+    let rows: Vec<Value> = outcomes
+        .iter()
+        .map(|o| match (&o.result, &o.error) {
+            (Some(i), _) => json!({
+                "key": i.key,
+                "status": i.status.name,
+                "waiting_on": i.waiting_on,
+            }),
+            (None, e) => json!({ "key": o.issue, "error": e }),
+        })
+        .collect();
+    app.out.ser(&rows);
+    if refused > 0 {
+        return Err(CliError::Validation(format!(
+            "{refused} of {} answers were refused; each row says why",
+            outcomes.len()
+        )));
     }
     Ok(())
 }

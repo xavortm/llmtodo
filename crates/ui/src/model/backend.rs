@@ -165,6 +165,10 @@ pub enum Request {
         write: Write,
         kind: WriteKind,
     },
+    /// Review answers on several tickets, sent as one write (LLM-518).
+    /// Each ticket gets its own `WriteDone` or `WriteFailed`, of kind
+    /// `Review`.
+    Reviews(Vec<(String, llmtodo_api_types::SubmitReview)>),
     /// Load everything again.
     Reload,
     /// Send a fresh copy of one issue, trashed or not, with its detail.
@@ -446,6 +450,11 @@ impl Backend {
             write,
             kind,
         });
+    }
+
+    /// Sends review answers on several tickets in one request.
+    pub fn reviews(&self, answers: Vec<(String, llmtodo_api_types::SubmitReview)>) {
+        let _ = self.tx.send(Request::Reviews(answers));
     }
 
     pub fn request(&self, request: Request) {
@@ -734,6 +743,21 @@ fn refuse(request: Request, state: &mut State, events: &Events) {
                 },
             );
             state.pending.owe(key);
+        }
+        Request::Reviews(answers) => {
+            for (key, _) in answers {
+                send(
+                    events,
+                    Event::WriteFailed {
+                        key: key.clone(),
+                        kind: WriteKind::Review,
+                        message: state.nothing_saved().into(),
+                        stale: false,
+                        summary: None,
+                    },
+                );
+                state.pending.owe(key);
+            }
         }
         Request::Fetch { key } => state.pending.owe(key),
         Request::Open { id } => state.open = id,
@@ -1144,6 +1168,16 @@ async fn handle(
             let open = state.open;
             if let Err(e) = apply_write(client, &key, write, kind, open, events, settled).await {
                 state.pending.owe(key);
+                return Err(e.into());
+            }
+        }
+        Request::Reviews(answers) => {
+            let keys: Vec<String> = answers.iter().map(|(k, _)| k.clone()).collect();
+            let open = state.open;
+            if let Err(e) = apply_reviews(client, answers, open, events, settled).await {
+                for key in keys {
+                    state.pending.owe(key);
+                }
                 return Err(e.into());
             }
         }
@@ -1931,6 +1965,99 @@ pub(crate) fn refusal_summary(
     };
     let target = status.unwrap_or("a review status");
     Some(format!("{key} needs {needs} before {target}."))
+}
+
+/// Sends review answers on several tickets in one request (LLM-518), then
+/// one done or failed event per ticket, as [`apply_write`] does for one.
+async fn apply_reviews(
+    client: &Client,
+    answers: Vec<(String, llmtodo_api_types::SubmitReview)>,
+    open: Option<IssueId>,
+    events: &Events,
+    settled: &mut bool,
+) -> Result<(), String> {
+    use llmtodo_api_types::{ReviewItem, SubmitReviews};
+    let keys: Vec<String> = answers.iter().map(|(k, _)| k.clone()).collect();
+    let req = SubmitReviews {
+        answers: answers
+            .into_iter()
+            .map(|(issue, review)| ReviewItem { issue, review })
+            .collect(),
+    };
+    let outcomes = match client.submit_reviews(&req).await {
+        Ok(outcomes) => outcomes,
+        Err(err) => {
+            let unreachable = fatal(&err);
+            *settled = true;
+            for key in &keys {
+                send(
+                    events,
+                    Event::WriteFailed {
+                        key: key.clone(),
+                        kind: WriteKind::Review,
+                        message: err.to_string(),
+                        stale: false,
+                        summary: None,
+                    },
+                );
+            }
+            if unreachable {
+                return Err(err.to_string());
+            }
+            if err.code() == ErrorCode::NotPrimary {
+                primary(client, events).await?;
+            }
+            return refresh_rows(client, keys, open, events).await.map(|_| ());
+        }
+    };
+    *settled = true;
+    let mut taken = Vec::new();
+    let mut results = Vec::new();
+    let mut refused = Vec::new();
+    let mut open_key = None;
+    for outcome in outcomes {
+        match (outcome.result, outcome.error) {
+            (Some(issue), _) => {
+                if Some(issue.id) == open {
+                    open_key = Some(issue.key.to_string());
+                }
+                results.push(Event::WriteDone {
+                    key: outcome.issue,
+                    kind: WriteKind::Review,
+                    version: issue.description_version,
+                });
+                taken.push(issue);
+            }
+            (None, error) => {
+                let message =
+                    error.map_or_else(|| "the server sent no answer".to_string(), |e| e.message);
+                results.push(Event::WriteFailed {
+                    key: outcome.issue.clone(),
+                    kind: WriteKind::Review,
+                    message,
+                    stale: false,
+                    summary: None,
+                });
+                refused.push(outcome.issue);
+            }
+        }
+    }
+    // The fresh copies come before the done events, as for one write. Only
+    // the open task needs its detail and a git run.
+    if !taken.is_empty() {
+        send(events, Event::Issues(taken));
+    }
+    if let Some(key) = open_key {
+        refresh(client, &key, events).await?;
+    }
+    for event in results {
+        send(events, event);
+    }
+    // Undo the app's early change on each refused ticket.
+    if !refused.is_empty() {
+        refresh_rows(client, refused, open, events).await?;
+    }
+    Ok(())
 }
 
 async fn apply_write(
