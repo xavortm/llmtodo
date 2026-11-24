@@ -302,3 +302,68 @@ fn offline_mode_shows_the_changes_that_wait(cx: &mut TestAppContext) {
     assert!(!has(handle, "status-sync", cx));
     assert!(has(handle, "status-refused", cx));
 }
+
+/// A slow first connect shows a loader in the middle of the empty list,
+/// but only after a second, so a fast one never flashes. The connect ends
+/// it.
+#[gpui_kit::test]
+fn a_slow_first_connect_shows_a_loader(cx: &mut TestAppContext) {
+    use crate::model::activity::CONNECT_LOADER_AFTER;
+    cx.update(crate::init);
+    let (handle, view) = cx.update(|cx| {
+        gpui_kit::open_window(Default::default(), cx, |window, cx| {
+            cx.new(|cx| Workspace::new(window, cx))
+        })
+        .expect("open test window")
+    });
+    // A server that has not answered yet: the sender stays open.
+    let (backend, requests) = Backend::detached();
+    std::mem::forget(requests);
+    let (events, rx) = futures::channel::mpsc::unbounded();
+    view.update(cx, |this, cx| {
+        this.load(Default::default(), Vec::new(), cx);
+        this.connect(backend, rx, cx);
+    });
+    let empty =
+        |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).list().read(cx).empty_state(cx));
+    cx.run_until_parked();
+    assert_eq!(empty(cx), None, "a fast connect shows nothing");
+    assert!(!has(handle, "list-loader", cx));
+
+    advance(CONNECT_LOADER_AFTER - Duration::from_millis(1), cx);
+    assert!(!has(handle, "list-loader", cx));
+    advance(Duration::from_millis(1), cx);
+    assert_eq!(
+        empty(cx),
+        Some(crate::issues::list::Empty::Loader(
+            "Connecting to the database…".into()
+        ))
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // It fills the list's body, under the column header, so its
+        // spinner and text sit in the middle of the empty list.
+        let loader = window.find("list-loader").bounds();
+        let header = window.find("column-header").bounds();
+        assert_eq!(loader.top(), header.bottom(), "starts under the header");
+        assert_eq!(
+            (loader.left(), loader.right()),
+            (header.left(), header.right())
+        );
+        assert!(
+            loader.size.height > gpui_kit::px(200.),
+            "fills the body: {loader:?}"
+        );
+    })
+    .unwrap();
+
+    // The server answers: the loader goes.
+    events
+        .unbounded_send(Event::Connected {
+            url: "http://127.0.0.1:4567".into(),
+            database: None,
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!has(handle, "list-loader", cx));
+}

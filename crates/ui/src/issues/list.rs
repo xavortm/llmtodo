@@ -1265,13 +1265,28 @@ impl IssueList {
     }
 
     /// What the list says when it shows no rows.
+    #[cfg(test)]
     pub(crate) fn empty_text(&self, cx: &App) -> Option<SharedString> {
+        self.empty_state(cx).map(|e| match e {
+            Empty::Loader(text) | Empty::Note(text) => text,
+        })
+    }
+
+    /// What the list shows in place of rows. The first connect shows
+    /// nothing for [`CONNECT_LOADER_AFTER`], so a fast one never flashes.
+    ///
+    /// [`CONNECT_LOADER_AFTER`]: crate::model::activity::CONNECT_LOADER_AFTER
+    pub(crate) fn empty_state(&self, cx: &App) -> Option<Empty> {
         if !self.rows.is_empty() {
             return None;
         }
         let store = self.store.read(cx);
-        Some(match (&store.connection, &self.scope) {
-            (Connection::Connecting, _) if store.is_empty() => "Loading issues…".into(),
+        Some(Empty::Note(match (&store.connection, &self.scope) {
+            (Connection::Connecting, _) if store.is_empty() => {
+                return store
+                    .slow_connect
+                    .then(|| Empty::Loader("Connecting to the database…".into()));
+            }
             (Connection::Offline(reason), _) if store.is_empty() => {
                 format!("Cannot reach the llmtodo server: {reason}").into()
             }
@@ -1282,7 +1297,9 @@ impl IssueList {
             // The first load fills the list in pages (LLM-470).
             (_, _) if store.is_empty() && store.loading.is_some() => {
                 let (loaded, total) = store.loading.unwrap_or_default();
-                crate::model::activity::loading_text(loaded, total).into()
+                return Some(Empty::Loader(
+                    crate::model::activity::loading_text(loaded, total).into(),
+                ));
             }
             (_, Scope::Trash) if self.query.is_empty() => "The Trash is empty".into(),
             (_, Scope::View(name)) if store.view.as_ref().is_none_or(|v| v.name != *name) => {
@@ -1293,7 +1310,7 @@ impl IssueList {
                 format!("No issues in {}", self.scope.name(&store.catalog)).into()
             }
             _ => "No issue matches the filter".into(),
-        })
+        }))
     }
 
     /// Collapse all, or expand all when every group is closed, like the
@@ -2758,6 +2775,11 @@ impl Render for IssueList {
         let filter_bar = self.render_filter_bar(window, cx);
         let header = self.render_column_header(cx);
         let fold = self.render_fold(self.focus.is_focused(window), window, cx);
+        let (loader, note) = match self.empty_state(cx) {
+            Some(Empty::Loader(text)) => (Some(render_loader(text, cx)), None),
+            Some(Empty::Note(text)) => (None, Some(text)),
+            None => (None, None),
+        };
         v_flex()
             .relative()
             .flex_1()
@@ -2769,7 +2791,7 @@ impl Render for IssueList {
             .child(measure)
             .child(filter_bar)
             .child(header)
-            .when_some(self.empty_text(cx), |this, text| {
+            .when_some(note, |this, text| {
                 this.child(
                     div()
                         .p_4()
@@ -2805,9 +2827,41 @@ impl Render for IssueList {
                         .flex_1(),
                     )
                     .children(self.render_to_top(window, cx))
-                    .children(fold),
+                    .children(fold)
+                    .children(loader),
             )
     }
+}
+
+/// What the list shows in place of rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Empty {
+    /// A wait at start: a spinner and its text in the middle of the list.
+    Loader(SharedString),
+    /// A short note at the top of the list.
+    Note(SharedString),
+}
+
+/// The start-up load state: a spinner over its text, in the middle of the
+/// list's body.
+fn render_loader(text: SharedString, cx: &App) -> impl IntoElement + use<> {
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .id("list-loader")
+        .test_support()
+        .absolute()
+        .inset_0()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .text_sm()
+        .text_color(muted)
+        .child(
+            gpui_kit::component::spinner::Spinner::new()
+                .large()
+                .color(muted),
+        )
+        .child(text)
 }
 
 /// The status cell of a row.

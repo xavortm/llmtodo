@@ -258,9 +258,14 @@ impl Workspace {
     pub(super) fn sync_activity(&mut self, cx: &mut Context<Self>) {
         let now = cx.background_executor().now();
         let slow: Vec<IssueId> = self.activity.slow_writes(now).collect();
+        let slow_connect = self.activity.slow_connect(now);
         self.store.update(cx, |store, cx| {
             let before = store.revision();
             store.set_saving(slow);
+            if store.slow_connect != slow_connect {
+                store.slow_connect = slow_connect;
+                store.touch_all();
+            }
             if store.revision() != before {
                 cx.notify();
             }

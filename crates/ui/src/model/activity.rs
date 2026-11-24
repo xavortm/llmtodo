@@ -44,6 +44,11 @@ pub fn refused_text(s: llmtodo_api_types::SyncState) -> Option<String> {
 /// How long a wait lasts before the app shows it.
 pub const SHOW_AFTER: Duration = Duration::from_millis(400);
 
+/// How long the app connects before the empty list shows a loader in its
+/// middle. A local server answers well within it, so only a slow shared
+/// database shows one.
+pub const CONNECT_LOADER_AFTER: Duration = Duration::from_secs(1);
+
 /// How long without an answer before a shared database may sleep. Neon
 /// suspends after 5 minutes, and the server closes idle connections at 4.
 pub const MAY_SLEEP_AFTER: Duration = Duration::from_secs(4 * 60);
@@ -168,6 +173,12 @@ impl Activity {
         self.load.map(|l| (l.loaded, l.total))
     }
 
+    /// The app has connected for [`CONNECT_LOADER_AFTER`] or longer.
+    pub fn slow_connect(&self, now: Instant) -> bool {
+        self.connecting
+            .is_some_and(|t| now.saturating_duration_since(t) >= CONNECT_LOADER_AFTER)
+    }
+
     /// The issues whose writes waited past [`SHOW_AFTER`]. Their rows show
     /// that they are saving.
     pub fn slow_writes(&self, now: Instant) -> impl Iterator<Item = IssueId> + '_ {
@@ -197,14 +208,17 @@ impl Activity {
     /// How long until a wait that does not show yet will show. The caller
     /// draws again then.
     pub fn next_change(&self, now: Instant) -> Option<Duration> {
-        let starts = self
+        let shows = self
             .writes
             .values()
             .copied()
             .chain(self.load.map(|l| l.since))
-            .chain(self.connecting);
-        starts
-            .map(|t| (t + SHOW_AFTER).saturating_duration_since(now))
+            .chain(self.connecting)
+            .map(|t| t + SHOW_AFTER);
+        let loader = self.connecting.map(|t| t + CONNECT_LOADER_AFTER);
+        shows
+            .chain(loader)
+            .map(|at| at.saturating_duration_since(now))
             .filter(|d| !d.is_zero())
             .min()
     }
@@ -410,5 +424,18 @@ mod tests {
         );
         assert_eq!(loading_text(15_000, None), "Loading issues… 15,000");
         assert_eq!(loading_text(0, Some(10)), "Loading issues…");
+    }
+
+    #[test]
+    fn a_connect_is_slow_after_a_second_and_an_answer_ends_it() {
+        let t = Instant::now();
+        let mut a = Activity::default();
+        a.connecting(t);
+        assert!(!a.slow_connect(t + ms(999)));
+        // After the status bar's delay, the next change is the loader's.
+        assert_eq!(a.next_change(t + SHOW_AFTER), Some(ms(600)));
+        assert!(a.slow_connect(t + CONNECT_LOADER_AFTER));
+        a.answer(t + ms(1500));
+        assert!(!a.slow_connect(t + ms(1500)));
     }
 }

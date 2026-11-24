@@ -89,6 +89,9 @@ pub struct IssueStore {
     /// How far the first load got: issues read, and of how many once the
     /// server counted them. `None` once it is done.
     pub loading: Option<(u64, Option<u64>)>,
+    /// The app has connected for a second or more without an answer. The
+    /// empty list shows a loader then.
+    pub slow_connect: bool,
     /// The trackers the sidebar lists, and which one is open. The workspace
     /// switches between them.
     pub trackers: Vec<Tracker>,
@@ -194,6 +197,7 @@ impl IssueStore {
             server_url: None,
             saving: Default::default(),
             loading: None,
+            slow_connect: false,
             trackers: Vec::new(),
             tracker: 0,
             revision: 0,
