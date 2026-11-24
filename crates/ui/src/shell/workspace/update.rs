@@ -22,6 +22,22 @@ fn gold(lightness: f32) -> Hsla {
     hsla(45. / 360., 0.92, lightness, 1.)
 }
 
+/// The button's fill at rest: solid gold, so it stands out in the title bar.
+pub(crate) const UPDATE_FILL: Hsla = Hsla {
+    h: 45. / 360.,
+    s: 0.92,
+    l: 0.60,
+    a: 1.,
+};
+
+/// The button's text: near black on the gold.
+pub(crate) const UPDATE_TEXT: Hsla = Hsla {
+    h: 0.,
+    s: 0.,
+    l: 0.1,
+    a: 1.,
+};
+
 pub struct UpdateState {
     watch: UpdateWatch,
     /// The data folder whose server the restart stops.
@@ -260,14 +276,18 @@ impl Render for UpdateButton {
         };
         let short: String = commit.chars().take(7).collect();
         let tip = format!("A new build is installed ({short}). Your unsaved text is kept");
+        // GPUI Kit fills a custom button at rest with only a faint tint of
+        // its color, which left the dark text hard to read. The rest fill
+        // is set to full gold here, and hover goes a little lighter.
         let button = Button::new("restart-update")
             .custom(
                 ButtonCustomVariant::new(cx)
                     .color(gold(0.55))
-                    .foreground(hsla(0., 0., 0.1, 1.))
-                    .hover(gold(0.60))
+                    .foreground(UPDATE_TEXT)
+                    .hover(gold(0.66))
                     .active(gold(0.50)),
             )
+            .bg(UPDATE_FILL)
             .xsmall()
             .icon(IconName::RefreshCw)
             .label(if self.restarting {

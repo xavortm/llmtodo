@@ -77,6 +77,18 @@ fn a_new_build_shows_the_button_and_a_click_keeps_the_text(cx: &mut TestAppConte
     let key = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
+            // The button is solid gold at rest, not a faint tint.
+            let bounds = window
+                .find("restart-update")
+                .bounds()
+                .scale(window.scale_factor());
+            let fill = window
+                .painted_quads()
+                .iter()
+                .find(|q| q.bounds == bounds)
+                .and_then(|q| q.background.as_solid())
+                .expect("a filled quad at the button's bounds");
+            assert_eq!(fill, crate::shell::workspace::UPDATE_FILL);
             window.press("j", cx);
             window.press("j", cx);
             window.press("j", cx);
