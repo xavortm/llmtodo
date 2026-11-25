@@ -410,7 +410,12 @@ fn the_create_button_creates_and_cancel_closes(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("c", cx);
         window.render_frame(cx);
-        assert_eq!(view.read(cx).create_title(cx), "", "the form opens empty");
+        assert_eq!(
+            view.read(cx).create_title(cx),
+            "Half a thought",
+            "the form keeps the cancelled text"
+        );
+        window.press("cmd-a", cx);
         window.input("By mouse", cx);
         window.render_frame(cx);
         window.click("create-submit", cx);
@@ -542,4 +547,90 @@ fn the_add_ticket_button_opens_the_form(cx: &mut TestAppContext) {
     .unwrap();
     let create = created(&mut requests).expect("a create request");
     assert_eq!(create.title, "From the button");
+}
+
+/// A click outside the form closes it and keeps the typed text, and the
+/// text comes back when the form opens again for the same project.
+#[gpui_kit::test]
+fn a_click_outside_closes_the_form_and_keeps_its_text(cx: &mut TestAppContext) {
+    let (handle, view, mut requests) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("c", cx);
+        window.render_frame(cx);
+        window.input("Half a thought", cx);
+        window.press("tab", cx);
+        window.input("More words", cx);
+        window.render_frame(cx);
+        window.click("status-count", cx);
+        window.render_frame(cx);
+        assert!(!view.read(cx).create_open(cx), "a click outside closes it");
+    })
+    .unwrap();
+    assert!(created(&mut requests).is_none());
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        window.press("c", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).create_open(cx));
+        assert_eq!(view.read(cx).create_title(cx), "Half a thought");
+        assert_eq!(view.read(cx).create_description(cx), "More words");
+        // A click inside the form keeps it open.
+        window.click("create-form", cx);
+        assert!(view.read(cx).create_open(cx));
+        window.render_frame(cx);
+        window.click("create-submit", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        created(&mut requests).expect("a create").title,
+        "Half a thought"
+    );
+
+    // A sent issue leaves nothing kept.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("c", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).create_title(cx), "");
+        assert_eq!(view.read(cx).create_description(cx), "");
+    })
+    .unwrap();
+}
+
+/// Each project keeps its own unsent text.
+#[gpui_kit::test]
+fn each_project_keeps_its_own_text(cx: &mut TestAppContext) {
+    let (handle, view, _requests) = open(cx);
+    let type_and_close = |text: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("c", cx);
+            window.render_frame(cx);
+            window.input(text, cx);
+            window.press("escape", cx);
+        })
+        .unwrap();
+    };
+    let reopened = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("c", cx);
+            window.render_frame(cx);
+            let title = view.read(cx).create_title(cx);
+            window.press("escape", cx);
+            title
+        })
+        .unwrap()
+    };
+    run(handle, &view, "project server", cx);
+    type_and_close("For the server", cx);
+    run(handle, &view, "project app", cx);
+    assert_eq!(reopened(cx), "", "another project starts empty");
+    type_and_close("For the app", cx);
+    run(handle, &view, "project server", cx);
+    assert_eq!(reopened(cx), "For the server");
+    run(handle, &view, "project app", cx);
+    assert_eq!(reopened(cx), "For the app");
 }

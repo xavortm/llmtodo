@@ -544,7 +544,7 @@ impl Workspace {
                 let message = this.message.clone();
                 form.update(cx, |form, cx| {
                     if sent {
-                        form.close(window, cx);
+                        form.close_sent(window, cx);
                     } else {
                         form.show_notice(message, cx);
                     }
@@ -3347,7 +3347,7 @@ impl Workspace {
         }
         let place: SharedString = place.into();
         self.create
-            .update(cx, |form, cx| form.open(place, window, cx));
+            .update(cx, |form, cx| form.open(place, (team, project), window, cx));
         cx.notify();
     }
 

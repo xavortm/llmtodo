@@ -3,7 +3,11 @@
 //! as `Fix the crash status:todo label:bug priority:high assignee:me`. Enter
 //! in the title, Cmd-Enter anywhere or the Create button emits
 //! `CreateEvent::Submit`, and the workspace sends the issue to the server.
-//! Esc, Ctrl-C or the Cancel button closes the form.
+//! Esc, Ctrl-C, the Cancel button or a click outside closes the form. A
+//! closed form keeps what the owner typed for its team and project, and
+//! shows it again the next time it opens there. A sent issue clears it.
+
+use std::collections::HashMap;
 
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::{
@@ -73,12 +77,26 @@ pub enum CreateEvent {
     Submit { text: String, description: String },
 }
 
+/// The team and project a new issue goes to. Kept text belongs to one.
+pub type PlaceKey = (Option<SharedString>, Option<SharedString>);
+
+/// The title and description typed before the form closed.
+#[derive(Debug, Clone, Default)]
+struct Kept {
+    title: String,
+    description: String,
+}
+
 pub struct CreateForm {
     pub input: Entity<InputState>,
     pub description: Entity<TextareaState>,
     open: bool,
     /// Where the issue goes, such as `in llmtodo, project App`.
     place: SharedString,
+    /// The team and project of the open form.
+    key: PlaceKey,
+    /// Text typed in a form that closed without creating, by place.
+    kept: HashMap<PlaceKey, Kept>,
     /// Why the last submit did not create the issue.
     notice: Option<SharedString>,
     return_to: Option<FocusHandle>,
@@ -117,6 +135,8 @@ impl CreateForm {
             description,
             open: false,
             place: "".into(),
+            key: (None, None),
+            kept: HashMap::new(),
             notice: None,
             return_to: None,
             fallback,
@@ -128,21 +148,54 @@ impl CreateForm {
         self.open
     }
 
-    pub fn open(&mut self, place: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the form for `key`, with the text kept for it, if any.
+    pub fn open(
+        &mut self,
+        place: SharedString,
+        key: PlaceKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.return_to = window.focused(cx);
         self.open = true;
         self.place = place;
+        let kept = self.kept.get(&key).cloned().unwrap_or_default();
+        self.key = key;
         self.notice = None;
-        self.description
-            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.description.update(cx, |state, cx| {
+            state.set_value(kept.description, window, cx)
+        });
         self.input.update(cx, |state, cx| {
-            state.set_value("", window, cx);
+            state.set_value(kept.title, window, cx);
             state.focus(window, cx);
         });
         cx.notify();
     }
 
+    /// Closes the form and keeps the typed text for its place.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        let kept = Kept {
+            title: self.input.read(cx).value().to_string(),
+            description: self.description.read(cx).value().to_string(),
+        };
+        if kept.title.trim().is_empty() && kept.description.trim().is_empty() {
+            self.kept.remove(&self.key);
+        } else {
+            self.kept.insert(self.key.clone(), kept);
+        }
+        self.hide(window, cx);
+    }
+
+    /// Closes the form after its issue went out, so the text is not kept.
+    pub fn close_sent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.kept.remove(&self.key);
+        self.hide(window, cx);
+    }
+
+    fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
         let handle = self.return_to.take().unwrap_or(self.fallback.clone());
         window.focus(&handle, cx);
@@ -218,6 +271,7 @@ impl Render for CreateForm {
                     .on_action(cx.listener(Self::switch_field))
                     // The form covers the list. A click here stays here.
                     .occlude()
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
                     .w(rems(46.))
                     .max_w(relative(0.92))
                     .max_h_full()
