@@ -148,6 +148,11 @@ impl CreateForm {
         self.open
     }
 
+    /// Whether a closed form kept text for `key`.
+    pub fn has_kept(&self, key: &PlaceKey) -> bool {
+        !self.open && self.kept.contains_key(key)
+    }
+
     /// Opens the form for `key`, with the text kept for it, if any.
     pub fn open(
         &mut self,

@@ -295,6 +295,9 @@ pub struct IssueList {
     pub scope: Scope,
     /// Whether the filter panel is open, so its button shows pressed.
     pub filter_panel_open: bool,
+    /// The new issue form keeps unsent text for the place a new issue
+    /// would go now, so Add ticket shows a dot.
+    pub draft_kept: bool,
     /// Hide closed tasks this many days old. None shows them all.
     pub hide_closed_after: Option<u32>,
     /// Experimental: draw a light line through the titles of Done tasks.
@@ -434,6 +437,7 @@ impl IssueList {
             filter_panel_open: false,
             hide_closed_after: None,
             strike_done: true,
+            draft_kept: false,
             motion: None,
             fill_layer: cx.new(|_| Default::default()),
             store_seen: 0,
@@ -2231,15 +2235,37 @@ impl IssueList {
             .border_color(border)
             .child(with_card(
                 "add-ticket-tip",
-                Button::new("add-ticket")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label("Add ticket")
-                    .on_click(move |_, window, cx| {
-                        new_events.emit(ViewEvent::NewIssue, window, cx);
+                div()
+                    .relative()
+                    .child(
+                        Button::new("add-ticket")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .label("Add ticket")
+                            .on_click(move |_, window, cx| {
+                                new_events.emit(ViewEvent::NewIssue, window, cx);
+                            }),
+                    )
+                    // Unsent text waits in the form for this place.
+                    .when(self.draft_kept, |this| {
+                        this.child(
+                            div()
+                                .id("add-ticket-dot")
+                                .test_support()
+                                .absolute()
+                                .top(gpui_kit::px(2.))
+                                .right(gpui_kit::px(2.))
+                                .size(gpui_kit::px(6.))
+                                .rounded_full()
+                                .bg(cx.theme().primary),
+                        )
                     }),
-                Card::text("Add a ticket (c)"),
+                Card::text(if self.draft_kept {
+                    "Add a ticket (c). Your unsent text is kept"
+                } else {
+                    "Add a ticket (c)"
+                }),
             ))
             .child(
                 crate::shell::widgets::text_input(&self.filter)

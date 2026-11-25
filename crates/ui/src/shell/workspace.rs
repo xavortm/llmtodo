@@ -575,6 +575,10 @@ impl Workspace {
             // The view history follows whatever changed the view.
             cx.observe(&task, |this: &mut Self, _, cx| this.record_view(false, cx)),
             cx.observe(&list, |this: &mut Self, _, cx| this.record_view(false, cx)),
+            // Add ticket's dot follows the kept text and the place a new
+            // issue would go, which the scope and the selection decide.
+            cx.observe(&create, |this: &mut Self, _, cx| this.sync_draft_dot(cx)),
+            cx.observe(&list, |this: &mut Self, _, cx| this.sync_draft_dot(cx)),
             cx.observe(&claims, |this: &mut Self, _, cx| {
                 this.record_view(false, cx)
             }),
@@ -3325,6 +3329,19 @@ impl Workspace {
             Scope::Team(key) => (Some(key), None),
             Scope::Project(slug) => (selected_team.or(first_team), Some(slug)),
             _ => (selected_team.or(first_team), None),
+        }
+    }
+
+    /// Shows the dot on Add ticket when the form keeps text for the place
+    /// a new issue would go now.
+    fn sync_draft_dot(&mut self, cx: &mut Context<Self>) {
+        let key = self.new_issue_place(cx);
+        let kept = self.create.read(cx).has_kept(&key);
+        if self.list.read(cx).draft_kept != kept {
+            self.list.update(cx, |list, cx| {
+                list.draft_kept = kept;
+                cx.notify();
+            });
         }
     }
 

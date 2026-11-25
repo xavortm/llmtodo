@@ -634,3 +634,41 @@ fn each_project_keeps_its_own_text(cx: &mut TestAppContext) {
     run(handle, &view, "project app", cx);
     assert_eq!(reopened(cx), "For the app");
 }
+
+/// Add ticket shows a dot while the form keeps unsent text for the place
+/// a new issue would go, and not for another project.
+#[gpui_kit::test]
+fn add_ticket_shows_a_dot_for_kept_text(cx: &mut TestAppContext) {
+    let (handle, view, _requests) = open(cx);
+    let dot = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("add-ticket-dot").is_some()
+        })
+        .unwrap()
+    };
+    run(handle, &view, "project server", cx);
+    assert!(!dot(cx), "no dot before any text");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("c", cx);
+        window.render_frame(cx);
+        window.input("Half a thought", cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    assert!(dot(cx), "kept text shows the dot");
+    run(handle, &view, "project app", cx);
+    assert!(!dot(cx), "another project has no kept text");
+    run(handle, &view, "project server", cx);
+    assert!(dot(cx));
+
+    // A sent issue clears the text, and the dot goes.
+    cx.update_window(handle, |_, window, cx| {
+        window.press("c", cx);
+        window.render_frame(cx);
+        window.click("create-submit", cx);
+    })
+    .unwrap();
+    assert!(!dot(cx), "a sent issue clears the dot");
+}
