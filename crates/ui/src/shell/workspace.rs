@@ -1592,8 +1592,14 @@ impl Workspace {
             .iter()
             .filter_map(|name| Column::hideable_from_setting(name))
             .collect();
+        let sidebar_collapsed = settings
+            .sidebar_collapsed
+            .iter()
+            .map(|k| SharedString::from(k.clone()))
+            .collect::<Vec<_>>();
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.active = scope.clone();
+            sidebar.set_collapsed(sidebar_collapsed);
             cx.notify();
         });
         let open_tabs = settings
@@ -1651,6 +1657,7 @@ impl Workspace {
             collapsed_groups: collapsed,
             sidebar_open: self.layout.sidebar_open,
             sidebar_scope: scope.to_setting(),
+            sidebar_collapsed: self.sidebar.read(cx).collapsed(),
             split_side: self.layout.split_sizes.0,
             split_stacked: self.layout.split_sizes.1,
             open_tabs: self
@@ -2472,6 +2479,28 @@ impl Workspace {
 
     fn sidebar_up(&mut self, _: &SidebarUp, _: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_step(-1, cx);
+    }
+
+    fn sidebar_toggle_group(
+        &mut self,
+        _: &SidebarToggleGroup,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar_group(None, cx);
+    }
+
+    /// Closes or opens a team's group in the sidebar: `team`, or the group
+    /// of the active row. Closing it keeps the active project, and its team
+    /// row shows as active (LLM-545).
+    pub fn toggle_sidebar_group(&mut self, team: Option<SharedString>, cx: &mut Context<Self>) {
+        self.sidebar.update(cx, |sidebar, cx| {
+            if let Some(team) = team.or_else(|| sidebar.active_group(cx)) {
+                sidebar.toggle_group(team);
+                cx.notify();
+            }
+        });
+        self.persist(cx);
     }
 
     fn sidebar_top(&mut self, _: &SidebarTop, _: &mut Window, cx: &mut Context<Self>) {

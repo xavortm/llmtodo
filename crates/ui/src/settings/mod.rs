@@ -65,6 +65,8 @@ pub struct UiSettings {
     pub sidebar_open: bool,
     /// What the sidebar picked: `all`, `team:<key>` or `project:<slug>`.
     pub sidebar_scope: String,
+    /// The teams whose groups the sidebar shows closed, by team key.
+    pub sidebar_collapsed: Vec<String>,
     /// Task view width beside the list, in pixels.
     pub split_side: Option<f32>,
     /// Task view height under the list, in pixels.
@@ -114,6 +116,7 @@ impl Default for UiSettings {
             collapsed_groups: Vec::new(),
             sidebar_open: false,
             sidebar_scope: "all".into(),
+            sidebar_collapsed: Vec::new(),
             split_side: None,
             split_stacked: None,
             open_tabs: BTreeMap::new(),
@@ -163,6 +166,7 @@ struct UiState {
     last_task: Option<String>,
     sidebar_open: bool,
     sidebar_scope: String,
+    sidebar_collapsed: Vec<String>,
     sort: String,
     sort_reversed: bool,
     group: String,
@@ -244,6 +248,7 @@ impl UiState {
             last_task: s.last_task.clone(),
             sidebar_open: s.sidebar_open,
             sidebar_scope: s.sidebar_scope.clone(),
+            sidebar_collapsed: s.sidebar_collapsed.clone(),
             sort: s.sort.clone(),
             sort_reversed: s.sort_reversed,
             group: s.group.clone(),
@@ -260,6 +265,7 @@ impl UiState {
         s.last_task = self.last_task;
         s.sidebar_open = self.sidebar_open;
         s.sidebar_scope = self.sidebar_scope;
+        s.sidebar_collapsed = self.sidebar_collapsed;
         s.sort = self.sort;
         s.sort_reversed = self.sort_reversed;
         s.group = self.group;

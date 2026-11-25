@@ -60,6 +60,8 @@ pub enum ViewEvent {
     // The sidebar.
     PickScope(Scope),
     SwitchTracker(usize),
+    /// The chevron on a team row: close or open the team's group.
+    ToggleSidebarGroup(SharedString),
     /// Set or clear a project's color, as `#rrggbb`.
     SetProjectColor {
         slug: String,

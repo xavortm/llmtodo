@@ -494,6 +494,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::sidebar_top))
             .on_action(cx.listener(Self::sidebar_bottom))
             .on_action(cx.listener(Self::leave_sidebar))
+            .on_action(cx.listener(Self::sidebar_toggle_group))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))

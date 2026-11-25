@@ -98,6 +98,36 @@ pub fn scopes(catalog: &Catalog) -> Vec<Row> {
     out
 }
 
+/// The rows the sidebar draws: [`scopes`] without the projects of the
+/// teams in `collapsed`, which the owner closed (LLM-545).
+pub fn shown(catalog: &Catalog, collapsed: &HashSet<SharedString>) -> Vec<Row> {
+    let mut team_closed = false;
+    scopes(catalog)
+        .into_iter()
+        .filter(|row| {
+            if let Scope::Team(key) = &row.scope {
+                team_closed = collapsed.contains(key);
+            } else if !row.nested {
+                team_closed = false;
+            }
+            !(row.nested && team_closed)
+        })
+        .collect()
+}
+
+/// The team whose group holds row `ix`: the team row itself, or the team
+/// above a project nested under it.
+fn group_of(rows: &[Row], ix: usize) -> Option<SharedString> {
+    let row = rows.get(ix)?;
+    if !row.nested && !matches!(row.scope, Scope::Team(_)) {
+        return None;
+    }
+    rows[..=ix].iter().rev().find_map(|r| match &r.scope {
+        Scope::Team(key) => Some(key.clone()),
+        _ => None,
+    })
+}
+
 pub struct Sidebar {
     store: Entity<IssueStore>,
     events: ViewEvents,
@@ -116,6 +146,8 @@ pub struct Sidebar {
     /// store revision the sidebar last looked at.
     counted: HashMap<llmtodo_core::IssueId, Counted>,
     store_seen: u64,
+    /// The teams whose projects the owner hid, by team key (LLM-545).
+    collapsed: HashSet<SharedString>,
     /// How often the rows counted every issue, for tests.
     #[cfg(test)]
     pub scans: usize,
@@ -175,6 +207,7 @@ impl Sidebar {
             data: None,
             counted: HashMap::new(),
             store_seen: 0,
+            collapsed: HashSet::new(),
             #[cfg(test)]
             scans: 0,
         }
@@ -217,7 +250,7 @@ impl Sidebar {
         }
         let store = self.store.read(cx);
         let catalog = store.catalog.clone();
-        let rows = scopes(&catalog);
+        let rows = shown(&catalog, &self.collapsed);
         let counts = ScopeCounts::of(store);
         let tallies = rows
             .iter()
@@ -238,28 +271,68 @@ impl Sidebar {
 
     /// The active row: the picked row while it still shows the active
     /// scope, or else the first row that does.
-    fn active_row(&self, rows: &[Row]) -> Option<usize> {
+    fn active_row(&self, rows: &[Row], catalog: &Catalog) -> Option<usize> {
         if rows
             .get(self.cursor)
             .is_some_and(|r| r.scope == self.active)
         {
             return Some(self.cursor);
         }
-        rows.iter().position(|r| r.scope == self.active)
+        if let Some(ix) = rows.iter().position(|r| r.scope == self.active) {
+            return Some(ix);
+        }
+        // A project in a closed group: its team row stands in for it.
+        let Scope::Project(slug) = &self.active else {
+            return None;
+        };
+        let teams = catalog.project_teams.get(slug)?;
+        rows.iter().position(|r| {
+            matches!(&r.scope, Scope::Team(key)
+                if self.collapsed.contains(key) && teams.contains(key))
+        })
+    }
+
+    /// The teams whose groups are closed, sorted, for the settings.
+    pub fn collapsed(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.collapsed.iter().map(|k| k.to_string()).collect();
+        out.sort();
+        out
+    }
+
+    /// Closes the groups of `teams` and opens every other one.
+    pub fn set_collapsed(&mut self, teams: impl IntoIterator<Item = SharedString>) {
+        self.collapsed = teams.into_iter().collect();
+        self.data = None;
+    }
+
+    /// Opens or closes the group of `team`.
+    pub fn toggle_group(&mut self, team: SharedString) {
+        if !self.collapsed.remove(&team) {
+            self.collapsed.insert(team);
+        }
+        self.data = None;
+    }
+
+    /// The team whose group holds the active row, if any.
+    pub fn active_group(&self, cx: &App) -> Option<SharedString> {
+        let catalog = &self.store.read(cx).catalog;
+        let rows = shown(catalog, &self.collapsed);
+        group_of(&rows, self.active_row(&rows, catalog)?)
     }
 
     /// Moves `step` rows down, or up for a negative step, and returns the
     /// scope of the new row. It stops at the first and the last row.
     pub fn step(&mut self, step: isize, cx: &App) -> Scope {
-        let rows = scopes(&self.store.read(cx).catalog);
-        let at = self.active_row(&rows).unwrap_or(0);
+        let catalog = &self.store.read(cx).catalog;
+        let rows = shown(catalog, &self.collapsed);
+        let at = self.active_row(&rows, catalog).unwrap_or(0);
         self.cursor = at.saturating_add_signed(step).min(rows.len() - 1);
         rows[self.cursor].scope.clone()
     }
 
     /// Moves to the last row and returns its scope.
     pub fn last(&mut self, cx: &App) -> Scope {
-        let rows = scopes(&self.store.read(cx).catalog);
+        let rows = shown(&self.store.read(cx).catalog, &self.collapsed);
         self.cursor = rows.len().saturating_sub(1);
         rows.last().map_or(Scope::All, |r| r.scope.clone())
     }
@@ -384,7 +457,7 @@ impl Render for Sidebar {
         let catalog = &data.catalog;
         let rows = data.rows.clone();
         let tallies = data.tallies.clone();
-        let active_row = self.active_row(&rows);
+        let active_row = self.active_row(&rows, catalog);
         let sidebar = cx.entity().downgrade();
         let focused = self.focus.is_focused(window);
         // A copy, so a row's motion can take `cx` while the colors stay
@@ -569,6 +642,38 @@ impl Render for Sidebar {
                         .child(count.to_string()),
                 )
             })
+            // A team row's chevron closes and opens its group (LLM-545).
+            .when_some(
+                match &scope {
+                    Scope::Team(key) => Some(key.clone()),
+                    _ => None,
+                },
+                |this, key| {
+                    let closed = self.collapsed.contains(&key);
+                    let events = self.events.clone();
+                    this.child(
+                        div()
+                            .id(ElementId::Name(format!("sidebar-group-{key}").into()))
+                            .test_support()
+                            .flex_none()
+                            .rounded(theme.radius)
+                            .hover(|s| s.bg(hover))
+                            .child(
+                                Icon::new(if closed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .xsmall()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                events.emit(ViewEvent::ToggleSidebarGroup(key.clone()), window, cx);
+                            }),
+                    )
+                },
+            )
             .on_click(move |_, window, cx| {
                 sidebar.update(cx, |sidebar, _| sidebar.cursor = ix).ok();
                 events.emit(ViewEvent::PickScope(target.clone()), window, cx);

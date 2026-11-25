@@ -1162,3 +1162,62 @@ fn dragging_a_project_onto_another_reorders_them(cx: &mut TestAppContext) {
     );
     cx.read(|cx| assert_eq!(view.read(cx).message(), "Moved Server"));
 }
+
+/// LLM-545: the chevron on a team row closes its group, without picking
+/// the team, and the group stays closed after a restart.
+#[gpui_kit::test]
+fn the_chevron_closes_a_team_group_until_it_opens_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SettingsStore::at(dir.path().join("ui.json"));
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    run(handle, &view, "team llm", cx);
+    run(handle, &view, "sidebar", cx);
+    click_chevron(handle, cx);
+    assert_eq!(
+        scope(&view, cx),
+        Scope::Team("LLM".into()),
+        "still the team"
+    );
+    assert_eq!(store.load().sidebar_collapsed, vec!["LLM".to_string()]);
+    // App and Server are hidden, so j skips to the saved view.
+    press(handle, &["h", "j"], cx);
+    assert_eq!(scope(&view, cx), Scope::View("Open bugs".into()));
+
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    cx.read(|cx| assert_eq!(view.read(cx).scope(cx), Scope::View("Open bugs".into())));
+    press(handle, &["h", "k"], cx);
+    assert_eq!(scope(&view, cx), Scope::Team("LLM".into()), "still closed");
+    run(handle, &view, "sidebar", cx);
+    run(handle, &view, "sidebar", cx);
+    click_chevron(handle, cx);
+    assert!(store.load().sidebar_collapsed.is_empty());
+    press(handle, &["h", "j"], cx);
+    assert_eq!(scope(&view, cx), Scope::Project("app".into()));
+}
+
+fn click_chevron(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("sidebar-group-LLM", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// LLM-545: Space on a project closes its team's group. The project stays
+/// shown, and the team row stands in for it.
+#[gpui_kit::test]
+fn space_on_a_project_closes_its_team_group(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    press(handle, &["cmd-b", "h", "j", "j", "j", "j"], cx);
+    assert_eq!(scope(&view, cx), Scope::Project("server".into()));
+    press(handle, &["space"], cx);
+    assert_eq!(scope(&view, cx), Scope::Project("server".into()));
+    assert_eq!(shown(&view, cx), demo_keys_in("server"));
+    // From the team row, j goes on past the hidden projects.
+    press(handle, &["j"], cx);
+    assert_eq!(scope(&view, cx), Scope::View("Open bugs".into()));
+    press(handle, &["k", "z", "a", "j"], cx);
+    assert_eq!(scope(&view, cx), Scope::Project("app".into()));
+}

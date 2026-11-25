@@ -39,6 +39,7 @@ impl Workspace {
                 self.set_scope(scope, cx);
                 self.focus_list_from_sidebar(window, cx);
             }
+            ViewEvent::ToggleSidebarGroup(team) => self.toggle_sidebar_group(Some(team), cx),
             ViewEvent::SwitchTracker(ix) => {
                 self.switch_tracker(ix, cx);
             }

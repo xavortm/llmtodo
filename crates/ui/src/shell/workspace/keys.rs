@@ -49,6 +49,7 @@ actions!(
         SidebarTop,
         SidebarBottom,
         LeaveSidebar,
+        SidebarToggleGroup,
         PickPriority,
     ]
 );
@@ -143,6 +144,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", LeaveSidebar, Some(sidebar::CONTEXT)),
         KeyBinding::new("escape", LeaveSidebar, Some(sidebar::CONTEXT)),
         KeyBinding::new("ctrl-a l", LeaveSidebar, Some(sidebar::CONTEXT)),
+        KeyBinding::new("z a", SidebarToggleGroup, Some(sidebar::CONTEXT)),
+        KeyBinding::new("space", SidebarToggleGroup, Some(sidebar::CONTEXT)),
         // Ctrl-C cancels like Esc while typing and closes the help, as in
         // nvim.
         KeyBinding::new("ctrl-c", Cancel, Some(CONTEXT)),
@@ -238,6 +241,7 @@ pub(super) const HELP: &[(&str, &[(&str, &str)])] = &[
             ("j / k", "Show the next / previous row"),
             ("Ctrl-N / Ctrl-P", "Show the next / previous row"),
             ("gg / G", "First / last row"),
+            ("za / Space", "Close or open the team's group"),
             ("l / Enter / Esc", "Back to the list"),
             (":team LLM", "Show one team"),
             (":project app", "Show one project"),
