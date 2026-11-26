@@ -35,17 +35,30 @@ fn agent(session: &str) -> ClientContext {
 const SECTION: &str =
     "+++ Review\n### Steps to reproduce\n1. Open the app.\n\n### What to check\n- It opens.\n+++\n";
 
+/// Starts a server on `dir`. A server this test just stopped can leave the
+/// lock looking held for a moment on CI's macOS runners, so a start that
+/// finds it held tries again for up to 2 s (LLM-605), as the app's live
+/// tests do. The server itself never waits (LLM-477).
 async fn start(dir: &std::path::Path) -> llmtodo_server::Running {
-    llmtodo_server::start(llmtodo_server::Config {
-        data_dir: dir.to_path_buf(),
-        port: 0,
-        host: None,
-        github_poll: false,
-        offline_copy: false,
-        database: llmtodo_server::test_database(dir).await,
-    })
-    .await
-    .unwrap()
+    let mut tries = 0;
+    loop {
+        let config = llmtodo_server::Config {
+            data_dir: dir.to_path_buf(),
+            port: 0,
+            host: None,
+            github_poll: false,
+            offline_copy: false,
+            database: llmtodo_server::test_database(dir).await,
+        };
+        match llmtodo_server::start(config).await {
+            Ok(running) => return running,
+            Err(e) if tries < 40 && e.to_string().contains("already runs") => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("start the server: {e:#}"),
+        }
+    }
 }
 
 impl T {
