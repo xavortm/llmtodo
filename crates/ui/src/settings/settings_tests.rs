@@ -1414,6 +1414,48 @@ fn the_background_panel_edits_live_over_the_app(cx: &mut TestAppContext) {
         "Settings closed"
     );
 
+    // It opens centred over the dimmed app.
+    let (panel_box, view_size) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("bg-panel-scrim").is_some(), "dimmed");
+            (window.find("bg-panel").bounds(), window.viewport_size())
+        })
+        .unwrap();
+    let off = panel_box.center() - gpui_kit::point(view_size.width / 2., view_size.height / 2.);
+    assert!(
+        f32::from(off.x).abs() < 2. && f32::from(off.y).abs() < 2.,
+        "{off:?}"
+    );
+    assert_eq!(cx.read(|cx| view.read(cx).background_panel_at()), None);
+
+    // A drag by the header moves it, and the dimming goes.
+    let header = cx
+        .update_window(handle, |_, window, _| {
+            window.find("bg-panel-header").bounds()
+        })
+        .unwrap();
+    let from = header.center();
+    let to = from - gpui_kit::point(gpui_kit::px(150.), gpui_kit::px(80.));
+    cx.update_window(handle, |_, window, cx| window.drag(from, to, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let moved = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("bg-panel-scrim").is_none(),
+                "no longer dimmed"
+            );
+            window.find("bg-panel").bounds()
+        })
+        .unwrap();
+    let shift = moved.origin - panel_box.origin;
+    assert!(
+        (f32::from(shift.x) + 150.).abs() < 2. && (f32::from(shift.y) + 80.).abs() < 2.,
+        "{shift:?}"
+    );
+
     // The slot picker, then a panel-only control.
     click(handle, "bg-panel-slot-task", cx);
     let panel = cx.read(|cx| view.read(cx).background_panel().clone());
@@ -1466,6 +1508,11 @@ fn the_background_panel_edits_live_over_the_app(cx: &mut TestAppContext) {
     assert!(!open(cx));
     run(handle, &view, "background edit", cx);
     assert!(open(cx));
+    assert_eq!(
+        cx.read(|cx| view.read(cx).background_panel_at()),
+        None,
+        "centred again"
+    );
     click(handle, "bg-panel-close", cx);
     assert!(!open(cx));
 }

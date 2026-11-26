@@ -1828,6 +1828,8 @@ impl Workspace {
             self.leave_settings(window, cx);
         }
         self.bg_panel_open = true;
+        // Each time: centred over the dimmed app until moved.
+        self.bg_panel_at = None;
         let focus = self.bg_panel.read(cx).focus.clone();
         window.focus(&focus, cx);
         self.message = "Editing backgrounds: changes save and show at once".into();
@@ -1841,6 +1843,16 @@ impl Workspace {
         self.bg_panel_open = false;
         self.focus_list(window, cx);
         cx.notify();
+    }
+
+    /// Where the panel sits once dragged; `None` while it is centred.
+    pub fn background_panel_at(&self) -> Option<gpui_kit::Point<gpui_kit::Pixels>> {
+        self.bg_panel_at
+    }
+
+    #[cfg(test)]
+    pub fn move_background_panel(&mut self, at: gpui_kit::Point<gpui_kit::Pixels>) {
+        self.bg_panel_at = Some(at);
     }
 
     pub fn background_panel_open(&self) -> bool {

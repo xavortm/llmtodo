@@ -679,9 +679,11 @@ impl Render for BackgroundPanelDrag {
 const PANEL_MARGIN: f32 = 16.;
 
 impl Workspace {
-    /// LLM-580: the floating Backgrounds panel. It starts bottom right and
-    /// moves by its header. It stays solid, so its text is readable over
-    /// any image.
+    /// LLM-580: the floating Backgrounds panel. It opens in the middle,
+    /// over a dimmed app, so it is easy to find. Once dragged by its
+    /// header, the dimming goes and the panel stays where it was put, so
+    /// the images show while they change. It stays solid, with a strong
+    /// border, so it reads over any image.
     fn render_background_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let bounds = self.bg_panel_bounds.clone();
@@ -713,33 +715,54 @@ impl Workspace {
             .on_drag(BackgroundPanelDrag, |drag, _, _, cx| {
                 cx.new(|_| drag.clone())
             });
-        div()
-            .id("bg-panel")
-            .test_support()
-            .absolute()
-            .map(|this| match self.bg_panel_at {
-                Some(at) => this.left(at.x).top(at.y),
-                None => this.right(margin).bottom(margin + gpui_kit::px(24.)),
-            })
+        let body = div()
+            .id("bg-panel-box")
             .w(gpui_kit::rems(27.))
             .max_h(window.viewport_size().height - margin * 2.)
             .overflow_y_scroll()
             .p_3()
             .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(theme.border)
+            .border_2()
+            .border_color(theme.foreground.opacity(0.55))
             .bg(theme.popover)
             .text_color(theme.popover_foreground)
             .shadow_lg()
             .occlude()
+            .child(header)
+            .child(self.bg_panel.clone());
+        // The outer box has no padding or border, so the measure inside it
+        // starts exactly where the panel starts, and a drag does not jump.
+        let panel = div()
+            .id("bg-panel")
+            .test_support()
+            .relative()
+            .when_some(self.bg_panel_at, |this, at| {
+                this.absolute().left(at.x).top(at.y)
+            })
             .child(
                 gpui_kit::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
                     .absolute()
+                    .top_0()
+                    .left_0()
                     .size_full(),
             )
-            .child(header)
-            .child(self.bg_panel.clone())
-            .into_any_element()
+            .child(body);
+        match self.bg_panel_at {
+            Some(_) => panel.into_any_element(),
+            // Not moved yet: centred over the dimmed app.
+            None => div()
+                .id("bg-panel-scrim")
+                .test_support()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::black().opacity(0.55))
+                .occlude()
+                .child(panel)
+                .into_any_element(),
+        }
     }
 
     fn drag_background_panel(
