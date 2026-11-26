@@ -408,6 +408,13 @@ pub struct UpdateArgs {
     /// The PR URL for the git panel, or `none` to clear. It is also attached.
     #[arg(long)]
     pub pr: Option<String>,
+    /// The built app of the branch, for Try it, or `none` to clear. Needs
+    /// --preview-commit. `scripts/preview-build` sets both.
+    #[arg(long, value_name = "PATH")]
+    pub preview_build: Option<String>,
+    /// The full commit hash the preview build was built from.
+    #[arg(long, value_name = "SHA", requires = "preview_build")]
+    pub preview_commit: Option<String>,
     /// Set --branch and --worktree from the current git checkout.
     #[arg(long, conflicts_with_all = ["branch", "worktree"])]
     pub git_here: bool,
@@ -527,6 +534,31 @@ fn text_change(s: Option<String>) -> Change<String> {
     match s {
         Some(v) if v.trim().eq_ignore_ascii_case("none") => Change::Clear,
         s => Change::text(s),
+    }
+}
+
+/// The `--preview-build` and `--preview-commit` flags as a change. The path
+/// is made absolute, because the app opens it from another folder.
+fn preview_change(
+    path: Option<String>,
+    commit: Option<String>,
+) -> Result<Change<SetPreviewBuild>, CliError> {
+    match text_change(path) {
+        Change::Keep => Ok(Change::Keep),
+        Change::Clear => Ok(Change::Clear),
+        Change::Set(p) => {
+            let Some(commit) = commit.filter(|c| !c.trim().is_empty()) else {
+                return Err(CliError::Usage(
+                    "--preview-build needs --preview-commit <full hash>".into(),
+                ));
+            };
+            let p = std::path::absolute(p.trim())
+                .map_err(|e| CliError::Usage(format!("--preview-build: {e}")))?;
+            Ok(Change::Set(SetPreviewBuild {
+                path: p.to_string_lossy().into_owned(),
+                commit: commit.trim().to_string(),
+            }))
+        }
     }
 }
 
@@ -989,6 +1021,7 @@ pub fn build_update(a: UpdateArgs) -> CliResult<UpdateIssue> {
         branch: text_change(a.branch),
         worktree: text_change(a.worktree),
         pr: text_change(a.pr),
+        preview_build: preview_change(a.preview_build, a.preview_commit)?,
         estimate_minutes: a.estimate_minutes,
         estimate_cost_usd: a.estimate_cost,
         estimate_reason: a.estimate_reason,
@@ -1016,6 +1049,7 @@ pub fn build_update(a: UpdateArgs) -> CliResult<UpdateIssue> {
         && u.branch.is_keep()
         && u.worktree.is_keep()
         && u.pr.is_keep()
+        && u.preview_build.is_keep()
         && u.estimate_minutes.is_none()
         && u.estimate_cost_usd.is_none()
         && u.estimate_reason.is_none()

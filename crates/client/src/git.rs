@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use llmtodo_api_types::IssueDetail;
+use llmtodo_api_types::{IssueDetail, IssueGit, PreviewBuild};
 
 /// The most commits the git panel lists.
 pub const MAX_ISSUE_COMMITS: usize = 20;
@@ -438,12 +438,66 @@ pub fn fill_commits(d: &mut IssueDetail, host: Option<&str>, fallback: Option<&P
     }
     all.truncate(MAX_ISSUE_COMMITS);
     d.git.commits = all;
+    if let Some(b) = d.preview_build.as_mut() {
+        check_preview_build(b, &d.git, host, fallback);
+    }
     d.git.repo_url = web.or_else(|| {
         fallback
             .and_then(origin_url_cached)
             .as_deref()
             .and_then(repo_web_url)
     });
+}
+
+/// Marks the preview build stale or fresh from the local repo, when the
+/// build is on `host`: it is stale when the issue's branch no longer points
+/// at the commit it was built from. The repo is the issue's worktree, or
+/// `fallback`. Without a branch or a repo, the server's answer stays.
+fn check_preview_build(
+    b: &mut PreviewBuild,
+    git: &IssueGit,
+    host: Option<&str>,
+    fallback: Option<&Path>,
+) {
+    if host.is_none() || b.host.as_deref() != host {
+        return;
+    }
+    let Some(branch) = git.branch.as_deref() else {
+        return;
+    };
+    let own = git
+        .worktree
+        .as_deref()
+        .filter(|_| git.host.as_deref() == host)
+        .map(Path::new)
+        .filter(|p| p.is_dir());
+    let Some(repo) = own.or(fallback) else {
+        return;
+    };
+    if let Some(head) = branch_head(repo, branch) {
+        b.stale = !head.eq_ignore_ascii_case(&b.commit);
+    }
+}
+
+/// The commit a local branch points at, as a full hash.
+pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
+    // The branch name comes from the database. It reaches git only as a
+    // full ref name after `--end-of-options`.
+    if branch.starts_with('-') || branch.contains("..") {
+        return None;
+    }
+    let refname = format!("refs/heads/{branch}^{{commit}}");
+    git_out(
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &refname,
+        ],
+        repo,
+    )
+    .filter(|h| matches!(h.len(), 40 | 64) && is_hash(h))
 }
 
 /// Runs git in `dir` and returns its trimmed output. None when git fails
@@ -884,5 +938,46 @@ mod tests {
         // A log that starts after the session started cannot speak for it.
         let own = session_commits(&r.dir("."), Some("main"), false, &first, &last, 0);
         assert_eq!(subjects(&own), ["gone one"]);
+    }
+
+    /// LLM-590: on the build's own machine, the branch in the repo decides
+    /// whether the preview build is stale, over the server's answer.
+    #[test]
+    fn preview_build_is_stale_once_the_branch_moves_on() {
+        let r = Repo::new();
+        let built = r.head(".");
+        let git = IssueGit {
+            branch: Some("main".into()),
+            worktree: Some(r.dir(".").to_string_lossy().into_owned()),
+            host: Some("me".into()),
+            ..Default::default()
+        };
+        let build = |stale| PreviewBuild {
+            path: "/p/llmtodo-app".into(),
+            commit: built.clone(),
+            host: Some("me".into()),
+            built_at: jiff::Timestamp::UNIX_EPOCH,
+            stale,
+        };
+        let mut b = build(true);
+        check_preview_build(&mut b, &git, Some("me"), None);
+        assert!(!b.stale, "the branch still points at the build");
+
+        r.commit(".", "after the build");
+        check_preview_build(&mut b, &git, Some("me"), None);
+        assert!(b.stale, "the branch moved on");
+
+        // Another machine's build keeps the server's answer.
+        let mut b = build(false);
+        check_preview_build(&mut b, &git, Some("other"), None);
+        assert!(!b.stale);
+        // So does a branch that is not in the repo.
+        let gone = IssueGit {
+            branch: Some("gone".into()),
+            ..git.clone()
+        };
+        check_preview_build(&mut b, &gone, Some("me"), None);
+        assert!(!b.stale);
+        assert_eq!(branch_head(&r.dir("."), "--all"), None);
     }
 }

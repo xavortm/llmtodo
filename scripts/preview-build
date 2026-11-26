@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Builds the app of the current branch for a ticket's Try it, and records it
+# on the ticket (LLM-590), so the owner never waits for a compile.
+#
+#   scripts/preview-build LLM-123
+#
+# Builds the app and the CLI with the release profile in this checkout, then
+# copies both into target/preview/<KEY>/. The app starts its server with the
+# `llmtodo` next to it, so the preview runs its own commit's server. The
+# folder is per ticket, so a later build of another ticket or scripts/publish
+# leaves it alone. The ticket gets the path and the commit; `issue view`
+# shows `preview_build.stale: true` once the branch moves past that commit.
+#
+# Launch a preview with LLMTODO_PREVIEW_TICKET=<KEY> set, so the app knows
+# which ticket it previews.
+#
+# A worktree without a target folder first copies the main checkout's build
+# cache, as CLAUDE.md says. Refuses uncommitted changes to tracked files,
+# because the build must match the commit it records.
+#
+# LLMTODO_PREVIEW_SKIP_BUILD=1 reuses the binaries in target/release, and
+# LLMTODO_BIN picks the CLI that records the build (default: the installed
+# one, which matches the running server), for tests.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+key=${1:-}
+if [ -z "$key" ] || [ $# -ne 1 ]; then
+  echo "usage: scripts/preview-build <KEY>" >&2
+  exit 2
+fi
+case "$key" in
+  *[!A-Za-z0-9-]*) echo "not a ticket key: $key" >&2; exit 2 ;;
+esac
+key=$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')
+
+if ! git diff --quiet HEAD --; then
+  echo "commit your changes first: the preview build must match a commit" >&2
+  exit 1
+fi
+commit=$(git rev-parse HEAD)
+
+# A new worktree shares the main checkout's build cache instead of
+# compiling every dependency again. APFS clones the blocks.
+main=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)
+if [ ! -d target ] && [ "$main" != "$(pwd)" ] && [ -d "$main/target" ]; then
+  echo "copying the build cache from $main" >&2
+  cp -cRp "$main/target" target
+fi
+
+if [ -z "${LLMTODO_PREVIEW_SKIP_BUILD:-}" ]; then
+  LLMTODO_BUILD_COMMIT="$commit" cargo build --release -p llmtodo-app -p llmtodo-cli
+fi
+
+out="target/preview/$key"
+rm -rf "$out"
+mkdir -p "$out"
+cp target/release/llmtodo-app "$out/llmtodo-app"
+cp target/release/llmtodo "$out/llmtodo"
+printf '%s\n' "$commit" > "$out/build-commit"
+
+"${LLMTODO_BIN:-llmtodo}" issue update "$key" \
+  --preview-build "$(pwd)/$out/llmtodo-app" --preview-commit "$commit" \
+  --no-input --fields key >/dev/null
+echo "PREVIEW_BUILD=$(pwd)/$out/llmtodo-app"
+echo "PREVIEW_COMMIT=$commit"

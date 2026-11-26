@@ -1319,3 +1319,55 @@ async fn a_folder_of_its_own_keeps_its_sqlite_file() {
     assert_eq!(out.status.code(), Some(6));
     t.stop().await;
 }
+
+/// LLM-590: `--preview-build` records a build with its commit, made
+/// absolute, and `none` clears it. A build needs its commit.
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_build_flags() {
+    let t = T::new().await;
+    t.json("s1", &["team", "create", "LLM", "llmtodo"]);
+    t.json("s1", &["issue", "create", "-t", "Preview", "--team", "LLM"]);
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        t.code(
+            "s1",
+            &["issue", "update", "LLM-1", "--preview-build", "app"]
+        ),
+        2,
+        "a build needs its commit"
+    );
+    let v = t.json(
+        "s1",
+        &[
+            "--json",
+            "issue",
+            "update",
+            "LLM-1",
+            "--preview-build",
+            "target/preview/LLM-1/llmtodo-app",
+            "--preview-commit",
+            commit,
+        ],
+    );
+    let want = t
+        .dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("target/preview/LLM-1/llmtodo-app");
+    assert_eq!(v["preview_build"]["path"], want.to_str().unwrap(), "{v}");
+    assert_eq!(v["preview_build"]["commit"], commit);
+    let v = t.json(
+        "s1",
+        &[
+            "--json",
+            "issue",
+            "update",
+            "LLM-1",
+            "--preview-build",
+            "none",
+        ],
+    );
+    assert_eq!(v.get("preview_build"), None, "{v}");
+    t.stop().await;
+}

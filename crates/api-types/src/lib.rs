@@ -1020,6 +1020,35 @@ pub struct IssueDetail {
     /// The owner's review answers, oldest first.
     #[serde(default)]
     pub reviews: Vec<ReviewAnswer>,
+    /// The ready-to-run build of the ticket's branch that
+    /// `scripts/preview-build` recorded, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_build: Option<PreviewBuild>,
+}
+
+/// A build of the ticket's branch, ready for Try it (LLM-590).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PreviewBuild {
+    /// The built app binary, on `host`.
+    pub path: String,
+    /// The commit it was built from.
+    pub commit: String,
+    /// The machine that holds the build.
+    pub host: Option<String>,
+    pub built_at: Timestamp,
+    /// True when the branch head no longer matches `commit`, so the build
+    /// is out of date. The server compares the latest `HEAD` an agent
+    /// session sent; a client on `host` reads the branch from the repo.
+    pub stale: bool,
+}
+
+/// Records a preview build. The caller's host is stored with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetPreviewBuild {
+    /// The built app binary.
+    pub path: String,
+    /// The full commit hash it was built from.
+    pub commit: String,
 }
 
 /// Git details of an issue. They stay after the claim ends.
@@ -1129,6 +1158,9 @@ pub struct UpdateIssue {
     /// The PR URL. It is also attached, so the GitHub sync follows it.
     /// Clearing it clears the link but keeps the attachment.
     pub pr: Change<String>,
+    #[serde(default, skip_serializing_if = "Change::is_keep")]
+    /// The preview build of the branch. The caller's host is stored with it.
+    pub preview_build: Change<SetPreviewBuild>,
     /// Filling in an empty estimate needs no reason. Changing one needs
     /// `estimate_reason`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -469,6 +469,63 @@ async fn apply_git(w: &mut Write<'_>, id: &str, req: &UpdateIssue) -> ApiResult<
     Ok(changed)
 }
 
+/// Records or clears the preview build of an issue (LLM-590). A build takes
+/// the caller's host, because its path is only good on that machine.
+async fn apply_preview_build(
+    w: &mut Write<'_>,
+    id: &str,
+    change: &Change<SetPreviewBuild>,
+) -> ApiResult<bool> {
+    let (path, commit, host, _) = store::issues::preview_build(w.c(), id).await?;
+    let new = match change {
+        Change::Keep => return Ok(false),
+        Change::Clear => None,
+        Change::Set(b) => {
+            let p = b.path.trim();
+            let c = b.commit.trim().to_ascii_lowercase();
+            if p.is_empty() {
+                return Err(ApiError::validation("the preview build needs a path"));
+            }
+            if !matches!(c.len(), 40 | 64) || !c.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(ApiError::validation(format!(
+                    "the preview build commit must be a full commit hash, got {:?}",
+                    b.commit
+                )));
+            }
+            Some((p.to_string(), c))
+        }
+    };
+    let new_host = new.as_ref().and(w.ctx.client.host.clone());
+    // A rebuild of the same commit still counts: the build time moves on.
+    if new.is_none() && path.is_none() {
+        return Ok(false);
+    }
+    let old = path
+        .as_ref()
+        .map(|p| serde_json::json!({"path": p, "commit": commit, "host": host}));
+    let next = new
+        .as_ref()
+        .map(|(p, c)| serde_json::json!({"path": p, "commit": c, "host": new_host}));
+    store::issues::set_preview_build(
+        w.c(),
+        new.as_ref()
+            .map(|(p, c)| (p.as_str(), c.as_str(), new_host.as_deref())),
+        &crate::db::now(),
+        id,
+    )
+    .await?;
+    w.event(
+        EntityType::Issue,
+        id,
+        Some(id),
+        ActivityField::PreviewBuild,
+        old,
+        next,
+    )
+    .await?;
+    Ok(true)
+}
+
 /// Applies every set field of an update, in a fixed order: team move first,
 /// so statuses resolve in the new team.
 pub async fn apply_fields(
@@ -495,6 +552,9 @@ pub async fn apply_fields(
     }
     if !(req.branch.is_keep() && req.worktree.is_keep() && req.pr.is_keep()) {
         changed |= apply_git(w, &row.id, &req).await?;
+    }
+    if !req.preview_build.is_keep() {
+        changed |= apply_preview_build(w, &row.id, &req.preview_build).await?;
     }
     changed |= apply_estimates(w, &row, &req, creating).await?;
     if let Some(we) = &req.wanted_executor {
