@@ -1471,6 +1471,20 @@ fn the_background_panel_edits_live_over_the_app(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     assert_eq!(shown(cx).task.unwrap().effects.blur, 2.);
+    // With the field focused, as after a click on +, a step still shows.
+    cx.update_window(handle, |_, window, cx| {
+        let focus = gpui_kit::Focusable::focus_handle(blur.read(cx), cx);
+        window.focus(&focus, cx);
+        blur.update(cx, |_, cx| {
+            cx.emit(gpui_kit::component::input::NumberInputEvent::Step(
+                gpui_kit::component::input::StepAction::Increment,
+            ))
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx).task.unwrap().effects.blur, 4.);
+    assert_eq!(cx.read(|cx| blur.read(cx).value().to_string()), "4");
     click(handle, "settings-bg-task-grayscale", cx);
     assert!(shown(cx).task.unwrap().grayscale);
     let tint = cx.read(|cx| panel.read(cx).select(Slot::Task, "tint"));

@@ -558,6 +558,14 @@ impl BackgroundEditor {
         if next as i64 != now {
             self.set(slot, key.key(), Some(key.value(next)), window, cx);
         }
+        // The − and + buttons focus the field, and `sync` leaves a focused
+        // field alone so typing is not overwritten. A step is not typing,
+        // so it shows its value here.
+        let field = self.number(slot, key.key());
+        let text = next.to_string();
+        if field.read(cx).value().as_ref() != text.as_str() {
+            field.update(cx, |state, cx| state.set_value(text, window, cx));
+        }
     }
 
     /// Shows what `config.toml` holds. A field being typed in keeps its
@@ -608,7 +616,7 @@ impl BackgroundEditor {
                 key.key()
             )))
             .test_support()
-            .w(rems(8.))
+            .w_full()
             .h_8()
             .flex()
             .flex_col()
@@ -657,9 +665,11 @@ impl BackgroundEditor {
                 .into(),
             None => "No image".into(),
         };
+        let panel = self.mode == Mode::Panel;
         let preview = div()
-            .w(rems(6.))
-            .h(rems(3.75))
+            .when(!panel, |el| el.w(rems(6.)).h(rems(3.75)))
+            // In the panel: half its width, at about 16:10.
+            .when(panel, |el| el.w_1_2().h(rems(7.5)))
             .flex_none()
             .rounded(radius)
             .overflow_hidden()
@@ -667,6 +677,50 @@ impl BackgroundEditor {
             .border_color(border)
             .bg(page)
             .when_some(path, |el, p| el.child(backdrop::thumbnail(p)));
+        if panel {
+            let header = h_flex()
+                .gap_3()
+                .items_start()
+                .child(preview)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id(id("name"))
+                                .test_support()
+                                .text_sm()
+                                .text_color(muted)
+                                .truncate()
+                                .child(name),
+                        )
+                        .child(
+                            Button::new(id("choose"))
+                                .label("Choose image…")
+                                .outline()
+                                .w_full()
+                                .tab_stop(false)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.write(ViewEvent::ChooseBackground(slot), window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(id("remove"))
+                                .label("Remove")
+                                .ghost()
+                                .w_full()
+                                .tab_stop(false)
+                                .disabled(image.is_none())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set(slot, "image", None, window, cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            return (header, image.is_some());
+        }
         let header = h_flex()
             .gap_3()
             .child(preview)
@@ -725,6 +779,8 @@ impl BackgroundEditor {
         let muted = cx.theme().muted_foreground;
         let mode = self.mode;
         let controls = self.of(slot);
+        // Every control has the same width and height, after a label
+        // column of one width.
         let line = |label: &'static str, control: AnyElement| {
             h_flex()
                 .gap_3()
@@ -736,7 +792,15 @@ impl BackgroundEditor {
                         .text_color(muted)
                         .child(label),
                 )
-                .child(control)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_8()
+                        .flex()
+                        .items_center()
+                        .child(control),
+                )
         };
         let mut lines: Vec<AnyElement> = Vec::new();
         if set {
@@ -758,7 +822,7 @@ impl BackgroundEditor {
                 line(
                     key.label(),
                     div()
-                        .w(rems(10.))
+                        .w_full()
                         .child(
                             Select::new(state)
                                 .id(SharedString::from(format!(
@@ -766,9 +830,7 @@ impl BackgroundEditor {
                                     slot.key(),
                                     key.key()
                                 )))
-                                .small()
-                                .placeholder("Custom")
-                                .menu_width(rems(10.)),
+                                .placeholder("Custom"),
                         )
                         .into_any_element(),
                 )
@@ -822,7 +884,7 @@ impl BackgroundEditor {
             .gap_2()
             .child(header)
             .when(!lines.is_empty(), |el| {
-                el.child(v_flex().pl(indent).gap_1p5().children(lines))
+                el.child(v_flex().pl(indent).gap_3().children(lines))
             })
             .into_any_element()
     }
@@ -867,10 +929,7 @@ impl Render for BackgroundEditor {
                 let picker = Slot::ALL
                     .into_iter()
                     .fold(
-                        ButtonGroup::new("bg-panel-slots")
-                            .outline()
-                            .compact()
-                            .small(),
+                        ButtonGroup::new("bg-panel-slots").outline().w_full(),
                         |group, slot| {
                             group.child(
                                 Button::new(SharedString::from(format!(
@@ -878,6 +937,7 @@ impl Render for BackgroundEditor {
                                     slot.key()
                                 )))
                                 .label(short_title(slot))
+                                .flex_1()
                                 .tab_stop(false)
                                 .selected(slot == current),
                             )
@@ -893,7 +953,7 @@ impl Render for BackgroundEditor {
                     .test_support()
                     .key_context(PANEL_CONTEXT)
                     .track_focus(&self.focus)
-                    .gap_3()
+                    .gap_4()
                     .child(picker)
                     .child(self.render_slot(current, window, cx))
                     .child(
