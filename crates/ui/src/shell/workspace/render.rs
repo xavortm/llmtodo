@@ -581,6 +581,11 @@ impl Render for Workspace {
                 }),
             )
             .on_action(
+                cx.listener(|this, _: &app_menus::MenuEditBackgrounds, window, cx| {
+                    this.open_background_panel(window, cx)
+                }),
+            )
+            .on_action(
                 cx.listener(|this, _: &app_menus::MenuBackgrounds, window, cx| {
                     this.toggle_backgrounds(&ToggleBackgrounds, window, cx)
                 }),

@@ -267,3 +267,35 @@ fn zoom_does_not_change_the_title_bar(cx: &mut TestAppContext) {
     }
     assert_eq!(zoom(cx), 1.0);
 }
+
+/// LLM-581: View › Edit Backgrounds… sits under Show Background Images and
+/// opens the Backgrounds panel.
+#[gpui_kit::test]
+fn view_edit_backgrounds_opens_the_panel(cx: &mut TestAppContext) {
+    let view_menu = app_menus::menus()
+        .into_iter()
+        .find(|m| m.name == "View")
+        .unwrap();
+    let names: Vec<String> = view_menu
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MenuItem::Action { name, .. } => Some(name.to_string()),
+            _ => None,
+        })
+        .collect();
+    let show = names
+        .iter()
+        .position(|n| n == "Show Background Images")
+        .unwrap();
+    assert_eq!(names[show + 1], "Edit Backgrounds…");
+
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(app_menus::MenuEditBackgrounds), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| view.read(cx).background_panel_open()));
+}

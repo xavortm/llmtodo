@@ -40,6 +40,7 @@ actions!(
         MenuClaims,
         MenuActivityStrip,
         MenuBackgrounds,
+        MenuEditBackgrounds,
         MenuHelp,
         MenuCheckForUpdates,
     ]
@@ -61,6 +62,9 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-+", ZoomIn, None),
         KeyBinding::new("cmd--", ZoomOut, None),
         KeyBinding::new("cmd-0", ZoomReset, None),
+        // LLM-582: hide or show background images from anywhere, as for a
+        // screen share. The View menu shows it.
+        KeyBinding::new("cmd-shift-b", MenuBackgrounds, None),
         KeyBinding::new("ctrl-=", ZoomIn, None),
         KeyBinding::new("ctrl-+", ZoomIn, None),
         KeyBinding::new("ctrl--", ZoomOut, None),
@@ -145,6 +149,9 @@ pub fn menus_for(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Show Background Images", MenuBackgrounds)
                 .checked(state.backgrounds_set && state.backgrounds_shown)
                 .disabled(!state.backgrounds_set),
+            // LLM-581: the floating Backgrounds panel. Always on: it is
+            // also how a first image gets set.
+            MenuItem::action("Edit Backgrounds…", MenuEditBackgrounds),
             MenuItem::action("Keyboard Shortcuts", MenuHelp),
             MenuItem::separator(),
             MenuItem::action("Toggle Full Screen", ToggleFullScreen),
