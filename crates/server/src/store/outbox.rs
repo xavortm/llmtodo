@@ -199,6 +199,12 @@ pub async fn snapshot(c: &mut Conn, issue_id: &str) -> ApiResult<Option<Value>> 
     .bind(issue_id)
     .fetch_one(&mut *c)
     .await?;
+    let (preview_path, preview_commit): (Option<String>, Option<String>) = backend::query_as(
+        "SELECT preview_build_path, preview_build_commit FROM issues WHERE id = ?",
+    )
+    .bind(issue_id)
+    .fetch_one(&mut *c)
+    .await?;
     let labels: Vec<String> = backend::query_scalar(
         "SELECT label_id FROM issue_labels WHERE issue_id = ? ORDER BY label_id",
     )
@@ -219,6 +225,7 @@ pub async fn snapshot(c: &mut Conn, issue_id: &str) -> ApiResult<Option<Value>> 
         "wanted_executor": r.10,
         "estimates": [r.11, cost],
         "git": [branch, worktree, pr],
+        "preview_build": [preview_path, preview_commit],
         "labels": labels,
         "description": description,
         "description_version": version,

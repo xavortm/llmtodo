@@ -2641,6 +2641,106 @@ async fn git_panel_outlives_the_claim() {
     t.stop().await;
 }
 
+/// LLM-590: an agent records a preview build of the branch. It goes stale
+/// once an agent session sends a newer `HEAD`, and it can be cleared.
+#[tokio::test]
+async fn preview_build_records_and_goes_stale() {
+    let t = T::new().await;
+    let k = t.issue("Preview me", json!({})).await;
+    let url = format!("/v1/issues/{k}");
+    let v = t.ok(&owner(), "GET", &url, Value::Null).await;
+    assert_eq!(v.get("preview_build"), None);
+
+    // The agent's session sends `HEAD` abc1234, the commit it built.
+    let commit = format!("abc1234{}", "0".repeat(33));
+    let who = agent("p1");
+    let v = t
+        .ok(
+            &who,
+            "PATCH",
+            &url,
+            json!({ "preview_build": { "path": "/w/target/preview/app", "commit": commit } }),
+        )
+        .await;
+    let b = &v["preview_build"];
+    assert_eq!(b["path"], "/w/target/preview/app");
+    assert_eq!(b["commit"], commit.as_str());
+    assert_eq!(b["host"], "test-host");
+    assert_eq!(b["stale"], false);
+    assert!(b["built_at"].is_string());
+
+    // A newer commit on the branch makes the build stale.
+    let mut later = agent("p1");
+    later.0.head = Some("def5678".into());
+    let v = t
+        .ok(&later, "PATCH", &url, json!({ "priority": "high" }))
+        .await;
+    assert_eq!(v["preview_build"]["stale"], true);
+
+    // A session on another branch says nothing about this build. The
+    // script records the branch with the build.
+    let v = t
+        .ok(
+            &who,
+            "PATCH",
+            &url,
+            json!({
+                "branch": "p1-branch",
+                "preview_build": { "path": "/w/target/preview/app", "commit": commit },
+            }),
+        )
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false);
+    let mut elsewhere = agent("p2");
+    elsewhere.0.branch = Some("main".into());
+    elsewhere.0.head = Some("fff9999".into());
+    let v = t
+        .ok(&elsewhere, "PATCH", &url, json!({ "priority": "low" }))
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false, "another branch");
+
+    // The owner records a build of a newer commit. The agent sessions are
+    // older than the build, so they do not make it stale.
+    let newer = format!("bbb2222{}", "0".repeat(33));
+    let v = t
+        .ok(
+            &owner(),
+            "PATCH",
+            &url,
+            json!({ "preview_build": { "path": "/w/app", "commit": newer } }),
+        )
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false, "older sessions");
+
+    // Only a full hash and a path are accepted.
+    for bad in [
+        json!({ "path": "/p", "commit": "abc1234" }),
+        json!({ "path": " ", "commit": commit }),
+    ] {
+        assert_eq!(
+            t.err(&who, "PATCH", &url, json!({ "preview_build": bad }))
+                .await,
+            "validation"
+        );
+    }
+
+    let v = t
+        .ok(&who, "PATCH", &url, json!({ "preview_build": "" }))
+        .await;
+    assert_eq!(v.get("preview_build"), None);
+    let log = t.ok(&owner(), "GET", "/v1/activity", Value::Null).await;
+    let fields: Vec<&str> = log["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["field"].as_str())
+        .filter(|f| *f == "preview_build")
+        .collect();
+    // Three recorded builds and one clear.
+    assert_eq!(fields.len(), 4, "{log}");
+    t.stop().await;
+}
+
 /// LLM-108: `claimed` and `analyzing` narrow a query to the tasks an agent
 /// is on, the same set the app calls Locked and Analyzing.
 #[tokio::test]

@@ -165,6 +165,8 @@ Change an issue. Only the flags you pass change
 - `--branch <branch>`: The git branch for the git panel, or `none` to clear
 - `--worktree <worktree>`: The worktree path for the git panel, or `none` to clear. This machine's host name is stored with it
 - `--pr <pr>`: The PR URL for the git panel, or `none` to clear. It is also attached
+- `--preview-build <preview_build>`: The built app of the branch, for Try it, or `none` to clear. Needs --preview-commit. `scripts/preview-build` sets both
+- `--preview-commit <preview_commit>`: The full commit hash the preview build was built from
 - `--git-here` (one of: true, false): Set --branch and --worktree from the current git checkout
 - `-d, --description <description>`: Replace the whole description. Needs --base-version or --force
 - `--description-file <description_file>`

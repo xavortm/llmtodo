@@ -132,6 +132,7 @@ open_enum!(
         GitBranch => "git_branch",
         GitWorktree => "git_worktree",
         GitPr => "git_pr",
+        PreviewBuild => "preview_build",
         Analyzing => "analyzing",
         Review => "review",
         ReviewRole => "review_role",

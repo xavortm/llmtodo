@@ -217,6 +217,21 @@ impl Out {
                 println!("  {c}");
             }
         }
+        if let Some(b) = &d.preview_build {
+            println!("\nPreview build:");
+            match &b.host {
+                Some(h) => println!("  path: {} (on {h})", b.path),
+                None => println!("  path: {}", b.path),
+            }
+            let short = b.commit.get(..7).unwrap_or(&b.commit);
+            let stale = if b.stale {
+                " (stale: the branch moved on)"
+            } else {
+                ""
+            };
+            println!("  commit: {short}{stale}");
+            println!("  built: {}", b.built_at);
+        }
         if !d.attachments.is_empty() {
             println!("\nAttachments:");
             for a in &d.attachments {

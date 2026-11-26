@@ -1,7 +1,9 @@
 //! The full detail of one issue, with everything an agent needs.
 
 use crate::store::backend::Conn;
-use llmtodo_api_types::{Attachment, AttachmentKind, GitPr, IssueDetail, IssueGit, WorkSession};
+use llmtodo_api_types::{
+    Attachment, AttachmentKind, GitPr, IssueDetail, IssueGit, PreviewBuild, WorkSession,
+};
 
 use crate::error::ApiResult;
 use crate::store::backend;
@@ -78,7 +80,12 @@ pub async fn load_with(
     for ws in &sessions {
         usage::merge(&mut total, &ws.usage.by_model);
     }
+    let preview_build = preview_build(&git_row);
     let git = git(git_row, &attachments, &sessions);
+    let preview_build = preview_build.map(|mut b| {
+        b.stale = preview_stale(&b, git.branch.as_deref(), &sessions);
+        b
+    });
     Ok(IssueDetail {
         aliases,
         children,
@@ -89,8 +96,40 @@ pub async fn load_with(
         sessions,
         usage: usage::summary(total, &prices),
         reviews,
+        preview_build,
         issue,
     })
+}
+
+/// The recorded preview build, not yet checked for staleness.
+fn preview_build(r: &GitRow) -> Option<PreviewBuild> {
+    Some(PreviewBuild {
+        path: r.preview_build_path.clone()?,
+        commit: r.preview_build_commit.clone()?,
+        host: r.preview_build_host.clone(),
+        built_at: crate::db::parse_ts(r.preview_build_at.as_deref().unwrap_or_default()),
+        stale: false,
+    })
+}
+
+/// Whether a newer `HEAD` of the build's branch exists. Only agent sessions
+/// on the issue's branch, seen at or after the build, count: a session on
+/// another branch or an older one says nothing about this build. Without
+/// a branch, every session seen since the build counts.
+fn preview_stale(b: &PreviewBuild, branch: Option<&str>, sessions: &[WorkSession]) -> bool {
+    sessions
+        .iter()
+        .filter(|s| s.last_seen_at >= b.built_at)
+        .filter(|s| branch.is_none() || s.branch.as_deref() == branch)
+        .filter_map(|s| Some((s.last_seen_at, s.last_head.as_deref()?)))
+        .max_by_key(|(at, _)| *at)
+        .is_some_and(|(_, h)| !same_commit(h, &b.commit))
+}
+
+/// Whether two commit hashes name the same commit. Either may be short.
+fn same_commit(a: &str, b: &str) -> bool {
+    let n = a.len().min(b.len());
+    n >= 7 && a[..n].eq_ignore_ascii_case(&b[..n])
 }
 
 /// Every key of the issue, the current one included.
@@ -119,7 +158,9 @@ async fn children(
 
 async fn git_row(conn: &mut Conn, issue_id: &str) -> ApiResult<GitRow> {
     Ok(backend::query_as::<GitRow>(
-        "SELECT git_branch, git_worktree, git_host, git_pr FROM issues WHERE id = ?",
+        "SELECT git_branch, git_worktree, git_host, git_pr,
+                preview_build_path, preview_build_commit, preview_build_host, preview_build_at
+         FROM issues WHERE id = ?",
     )
     .bind(issue_id)
     .fetch_one(&mut *conn)
@@ -132,6 +173,10 @@ struct GitRow {
     git_worktree: Option<String>,
     git_host: Option<String>,
     git_pr: Option<String>,
+    preview_build_path: Option<String>,
+    preview_build_commit: Option<String>,
+    preview_build_host: Option<String>,
+    preview_build_at: Option<String>,
 }
 
 /// The git panel of an issue. The PR is the one set by hand, or else the

@@ -795,6 +795,7 @@ const FIELDS: &[(&str, &[&str], &[&str])] = &[
         &["branch", "worktree", "pr"],
         &["git_branch", "git_worktree", "git_pr"],
     ),
+    ("preview_build", &["preview_build"], &["preview_build"]),
 ];
 
 /// The description fields of `UpdateIssue`.

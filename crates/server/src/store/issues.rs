@@ -1177,6 +1177,50 @@ pub async fn set_git_pr(c: &mut Conn, pr: Option<&str>, id: &str) -> ApiResult<(
     Ok(())
 }
 
+/// The preview build of an issue: path, commit, host and build time.
+pub type PreviewBuildRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+pub async fn preview_build(c: &mut Conn, id: &str) -> ApiResult<PreviewBuildRow> {
+    Ok(backend::query_as(
+        "SELECT preview_build_path, preview_build_commit, preview_build_host, preview_build_at
+         FROM issues WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&mut *c)
+    .await?)
+}
+
+/// Sets or, with `None`, clears the preview build: path, commit and host.
+/// It is stamped with `at`.
+pub async fn set_preview_build(
+    c: &mut Conn,
+    build: Option<(&str, &str, Option<&str>)>,
+    at: &str,
+    id: &str,
+) -> ApiResult<()> {
+    let (path, commit, host) = match build {
+        Some((p, c, h)) => (Some(p), Some(c), h),
+        None => (None, None, None),
+    };
+    backend::query(
+        "UPDATE issues SET preview_build_path = ?, preview_build_commit = ?,
+         preview_build_host = ?, preview_build_at = ? WHERE id = ?",
+    )
+    .bind(path)
+    .bind(commit)
+    .bind(host)
+    .bind(build.map(|_| at))
+    .bind(id)
+    .execute(&mut *c)
+    .await?;
+    Ok(())
+}
+
 pub async fn set_title(c: &mut Conn, title: &str, id: &str) -> ApiResult<()> {
     backend::query("UPDATE issues SET title = ? WHERE id = ?")
         .bind(title)
