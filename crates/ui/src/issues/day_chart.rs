@@ -29,7 +29,7 @@ pub const CONTEXT: &str = "DayTasks";
 pub const HEIGHT: f32 = 72.;
 /// One day's slot, and the bar inside it.
 const SLOT: f32 = 10.;
-const BAR: f32 = 6.;
+const BAR: f32 = 8.;
 /// The strip shows at most this many days, the newest kept.
 const MAX_DAYS: usize = 730;
 
@@ -149,6 +149,8 @@ pub struct DayChart {
     /// The day count at the last draw. A new day scrolls the strip to its
     /// newest end, as a new project does.
     drawn: Option<(SharedString, usize)>,
+    /// The day under the pointer, by index. The readout shows it.
+    hovered: Option<usize>,
 }
 
 impl EventEmitter<DayChartEvent> for DayChart {}
@@ -168,6 +170,7 @@ impl DayChart {
             shown: None,
             scroll: ScrollHandle::new(),
             drawn: None,
+            hovered: None,
         }
     }
 
@@ -184,14 +187,76 @@ impl DayChart {
     }
 }
 
-/// One bar, `n` tasks tall against `max`, in `half` px of room.
-fn bar(n: usize, max: usize, half: f32, color: Hsla) -> impl IntoElement {
-    let h = if n == 0 {
+/// How tall a bar of `n` tasks is against `max`, in `half` px of room.
+fn bar_height(n: usize, max: usize, half: f32) -> f32 {
+    if n == 0 {
         0.
     } else {
-        (n as f32 / max.max(1) as f32 * half).max(2.)
-    };
-    div().w(px(BAR)).h(px(h)).bg(color).rounded(px(1.))
+        (n as f32 / max.max(1) as f32 * half).max(3.)
+    }
+}
+
+/// Created tasks: an outline with a grid of dots inside.
+fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
+    div()
+        .w(px(BAR))
+        .h(px(height))
+        .border_1()
+        .border_color(color)
+        .rounded(px(1.5))
+        .overflow_hidden()
+        .child(
+            gpui_kit::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let dot = gpui_kit::size(px(1.), px(1.));
+                    let dots = color.opacity(0.75);
+                    let mut y = bounds.top() + px(1.);
+                    while y + px(1.) <= bounds.bottom() - px(0.5) {
+                        let mut x = bounds.left() + px(1.);
+                        while x + px(1.) <= bounds.right() - px(0.5) {
+                            window.paint_quad(gpui_kit::fill(
+                                gpui_kit::Bounds::new(point(x, y), dot),
+                                dots,
+                            ));
+                            x += px(2.);
+                        }
+                        y += px(2.);
+                    }
+                },
+            )
+            .size_full(),
+        )
+}
+
+/// Completed tasks: a solid bar.
+fn solid_bar(height: f32, color: Hsla) -> impl IntoElement {
+    div().w(px(BAR)).h(px(height)).bg(color).rounded(px(1.5))
+}
+
+/// The legend's sample of a bar, beside a count.
+fn swatch(dotted: bool, color: Hsla) -> gpui_kit::AnyElement {
+    if dotted {
+        dotted_bar(10., color).into_any_element()
+    } else {
+        solid_bar(10., color).into_any_element()
+    }
+}
+
+/// What the readout at the right shows: the hovered day, or the last
+/// seven days when no day is hovered.
+pub fn readout(days: &[Day], hovered: Option<usize>) -> (String, usize, usize) {
+    match hovered.and_then(|ix| days.get(ix)) {
+        Some(day) => (day_label(day.date), day.created.len(), day.completed.len()),
+        None => {
+            let week = &days[days.len().saturating_sub(7)..];
+            (
+                "Last 7 days".to_string(),
+                week.iter().map(|d| d.created.len()).sum(),
+                week.iter().map(|d| d.completed.len()).sum(),
+            )
+        }
+    }
 }
 
 impl Render for DayChart {
@@ -203,14 +268,16 @@ impl Render for DayChart {
         };
         if self.drawn.as_ref() != Some(&(slug.clone(), days.len())) {
             self.drawn = Some((slug, days.len()));
+            self.hovered = None;
             // The offset clamps at layout, so this lands on the newest day.
             self.scroll.set_offset(point(px(-1e6), px(0.)));
         }
         let theme = cx.theme();
-        let created_color = theme.info;
-        let done_color = theme.success;
-        let hover = theme.list_hover;
-        let axis = theme.border;
+        let color = theme.primary;
+        let hover_bg = theme.foreground.opacity(0.14);
+        let axis = theme.foreground.opacity(0.28);
+        let muted = theme.muted_foreground;
+        let hovered = self.hovered;
         let max = days
             .iter()
             .map(|d| d.created.len().max(d.completed.len()))
@@ -218,15 +285,13 @@ impl Render for DayChart {
             .unwrap_or(0);
         // The padding takes 8 px above and below, the line 1 px.
         let half = (HEIGHT - 17.) / 2.;
-        let slots = days.into_iter().map(|day| {
-            let tip = format!(
-                "{} · {} created · {} completed",
-                day_label(day.date),
-                day.created.len(),
-                day.completed.len()
-            );
+        let (label, made, done) = readout(&days, hovered);
+        let slots = days.iter().enumerate().map(|(ix, day)| {
             let date = day.date;
             let empty = day.created.is_empty() && day.completed.is_empty();
+            let is_hovered = hovered == Some(ix);
+            // While one day is hovered, the others step back.
+            let dim = hovered.is_some() && !is_hovered;
             v_flex()
                 .id(SharedString::from(format!("day-{date}")))
                 .test_support()
@@ -235,39 +300,103 @@ impl Render for DayChart {
                 .h_full()
                 .items_center()
                 .rounded(px(2.))
+                .when(dim, |this| this.opacity(0.4))
+                .when(is_hovered, |this| this.bg(hover_bg))
+                .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                    let next = if *over {
+                        Some(ix)
+                    } else if this.hovered == Some(ix) {
+                        None
+                    } else {
+                        this.hovered
+                    };
+                    if next != this.hovered {
+                        this.hovered = next;
+                        cx.notify();
+                    }
+                }))
                 .when(!empty, |this| {
                     this.cursor_pointer()
-                        .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(DayChartEvent::Pick(date));
                         }))
                 })
-                .tooltip(crate::shell::tooltip::Card::text(tip).builder())
-                .child(v_flex().h(px(half)).justify_end().child(bar(
-                    day.created.len(),
-                    max,
-                    half,
-                    created_color,
-                )))
+                .child(
+                    v_flex()
+                        .h(px(half))
+                        .justify_end()
+                        .when(!day.created.is_empty(), |this| {
+                            this.child(dotted_bar(bar_height(day.created.len(), max, half), color))
+                        }),
+                )
                 .child(div().w_full().h(px(1.)).bg(axis))
                 .child(
                     v_flex()
                         .h(px(half))
-                        .child(bar(day.completed.len(), max, half, done_color)),
+                        .when(!day.completed.is_empty(), |this| {
+                            this.child(solid_bar(bar_height(day.completed.len(), max, half), color))
+                        }),
                 )
         });
+        let count = |n: usize, word: &'static str, dotted: bool| {
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(swatch(dotted, color))
+                .child(
+                    div()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.foreground)
+                        .child(n.to_string()),
+                )
+                .child(div().text_color(muted).child(word))
+        };
         h_flex()
             .id("day-chart")
             .test_support()
             .size_full()
-            .py(px(8.))
-            .px_2()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.background)
-            .overflow_x_scroll()
-            .track_scroll(&self.scroll)
-            .children(slots)
+            .child(
+                h_flex()
+                    .id("day-chart-days")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .py(px(8.))
+                    .px_2()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.scroll)
+                    .children(slots),
+            )
+            .child(
+                v_flex()
+                    .id("day-chart-readout")
+                    .test_support()
+                    .flex_none()
+                    // Wide enough for any day, so a hover never moves it.
+                    .min_w(gpui_kit::rems(13.))
+                    .h_full()
+                    .px_4()
+                    .justify_center()
+                    .gap_1p5()
+                    .text_xs()
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .text_color(theme.foreground)
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .child(label),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(count(made, "created", true))
+                            .child(count(done, "completed", false)),
+                    ),
+            )
             .into_any_element()
     }
 }
@@ -398,7 +527,7 @@ impl Render for DayTasks {
         let active_bg = theme.list_active;
         let muted = theme.muted_foreground;
         let mono = theme.mono_font_family.clone();
-        let (created_color, done_color) = (theme.info, theme.success);
+        let color = theme.primary;
         let made = rows.iter().filter(|r| !r.completed).count();
         let title = format!(
             "{} · {made} created · {} completed",
@@ -418,10 +547,10 @@ impl Render for DayTasks {
                 .gap_px()
                 .children(rows.into_iter().enumerate().map(|(ix, row)| {
                     let selected = ix == self.selected;
-                    let (word, color) = if row.completed {
-                        ("Completed", done_color)
+                    let word = if row.completed {
+                        "Completed"
                     } else {
-                        ("Created", created_color)
+                        "Created"
                     };
                     h_flex()
                         .id(SharedString::from(format!("day-task-{}-{ix}", row.key)))
@@ -435,7 +564,7 @@ impl Render for DayTasks {
                         .when(selected, |this| this.bg(active_bg))
                         .when(!selected, |this| this.hover(move |s| s.bg(hover)))
                         .active(move |s| s.bg(pressed))
-                        .child(div().flex_none().size_2().rounded_full().bg(color))
+                        .child(swatch(!row.completed, color))
                         .child(
                             div()
                                 .flex_none()
@@ -470,6 +599,8 @@ impl Render for DayTasks {
                         this.open_row(ix, window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &DayClose, window, cx| this.close(window, cx)))
+                    // The list under it takes no hover or click.
+                    .occlude()
                     .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
                     .w(px(560.))
                     .max_w_full()

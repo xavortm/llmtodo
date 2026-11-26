@@ -243,6 +243,8 @@ impl Render for ClaimsList {
                     .id("claims")
                     .key_context(CONTEXT)
                     .track_focus(&self.focus)
+                    // The list under it takes no hover or click.
+                    .occlude()
                     .on_action(cx.listener(|this, _: &ClaimsDown, _, cx| this.step(true, cx)))
                     .on_action(cx.listener(|this, _: &ClaimsUp, _, cx| this.step(false, cx)))
                     .on_action(cx.listener(|this, _: &ClaimsOpen, window, cx| {

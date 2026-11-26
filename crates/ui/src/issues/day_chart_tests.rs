@@ -119,3 +119,16 @@ fn a_project_shows_the_strip_and_a_day_click_lists_its_tasks(cx: &mut TestAppCon
     })
     .unwrap();
 }
+
+#[test]
+fn the_readout_shows_the_hovered_day_or_the_last_seven_days() {
+    use crate::issues::day_chart::readout;
+    let issues: Vec<Issue> = (1..=9)
+        .map(|n| issue(n, "app", (11, 10 + n as i8), Some("20")))
+        .collect();
+    let out = days(&issues, "app", date(2026, 11, 20));
+    // Nov 11 to Nov 20. The last seven days are Nov 14 to Nov 20: six
+    // created, and all nine completed on Nov 20.
+    assert_eq!(readout(&out, None), ("Last 7 days".to_string(), 6, 9));
+    assert_eq!(readout(&out, Some(0)), ("Wed Nov 11".to_string(), 1, 0));
+}
