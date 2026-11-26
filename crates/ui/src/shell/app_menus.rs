@@ -40,6 +40,7 @@ actions!(
         MenuClaims,
         MenuActivityStrip,
         MenuHelp,
+        MenuCheckForUpdates,
     ]
 );
 
@@ -88,6 +89,8 @@ pub fn init(cx: &mut App) {
 pub fn menus() -> Vec<Menu> {
     vec![
         Menu::new(APP_NAME).items([
+            MenuItem::action("Check for Updates…", MenuCheckForUpdates),
+            MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),

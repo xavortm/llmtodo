@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonCustomVariant;
-use gpui_kit::{EventEmitter, Hsla, hsla};
+use gpui_kit::{EventEmitter, Hsla, hsla, px};
 
 use super::*;
 use crate::model::update::{Restart, UpdateWatch};
@@ -46,6 +46,9 @@ pub struct UpdateState {
     cli: Option<PathBuf>,
     /// The installed commit, when it differs from this build.
     ready: Option<String>,
+    /// The owner closed the button with its X. It stays hidden until the
+    /// next start, and Check for Updates in the app menu still works.
+    dismissed: bool,
     restarting: bool,
     /// Starts the helper. Tests record the restart instead.
     launch: fn(&Restart) -> std::io::Result<()>,
@@ -54,10 +57,12 @@ pub struct UpdateState {
     button: Entity<UpdateButton>,
     _poll: gpui_kit::Task<()>,
     _click: gpui_kit::Subscription,
+    _dismiss: gpui_kit::Subscription,
 }
 
-/// The Restart to update button. The workspace owns its state and copies
-/// it here with `set`. A click emits `RestartClicked`.
+/// The Restart to update button, with an X on its right that hides it.
+/// The workspace owns its state and copies it here with `set`. A click
+/// emits `RestartClicked`, and the X emits `UpdateDismissed`.
 pub struct UpdateButton {
     commit: Option<String>,
     restarting: bool,
@@ -66,6 +71,10 @@ pub struct UpdateButton {
 pub struct RestartClicked;
 
 impl EventEmitter<RestartClicked> for UpdateButton {}
+
+pub struct UpdateDismissed;
+
+impl EventEmitter<UpdateDismissed> for UpdateButton {}
 
 impl UpdateButton {
     fn set(&mut self, commit: Option<String>, restarting: bool, cx: &mut Context<Self>) {
@@ -118,16 +127,21 @@ impl Workspace {
         let click = cx.subscribe(&button, |this, _, _: &RestartClicked, cx| {
             this.restart_to_update(cx)
         });
+        let dismiss = cx.subscribe(&button, |this, _, _: &UpdateDismissed, cx| {
+            this.dismiss_update(cx)
+        });
         self.update = Some(UpdateState {
             watch,
             data_dir,
             cli,
             ready: None,
+            dismissed: false,
             restarting: false,
             launch: spawn_helper,
             button,
             _poll: poll,
             _click: click,
+            _dismiss: dismiss,
         });
     }
 
@@ -152,6 +166,43 @@ impl Workspace {
         state
             .button
             .update(cx, |button, cx| button.set(commit, restarting, cx));
+    }
+
+    /// Hides the button until the next start.
+    pub fn dismiss_update(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.update else {
+            return;
+        };
+        if !state.dismissed {
+            state.dismissed = true;
+            cx.notify();
+        }
+    }
+
+    /// Check for Updates in the app menu. It reads the installed bundle
+    /// now, and restarts onto it when it is a new build.
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.update else {
+            self.message = "Updates work only in the installed app".into();
+            cx.notify();
+            return;
+        };
+        // One small file read, so it runs here and the menu answers at once.
+        let newer = state.watch.newer().or_else(|| state.ready.clone());
+        let Some(newer) = newer else {
+            self.message = format!("{} is up to date", app_menus::APP_NAME).into();
+            cx.notify();
+            return;
+        };
+        state.dismissed = false;
+        self.found_update(Some(newer), cx);
+        self.restart_to_update(cx);
+    }
+
+    /// Whether the button shows in the title bar.
+    #[cfg(test)]
+    pub fn update_button_shown(&self) -> bool {
+        self.update_button().is_some()
     }
 
     /// Whether the update watch still reads the bundle.
@@ -263,6 +314,9 @@ impl Workspace {
     pub(super) fn update_button(&self) -> Option<Entity<UpdateButton>> {
         let state = self.update.as_ref()?;
         state.ready.as_ref()?;
+        if state.dismissed {
+            return None;
+        }
         Some(state.button.clone())
     }
 }
@@ -279,16 +333,19 @@ impl Render for UpdateButton {
         // GPUI Kit fills a custom button at rest with only a faint tint of
         // its color, which left the dark text hard to read. The rest fill
         // is set to full gold here, and hover goes a little lighter.
+        let style = || {
+            ButtonCustomVariant::new(cx)
+                .color(gold(0.55))
+                .foreground(UPDATE_TEXT)
+                .hover(gold(0.66))
+                .active(gold(0.50))
+        };
         let button = Button::new("restart-update")
-            .custom(
-                ButtonCustomVariant::new(cx)
-                    .color(gold(0.55))
-                    .foreground(UPDATE_TEXT)
-                    .hover(gold(0.66))
-                    .active(gold(0.50)),
-            )
+            .custom(style())
             .bg(UPDATE_FILL)
             .xsmall()
+            // The X joins on the right, so the inner corners are square.
+            .rounded_r(px(0.))
             .icon(IconName::RefreshCw)
             .label(if self.restarting {
                 "Restarting…"
@@ -297,11 +354,28 @@ impl Render for UpdateButton {
             })
             .disabled(self.restarting)
             .on_click(cx.listener(|_, _, _, cx| cx.emit(RestartClicked)));
-        crate::shell::tooltip::with_card(
-            "restart-update-tip",
-            button,
-            crate::shell::tooltip::Card::text(tip),
-        )
-        .into_any_element()
+        let close = Button::new("dismiss-update")
+            .custom(style())
+            .bg(UPDATE_FILL)
+            .xsmall()
+            .rounded_l(px(0.))
+            .icon(IconName::X)
+            .disabled(self.restarting)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(UpdateDismissed)));
+        // A 1px gap between the two halves lets the title bar show
+        // through as the divider line, as in Zed's split buttons.
+        h_flex()
+            .gap(px(1.))
+            .child(crate::shell::tooltip::with_card(
+                "restart-update-tip",
+                button,
+                crate::shell::tooltip::Card::text(tip),
+            ))
+            .child(crate::shell::tooltip::with_card(
+                "dismiss-update-tip",
+                close,
+                crate::shell::tooltip::Card::text("Hide until the next start"),
+            ))
+            .into_any_element()
     }
 }

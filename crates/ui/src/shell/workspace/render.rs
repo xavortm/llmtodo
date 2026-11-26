@@ -543,6 +543,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &app_menus::MenuHelp, window, cx| {
                 this.toggle_help(&ToggleHelp, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &app_menus::MenuCheckForUpdates, _, cx| {
+                    this.check_for_updates(cx)
+                }),
+            )
             .relative()
             .size_full()
             .bg(theme.background)
