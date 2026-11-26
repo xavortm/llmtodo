@@ -1665,7 +1665,11 @@ fn simplify_ui_hides_the_extras_and_off_brings_them_back(cx: &mut TestAppContext
         this.set_scope(Scope::Project("app".into()), cx)
     });
     press(handle, &["j", "enter"], cx);
-    assert_eq!(simplified_parts(handle, cx), [true; 4], "all shown by default");
+    assert_eq!(
+        simplified_parts(handle, cx),
+        [true; 4],
+        "all shown by default"
+    );
 
     run(handle, &view, "settings", cx);
     click(handle, "settings-row-simplify-ui", cx);
