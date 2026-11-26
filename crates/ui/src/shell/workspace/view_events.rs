@@ -85,6 +85,10 @@ impl Workspace {
             ViewEvent::SetAnimations(on) => self.set_animations(on, window, cx),
             ViewEvent::SetStrikeDone(on) => self.set_strike_done(on, cx),
             ViewEvent::SetZoom(level) => self.set_zoom(level, cx),
+            ViewEvent::SetBackground { slot, key, value } => {
+                self.set_background(slot, key, value, cx)
+            }
+            ViewEvent::ChooseBackground(slot) => self.choose_background(slot, cx),
         }
     }
 

@@ -27,7 +27,8 @@
 //! The window image lines up with the window and shows behind every
 //! panel. A panel image lines up with its panel and draws over the window
 //! image. Each image draws over the panel's own color and under its
-//! content. The app reads these keys and never writes them.
+//! content. A settings save never writes these keys; the Settings
+//! Background section writes them one at a time (LLM-567).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -1046,6 +1047,44 @@ fn ident(b: &Backdrop) -> Ident {
 fn ready_at(b: &Backdrop, cx: &App) -> Option<Instant> {
     cx.try_global::<Loads>()
         .and_then(|l| l.ready.get(&ident(b)).copied())
+}
+
+/// LLM-567: a small picture of `path` that fills its box, as `cover`. It
+/// loads through the same loader, shrunk to the box, so a large photo
+/// costs little.
+pub fn thumbnail(path: PathBuf) -> AnyElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            let r = rect_of(bounds);
+            let key = ImageKey {
+                stamp: stamp_of(&path),
+                path: path.clone(),
+                fit: Fit {
+                    size: BgSize::Cover,
+                    screen: (r.w.ceil(), r.h.ceil()),
+                    scale: window.scale_factor(),
+                },
+                effects: Effects::default(),
+            };
+            let Some(Ok(loaded)) = window.use_asset::<BackdropLoader>(&key, cx) else {
+                return;
+            };
+            for t in tiles(r, loaded.natural, &Layout::default()) {
+                let image_bounds = Bounds::new(point(px(t.x), px(t.y)), size(px(t.w), px(t.h)));
+                let _ = window.paint_image(
+                    bounds,
+                    image_bounds,
+                    Default::default(),
+                    loaded.image.clone(),
+                    0,
+                    false,
+                );
+            }
+        },
+    )
+    .size_full()
+    .into_any_element()
 }
 
 /// The largest screen attached, in logical px. Images shrink to it.

@@ -108,9 +108,17 @@ pub struct UiSettings {
     /// (LLM-195). Off, the app changes state at once.
     pub animations: bool,
     /// LLM-566: background images, `[app.background.<slot>]` in
-    /// `config.toml`. The app reads them and never writes them.
+    /// `config.toml`. A settings save never writes them; the Background
+    /// section writes one key at a time (LLM-567).
     #[serde(skip)]
     pub background: crate::shell::backdrop::BackgroundsConfig,
+}
+
+/// A value Settings writes to a background table (LLM-567).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundValue {
+    Text(String),
+    Number(f32),
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -480,6 +488,76 @@ impl SettingsStore {
             Err(err) if err.is_read_only() => {
                 self.problem = Some(ConfigProblem::ReadOnly);
                 Ok(())
+            }
+            Err(WriteError::Io(err)) => Err(err),
+        }
+    }
+
+    /// LLM-567: writes one key of `[app.background.<slot>]`, or takes it
+    /// out with `None`. Taking out `image` takes out the whole table. The
+    /// rest of the file, comments too, stays as it is. Returns the
+    /// background tables as the file now holds them.
+    pub fn set_background(
+        &mut self,
+        slot: &str,
+        key: &str,
+        value: Option<BackgroundValue>,
+    ) -> std::io::Result<Option<crate::shell::backdrop::BackgroundsConfig>> {
+        let Some(config) = &self.config else {
+            return Ok(None);
+        };
+        if self.problem.is_some() {
+            return Ok(None);
+        }
+        let result = config.update(|doc| {
+            let app = config::table_mut(doc, APP_TABLE);
+            if !app.get("background").is_some_and(toml_edit::Item::is_table) {
+                let mut table = toml_edit::Table::new();
+                // `[app.background.window]` needs no `[app.background]`.
+                table.set_implicit(true);
+                app["background"] = toml_edit::Item::Table(table);
+            }
+            let background = app["background"].as_table_mut().expect("a table");
+            match value {
+                None if key == "image" => {
+                    background.remove(slot);
+                }
+                None => {
+                    if let Some(t) = background.get_mut(slot).and_then(|t| t.as_table_mut()) {
+                        t.remove(key);
+                    }
+                }
+                Some(value) => {
+                    if !background.get(slot).is_some_and(toml_edit::Item::is_table) {
+                        background[slot] = toml_edit::table();
+                    }
+                    let table = background[slot].as_table_mut().expect("a table");
+                    let value = match value {
+                        BackgroundValue::Text(t) => toml_edit::Value::from(t),
+                        BackgroundValue::Number(n) => toml_edit::Value::from(f64::from(n)),
+                    };
+                    config::set_value(table, key, value);
+                }
+            }
+            if background.is_empty() {
+                app.remove("background");
+            }
+        });
+        match result {
+            Ok(()) => {
+                self.seen = config.modified();
+                Ok(match self.read_preferences() {
+                    Some(Ok(prefs)) => Some(prefs.background),
+                    _ => Some(Default::default()),
+                })
+            }
+            Err(WriteError::Invalid(err)) => {
+                self.problem = Some(ConfigProblem::Invalid(err));
+                Ok(None)
+            }
+            Err(err) if err.is_read_only() => {
+                self.problem = Some(ConfigProblem::ReadOnly);
+                Ok(None)
             }
             Err(WriteError::Io(err)) => Err(err),
         }

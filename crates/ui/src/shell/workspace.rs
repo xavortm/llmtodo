@@ -518,14 +518,20 @@ impl Workspace {
         let inbox =
             cx.new(|cx| InboxView::new(issues.clone(), events.clone(), answers.clone(), cx));
         let settings_values = cx.new(|_| settings.clone());
+        let config_dir = store
+            .config_path()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
         let settings_view = cx.new(|cx| {
-            SettingsView::new(
+            let mut view = SettingsView::new(
                 issues.clone(),
                 events.clone(),
                 settings_values.clone(),
                 window,
                 cx,
-            )
+            );
+            view.set_config_dir(config_dir);
+            view
         });
         let claims = cx.new(|cx| ClaimsList::new(issues.clone(), focus.clone(), cx));
         let day_chart = cx.new(|cx| DayChart::new(issues.clone(), list.clone(), cx));
@@ -1781,6 +1787,54 @@ impl Workspace {
         if !lines.is_empty() {
             self.message = lines.join("; ").into();
         }
+    }
+
+    /// LLM-567: Settings changes one key of a background table.
+    pub fn set_background(
+        &mut self,
+        slot: crate::shell::backdrop::Slot,
+        key: &str,
+        value: Option<crate::settings::BackgroundValue>,
+        cx: &mut Context<Self>,
+    ) {
+        match self.settings.set_background(slot.key(), key, value) {
+            Ok(Some(config)) => {
+                self.apply_backgrounds(&config, cx);
+                self.persist(cx);
+            }
+            Ok(None) => {}
+            Err(err) => self.message = format!("Could not save config.toml: {err}").into(),
+        }
+        self.show_config_problem(cx);
+        cx.notify();
+    }
+
+    /// LLM-567: Choose image… opens the file picker for `slot`.
+    pub fn choose_background(
+        &mut self,
+        slot: crate::shell::backdrop::Slot,
+        cx: &mut Context<Self>,
+    ) {
+        let paths = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(format!("Choose a {} background", slot.key()).into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                let value = crate::settings::BackgroundValue::Text(path.display().to_string());
+                this.set_background(slot, "image", Some(value), cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// LLM-574: the project and teams whose background tables apply, from

@@ -113,6 +113,14 @@ pub enum ViewEvent {
     SetAnimations(bool),
     SetStrikeDone(bool),
     SetZoom(f32),
+    /// LLM-567: one key of a background table; `None` takes it out.
+    SetBackground {
+        slot: crate::shell::backdrop::Slot,
+        key: &'static str,
+        value: Option<crate::settings::BackgroundValue>,
+    },
+    /// LLM-567: asks for an image file for a slot.
+    ChooseBackground(crate::shell::backdrop::Slot),
 }
 
 /// A view's handle for sending events to whatever owns the window.

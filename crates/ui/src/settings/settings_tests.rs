@@ -1205,3 +1205,67 @@ fn background_images_hide_and_show_without_touching_config(cx: &mut TestAppConte
     let message = cx.read(|cx| view.read(cx).message().to_string());
     assert!(message.contains("No background image"), "{message}");
 }
+
+/// LLM-567: the Background section writes `[app.background.<slot>]` and
+/// keeps the rest of the file as it was.
+#[gpui_kit::test]
+fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
+    use crate::settings::BackgroundValue;
+    use crate::shell::backdrop::Slot;
+    use crate::shell::view_events::ViewEvent;
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "# my settings\n[app]\nmascot = true # keep\n").unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    run(handle, &view, "settings", cx);
+    let shown = |cx: &TestAppContext| cx.read(crate::shell::backdrop::shown);
+
+    // Choose image… ends in this event once a file is picked.
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |w, cx| {
+            w.on_view_event(
+                ViewEvent::SetBackground {
+                    slot: Slot::List,
+                    key: "image",
+                    value: Some(BackgroundValue::Text("/pics/a.png".into())),
+                },
+                window,
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx).list.map(|b| b.image), Some("/pics/a.png".into()));
+
+    let end = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            view.read(cx).settings_view().read(cx).scroll_to_end();
+            window.refresh();
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    end(cx);
+    click(handle, "settings-bg-list-opacity-3", cx);
+    end(cx);
+    click(handle, "settings-bg-list-repeat-1", cx);
+    end(cx);
+    click(handle, "settings-bg-list-size-3", cx);
+    end(cx);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.starts_with("# my settings\n[app]\nmascot = true # keep\n"),
+        "{text}"
+    );
+    assert!(text.contains("[app.background.list]"), "{text}");
+    assert!(!text.contains("[app.background]\n"), "{text}");
+    let list = shown(cx).list.unwrap();
+    assert_eq!(list.opacity, 0.5);
+    assert!(list.layout.repeat.x && list.layout.repeat.y);
+
+    click(handle, "settings-bg-list-remove", cx);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("background"), "{text}");
+    assert!(shown(cx).list.is_none());
+}

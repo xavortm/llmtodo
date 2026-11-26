@@ -14,7 +14,7 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
-    button::{Button, ButtonGroup},
+    button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     input::{InputEvent, InputState, MaskPattern, NumberInput, NumberInputEvent, StepAction},
     switch::Switch,
@@ -206,6 +206,8 @@ pub struct SettingsView {
     /// Why changes do not reach `config.toml`, such as a read-only file.
     config_note: Option<SharedString>,
     database: Option<DatabaseInfo>,
+    /// The folder of `config.toml`: a relative image path starts there.
+    config_dir: Option<std::path::PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -302,6 +304,7 @@ impl SettingsView {
             scroll: ScrollHandle::new(),
             config_note: None,
             database: None,
+            config_dir: None,
             _subscriptions: subscriptions,
         }
     }
@@ -346,6 +349,17 @@ impl SettingsView {
             self.config_note = note;
             cx.notify();
         }
+    }
+
+    /// Scrolls to the end, where the Background section sits.
+    #[cfg(test)]
+    pub fn scroll_to_end(&self) {
+        self.scroll.scroll_to_bottom();
+    }
+
+    /// The folder relative background paths start from.
+    pub fn set_config_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.config_dir = dir;
     }
 
     #[cfg(test)]
@@ -899,11 +913,293 @@ impl Render for SettingsView {
                             )
                         })
                         .children(rows)
+                        .child(self.render_backgrounds(&values, cx))
                         .when_some(self.database.as_ref(), |el, db| {
                             el.child(render_database(db, cx))
                         }),
                 ),
             )
+    }
+}
+
+// LLM-567: the Background section.
+
+use crate::settings::BackgroundValue;
+use crate::shell::backdrop::{BackgroundConfig, SizeValue, Slot};
+
+/// The opacity choices, in percent.
+const BG_OPACITY: [u32; 6] = [10, 20, 35, 50, 75, 100];
+/// Label and `size` value.
+const BG_SIZE: [(&str, &str); 4] = [
+    ("Cover", "cover"),
+    ("Contain", "contain"),
+    ("Fill", "fill"),
+    ("Actual", "auto"),
+];
+const BG_POSITION: [(&str, &str); 5] = [
+    ("Center", "center"),
+    ("Top", "top"),
+    ("Bottom", "bottom"),
+    ("Left", "left"),
+    ("Right", "right"),
+];
+const BG_REPEAT: [(&str, &str); 4] = [
+    ("Once", "no-repeat"),
+    ("Tile", "repeat"),
+    ("Across", "repeat-x"),
+    ("Down", "repeat-y"),
+];
+
+fn slot_title(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Window => "Whole window",
+        Slot::Sidebar => "Sidebar",
+        Slot::List => "Task list",
+        Slot::Task => "Task panel",
+    }
+}
+
+impl SettingsView {
+    /// One block per slot: a preview, Choose image… and Remove, and the
+    /// choices for an image that is set. Per-project, per-team and
+    /// per-mode tables stay in `config.toml`.
+    fn render_backgrounds(&self, values: &UiSettings, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let border = theme.border;
+        v_flex()
+            .id("settings-backgrounds")
+            .test_support()
+            .mt_4()
+            .px_3()
+            .pt_4()
+            .gap_3()
+            .border_t_1()
+            .border_color(border)
+            .child(div().text_sm().child("Background images"))
+            .child(div().text_xs().text_color(muted).child(
+                "Each image draws behind its part of the window. Images per mode, \
+                 project or team, and filters such as blur, are set in config.toml.",
+            ))
+            .children(
+                Slot::ALL
+                    .into_iter()
+                    .map(|slot| self.render_background(slot, values.background.get(slot), cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_background(
+        &self,
+        slot: Slot,
+        config: Option<&BackgroundConfig>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, border, radius, page) = (
+            theme.muted_foreground,
+            theme.border,
+            theme.radius,
+            theme.background,
+        );
+        let id = |what: &str| SharedString::from(format!("settings-bg-{}-{what}", slot.key()));
+        let image = config
+            .map(|c| c.image.trim().to_string())
+            .filter(|i| !i.is_empty());
+        let path = image
+            .as_ref()
+            .map(|i| crate::shell::backdrop::resolve_path(i, self.config_dir.as_deref()));
+        let name: SharedString = match &path {
+            Some(p) => p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+            None => "No image".into(),
+        };
+        let preview = div()
+            .w(rems(6.))
+            .h(rems(3.75))
+            .flex_none()
+            .rounded(radius)
+            .overflow_hidden()
+            .border_1()
+            .border_color(border)
+            .bg(page)
+            .when_some(path.clone(), |el, p| {
+                el.child(crate::shell::backdrop::thumbnail(p))
+            });
+        let header = h_flex()
+            .gap_3()
+            .child(preview)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().child(slot_title(slot)))
+                    .child(
+                        div()
+                            .id(id("name"))
+                            .test_support()
+                            .text_xs()
+                            .text_color(muted)
+                            .truncate()
+                            .child(name),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_none()
+                    .child(
+                        Button::new(id("choose"))
+                            .label("Choose image…")
+                            .small()
+                            .outline()
+                            .tab_stop(false)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.write(ViewEvent::ChooseBackground(slot), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(id("remove"))
+                            .label("Remove")
+                            .small()
+                            .ghost()
+                            .tab_stop(false)
+                            .disabled(image.is_none())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.write(
+                                    ViewEvent::SetBackground {
+                                        slot,
+                                        key: "image",
+                                        value: None,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
+            );
+        let Some(c) = config.filter(|_| image.is_some()) else {
+            return v_flex().gap_2().child(header).into_any_element();
+        };
+        let opacity = c.opacity.unwrap_or(crate::shell::backdrop::DEFAULT_OPACITY);
+        let size = match &c.size {
+            None => "cover".to_string(),
+            Some(SizeValue::Text(t)) => t.trim().to_ascii_lowercase(),
+            Some(SizeValue::Scale(f)) if (*f - 1.).abs() < f32::EPSILON => "auto".into(),
+            Some(SizeValue::Scale(f)) => f.to_string(),
+        };
+        let position = c
+            .position
+            .as_deref()
+            .unwrap_or("center")
+            .trim()
+            .to_ascii_lowercase();
+        let repeat = c
+            .repeat
+            .as_deref()
+            .unwrap_or("no-repeat")
+            .trim()
+            .to_ascii_lowercase();
+        let opacity_labels: Vec<(String, bool)> = BG_OPACITY
+            .iter()
+            .map(|p| {
+                (
+                    format!("{p}%"),
+                    ((*p as f32) / 100. - opacity).abs() < 0.005,
+                )
+            })
+            .collect();
+        let pick = |key: &'static str,
+                    choices: Vec<(String, bool)>,
+                    values: Vec<BackgroundValue>,
+                    cx: &mut Context<Self>| {
+            let group_id = id(key);
+            let group = choices.into_iter().enumerate().fold(
+                ButtonGroup::new(group_id.clone())
+                    .outline()
+                    .compact()
+                    .xsmall(),
+                |group, (ix, (label, on))| {
+                    group.child(
+                        Button::new(SharedString::from(format!("{group_id}-{ix}")))
+                            .label(label)
+                            .tab_stop(false)
+                            .selected(on),
+                    )
+                },
+            );
+            group
+                .on_click(cx.listener(move |this, clicked: &Vec<usize>, window, cx| {
+                    let Some(value) = clicked.first().and_then(|ix| values.get(*ix)) else {
+                        return;
+                    };
+                    this.write(
+                        ViewEvent::SetBackground {
+                            slot,
+                            key,
+                            value: Some(value.clone()),
+                        },
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element()
+        };
+        let text =
+            |list: &[(&str, &str)], now: &str| -> (Vec<(String, bool)>, Vec<BackgroundValue>) {
+                (
+                    list.iter()
+                        .map(|(l, v)| (l.to_string(), *v == now))
+                        .collect(),
+                    list.iter()
+                        .map(|(_, v)| BackgroundValue::Text(v.to_string()))
+                        .collect(),
+                )
+            };
+        let opacity_control = pick(
+            "opacity",
+            opacity_labels,
+            BG_OPACITY
+                .iter()
+                .map(|p| BackgroundValue::Number(*p as f32 / 100.))
+                .collect(),
+            cx,
+        );
+        let (l, v) = text(&BG_SIZE, &size);
+        let size_control = pick("size", l, v, cx);
+        let (l, v) = text(&BG_POSITION, &position);
+        let position_control = pick("position", l, v, cx);
+        let (l, v) = text(&BG_REPEAT, &repeat);
+        let repeat_control = pick("repeat", l, v, cx);
+        let line = |label: &'static str, control: AnyElement| {
+            h_flex()
+                .gap_3()
+                .child(
+                    div()
+                        .w(rems(5.))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(label),
+                )
+                .child(control)
+        };
+        v_flex()
+            .gap_2()
+            .child(header)
+            .child(
+                v_flex()
+                    .pl(rems(6.75))
+                    .gap_1p5()
+                    .child(line("Opacity", opacity_control))
+                    .child(line("Size", size_control))
+                    .child(line("Position", position_control))
+                    .child(line("Repeat", repeat_control)),
+            )
+            .into_any_element()
     }
 }
 
