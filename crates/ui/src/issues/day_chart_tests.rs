@@ -353,3 +353,45 @@ fn hovering_a_day_shows_its_list(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_millis(400));
     assert_eq!(state(cx), (true, true), "a pinned list ignores the pointer");
 }
+
+/// Moving to a day with more tasks keeps the card and glides its height
+/// to the new content, instead of jumping.
+#[gpui_kit::test]
+fn the_card_glides_to_the_next_days_height(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update(|cx| crate::shell::motion::set(true, cx));
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            // LLM-103 moves to Nov 10, so that day holds two tasks.
+            this.store().update(cx, |store, cx| {
+                store.modify(IssueId::from_u128(103), |i| i.added.day = 10);
+                cx.notify();
+            });
+            this.set_scope(Scope::Project("app".into()), cx)
+        });
+        window.render_frame(cx);
+        // LLM-107 alone, on Nov 4.
+        window.hover("day-2026-11-04", cx);
+    })
+    .unwrap();
+    let card = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.find("day-tasks").bounds().size.height
+        })
+        .unwrap()
+    };
+    let one = card(cx);
+    cx.update_window(handle, |_, window, cx| window.hover("day-2026-11-10", cx))
+        .unwrap();
+    let during = card(cx);
+    cx.executor()
+        .advance_clock(crate::shell::motion::CARD_GLIDE * 3);
+    let two = card(cx);
+    assert!(two > one, "{one:?} grows to {two:?}");
+    assert!(
+        during < two,
+        "the card does not jump to the new height: {one:?}, {during:?}, {two:?}"
+    );
+}

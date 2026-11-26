@@ -607,6 +607,11 @@ pub struct DayTasks {
     /// Closes a hover list a moment after the pointer leaves, so the
     /// pointer can cross from the strip onto the list.
     closing: Option<gpui_kit::Task<()>>,
+    /// The content's height at the last paint, or 0 before the first. The
+    /// card glides to it when the day changes.
+    measured: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
+    /// The day the list opened on. Later days fade in once the card fits.
+    first_day: Option<civil::Date>,
 }
 
 /// How long a hover list waits after the pointer leaves before it closes.
@@ -628,6 +633,8 @@ impl DayTasks {
             pinned: false,
             inside: false,
             closing: None,
+            measured: Default::default(),
+            first_day: None,
         }
     }
 
@@ -674,6 +681,9 @@ impl DayTasks {
         }
         self.pinned = true;
         self.closing = None;
+        if self.open.is_none() {
+            self.fresh(date);
+        }
         self.open = Some((slug, date));
         self.at = at;
         self.selected = 0;
@@ -697,6 +707,9 @@ impl DayTasks {
         if self.open.as_ref().map(|(_, d)| *d) != Some(date) {
             self.selected = 0;
         }
+        if self.open.is_none() {
+            self.fresh(date);
+        }
         self.open = Some((slug, date));
         self.at = at;
         cx.notify();
@@ -713,11 +726,19 @@ impl DayTasks {
             this.update(cx, |this, cx| {
                 if !this.pinned && !this.inside {
                     this.open = None;
+                    this.first_day = None;
                     cx.notify();
                 }
             })
             .ok();
         }));
+    }
+
+    /// A list that was closed opens: its card takes its first height at
+    /// once, with no glide.
+    fn fresh(&mut self, date: civil::Date) {
+        self.measured.set(px(0.));
+        self.first_day = Some(date);
     }
 
     /// Opened by a click, so it holds the keyboard.
@@ -728,6 +749,7 @@ impl DayTasks {
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.closing = None;
         self.inside = false;
+        self.first_day = None;
         if self.open.take().is_none() {
             return;
         }
@@ -761,7 +783,7 @@ impl DayTasks {
 }
 
 impl Render for DayTasks {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some((_, date)) = self.open.clone() else {
             return div().into_any_element();
         };
@@ -851,6 +873,63 @@ impl Render for DayTasks {
                 }))
                 .into_any_element()
         };
+        let content = v_flex()
+            .p_1()
+            .gap_1()
+            .child(
+                h_flex()
+                    .px_2()
+                    .pt_1()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(title)
+                    .child("Enter opens · Esc closes"),
+            )
+            .child(body);
+        // In rems, so it grows with zoom.
+        let content = div()
+            .id("day-tasks-content")
+            .max_h(gpui_kit::rems(26.))
+            .overflow_y_scroll()
+            .child(content);
+        // Measures the content each paint. A new height draws again, so
+        // the card glides to it.
+        let measured = self.measured.clone();
+        let measure = gpui_kit::canvas(
+            move |bounds, window, _| {
+                if measured.get() != bounds.size.height {
+                    measured.set(bounds.size.height);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        let known = self.measured.get() > px(0.);
+        // A later day's content waits for the card to fit it, then fades in.
+        let content = div().relative().child(content).child(measure);
+        let content = if self.first_day != Some(date) {
+            crate::shell::motion::fade_in_after_glide(
+                content,
+                SharedString::from(format!("day-tasks-fade-{date}")),
+                cx,
+            )
+        } else {
+            content.into_any_element()
+        };
+        let border = px(1.);
+        let height = known.then(|| {
+            let target = f32::from(self.measured.get() + border * 2.);
+            px(crate::shell::motion::glide(
+                "day-tasks-height",
+                target,
+                window,
+                cx,
+            ))
+        });
+        let theme = cx.theme();
         let panel = div().child(
             v_flex()
                 .id("day-tasks")
@@ -875,33 +954,29 @@ impl Render for DayTasks {
                     }
                 }))
                 .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
-                // In rems, so it grows with zoom.
                 .w(gpui_kit::rems(30.))
-                .max_h(gpui_kit::rems(26.))
-                .overflow_y_scroll()
-                .p_1()
-                .gap_1()
+                .relative()
+                .overflow_hidden()
                 .bg(theme.popover)
                 .text_color(theme.popover_foreground)
-                .border_1()
+                .border(border)
                 .border_color(theme.border)
                 .rounded(theme.radius)
                 .shadow_lg()
-                .child(
-                    h_flex()
-                        .px_2()
-                        .pt_1()
-                        .justify_between()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(title)
-                        .child("Enter opens · Esc closes"),
-                )
-                .child(body),
+                .map(|this| match height {
+                    // The card's height glides; the content sits on top of
+                    // it at its own height, clipped while the card grows.
+                    Some(h) => this
+                        .h(h)
+                        .child(div().absolute().top_0().left_0().right_0().child(content)),
+                    // Its first paint: the content's own height.
+                    None => this.child(content),
+                }),
         );
-        // On the strip's top edge, centered on the click, and kept 8 px
-        // inside the window.
-        let at = self.at;
+        // On the strip's top edge, over the pointer, and kept 8 px inside
+        // the window. It glides along as the pointer moves between days.
+        let x = crate::shell::motion::glide("day-tasks-x", f32::from(self.at.x), window, cx);
+        let at = point(px(x), self.at.y);
         gpui_kit::deferred(
             gpui_kit::anchored()
                 .position(at)

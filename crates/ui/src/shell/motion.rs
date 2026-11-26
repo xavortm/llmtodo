@@ -108,6 +108,43 @@ where
     .into_any_element()
 }
 
+/// How long a card takes to glide to a new size or place.
+pub const CARD_GLIDE: Duration = Duration::from_millis(160);
+
+/// A value that glides to `target`, such as a card's height when its
+/// content changes. The first value is taken at once, and a new target
+/// mid-glide starts from where the value is. Off, it is `target` at once.
+pub fn glide(id: impl Into<ElementId>, target: f32, window: &mut Window, cx: &mut App) -> f32 {
+    if !on(cx) {
+        return target;
+    }
+    let id: ElementId = id.into();
+    gpui_kit::base::transition(
+        id,
+        target,
+        gpui_kit::base::Transition::new(CARD_GLIDE).ease(ease_out),
+        window,
+        cx,
+    )
+}
+
+/// New content in a card that glides to fit it: it stays hidden while the
+/// card glides, then fades in. Keyed by `id`, so new content plays again.
+pub fn fade_in_after_glide<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if !on(cx) {
+        return el.into_any_element();
+    }
+    let wait = CARD_GLIDE.as_secs_f32();
+    let total = wait + FADE.as_secs_f32();
+    el.with_animation(id, Animation::new(CARD_GLIDE + FADE), move |el, t| {
+        el.opacity(((t * total - wait) / (total - wait)).clamp(0., 1.))
+    })
+    .into_any_element()
+}
+
 /// The chevron of a group header turning, from 0 for closed to 1 for open.
 /// Off, it is the end value at once.
 pub fn turn(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut App) -> f32 {
