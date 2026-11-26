@@ -351,6 +351,11 @@ impl BackgroundEditor {
                 this.sync(window, cx);
                 cx.notify();
             }),
+            // Light and dark each have their own image and opacity.
+            cx.observe_global_in::<gpui_kit::component::Theme>(window, |this, window, cx| {
+                this.sync(window, cx);
+                cx.notify();
+            }),
         ];
         let controls = Slot::ALL
             .into_iter()
@@ -403,6 +408,32 @@ impl BackgroundEditor {
             .expect("a dropdown")
             .1
             .clone()
+    }
+
+    /// `slot`'s table as the mode the app is in sees it: `image` and
+    /// `opacity` are that mode's (LLM-580), so each mode edits its own.
+    fn config_of(&self, slot: Slot, cx: &App) -> Option<BackgroundConfig> {
+        let dark = cx.theme().is_dark();
+        let mut c = self.values.read(cx).background.get(slot)?.clone();
+        let (image, opacity) = if dark {
+            (c.image_dark.clone(), c.opacity_dark)
+        } else {
+            (c.image_light.clone(), c.opacity_light)
+        };
+        if let Some(image) = image {
+            c.image = image;
+        }
+        c.opacity = opacity.or(c.opacity);
+        Some(c)
+    }
+
+    /// "Dark mode" or "Light mode": what the image fields edit.
+    fn mode_name(cx: &App) -> &'static str {
+        if cx.theme().is_dark() {
+            "dark mode"
+        } else {
+            "light mode"
+        }
     }
 
     fn of(&self, slot: Slot) -> &BgControls {
@@ -525,8 +556,7 @@ impl BackgroundEditor {
     ) {
         let field = self.number(slot, key.key());
         let typed = field.read(cx).value().trim().parse::<u32>().ok();
-        let values = self.values.read(cx).clone();
-        if let (Some(typed), Some(c)) = (typed, values.background.get(slot)) {
+        if let (Some(typed), Some(c)) = (typed, self.config_of(slot, cx).as_ref()) {
             let typed = typed.min(key.max());
             if typed != key.shown(c) {
                 self.set(slot, key.key(), Some(key.value(typed)), window, cx);
@@ -545,10 +575,10 @@ impl BackgroundEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let values = self.values.read(cx).clone();
-        let Some(c) = values.background.get(slot) else {
+        let Some(c) = self.config_of(slot, cx) else {
             return;
         };
+        let c = &c;
         let (now, step) = (key.shown(c) as i64, key.step() as i64);
         let next = match action {
             StepAction::Increment => (now / step + 1) * step,
@@ -571,9 +601,13 @@ impl BackgroundEditor {
     /// Shows what `config.toml` holds. A field being typed in keeps its
     /// text.
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let values = self.values.read(cx).clone();
+        let configs: Vec<Option<BackgroundConfig>> = Slot::ALL
+            .into_iter()
+            .map(|slot| self.config_of(slot, cx))
+            .collect();
         for (slot, controls) in &self.controls {
-            let Some(c) = values.background.get(*slot) else {
+            let ix = Slot::ALL.iter().position(|s| s == slot).expect("a slot");
+            let Some(c) = configs[ix].as_ref() else {
                 continue;
             };
             for (key, field) in &controls.numbers {
@@ -773,8 +807,8 @@ impl BackgroundEditor {
 
     /// One slot: the header and, with an image, its controls.
     fn render_slot(&self, slot: Slot, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let values = self.values.read(cx).clone();
-        let config = values.background.get(slot);
+        let config = self.config_of(slot, cx);
+        let config = config.as_ref();
         let (header, set) = self.render_header(slot, config, cx);
         let muted = cx.theme().muted_foreground;
         let mode = self.mode;
@@ -913,11 +947,13 @@ impl Render for BackgroundEditor {
                                 })),
                         ),
                 )
-                .child(div().text_xs().text_color(muted).child(
+                .child(div().text_xs().text_color(muted).child(format!(
                     "Each image draws behind its part of the window. Edit live shows \
-                     the app while you change them. Images per mode, project or team \
-                     are set in config.toml.",
-                ))
+                     the app while you change them. Images and opacity here are for \
+                     {}; switch modes to set the other. Images per project or team are \
+                     set in config.toml.",
+                    Self::mode_name(cx)
+                )))
                 .children(
                     Slot::ALL
                         .into_iter()
@@ -958,9 +994,15 @@ impl Render for BackgroundEditor {
                     .child(self.render_slot(current, window, cx))
                     .child(
                         div()
+                            .id("bg-panel-mode")
+                            .test_support()
                             .text_xs()
                             .text_color(muted)
-                            .child("Images per mode, project or team are set in config.toml."),
+                            .child(format!(
+                                "Image and opacity are for {}; switch modes to set the \
+                                 other. Images per project or team are set in config.toml.",
+                                Self::mode_name(cx)
+                            )),
                     )
                     .into_any_element()
             }

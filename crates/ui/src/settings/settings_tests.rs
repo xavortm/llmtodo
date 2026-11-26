@@ -1312,7 +1312,8 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(shown(cx).list.unwrap().opacity, 0.55);
     let text = std::fs::read_to_string(&config).unwrap();
-    assert!(text.contains("opacity = 0.55\n"), "{text}");
+    // The app is in dark mode: the opacity is dark mode's (LLM-580).
+    assert!(text.contains("opacity_dark = 0.55\n"), "{text}");
     assert_eq!(cx.read(|cx| field.read(cx).value().to_string()), "55");
 
     // A hand-written size with no entry leaves the dropdown on none.
@@ -1527,6 +1528,101 @@ fn the_background_panel_edits_live_over_the_app(cx: &mut TestAppContext) {
         None,
         "centred again"
     );
+    // The first change lifts the dimming, and the panel stays put.
+    let before = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("bg-panel-scrim").is_some());
+            window.find("bg-panel").bounds()
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |w, cx| {
+            w.on_view_event(
+                ViewEvent::SetBackground {
+                    slot: Slot::Task,
+                    key: "repeat",
+                    value: Some(BackgroundValue::Text("repeat".into())),
+                },
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("bg-panel-scrim").is_none(),
+            "no longer dimmed"
+        );
+        assert_eq!(window.find("bg-panel").bounds().origin, before.origin);
+    })
+    .unwrap();
     click(handle, "bg-panel-close", cx);
     assert!(!open(cx));
+}
+
+/// LLM-580: an image set in one mode belongs to that mode. The other mode
+/// keeps its own, or none, and can get another. A plain `image` from
+/// before stays with the other mode.
+#[gpui_kit::test]
+fn each_mode_keeps_its_own_background(cx: &mut TestAppContext) {
+    use crate::settings::BackgroundValue;
+    use crate::shell::backdrop::Slot;
+    use crate::shell::view_events::ViewEvent;
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[app.background.window]\nimage = \"/p/both.png\"\n",
+    )
+    .unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let image = |cx: &TestAppContext| {
+        cx.read(crate::shell::backdrop::shown)
+            .window
+            .map(|b| b.image.to_string_lossy().into_owned())
+    };
+    let set = |value: Option<&str>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |w, cx| {
+                w.on_view_event(
+                    ViewEvent::SetBackground {
+                        slot: Slot::Window,
+                        key: "image",
+                        value: value.map(|v| BackgroundValue::Text(v.into())),
+                    },
+                    window,
+                    cx,
+                )
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-appearance-dark", cx);
+    set(Some("/p/night.png"), cx);
+    assert_eq!(image(cx).as_deref(), Some("/p/night.png"));
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("image_dark = \"/p/night.png\""), "{text}");
+    assert!(text.contains("image_light = \"/p/both.png\""), "{text}");
+    assert!(!text.contains("\nimage ="), "{text}");
+
+    // Light mode kept the old image, and takes its own.
+    click(handle, "settings-appearance-light", cx);
+    assert_eq!(image(cx).as_deref(), Some("/p/both.png"));
+    set(Some("/p/day.png"), cx);
+    assert_eq!(image(cx).as_deref(), Some("/p/day.png"));
+    // Remove in light mode: light shows none, dark keeps its image.
+    set(None, cx);
+    assert_eq!(image(cx), None);
+    click(handle, "settings-appearance-dark", cx);
+    assert_eq!(image(cx).as_deref(), Some("/p/night.png"));
+    // Remove in dark too: the table goes.
+    set(None, cx);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("background"), "{text}");
 }

@@ -1904,7 +1904,15 @@ impl Workspace {
         value: Option<crate::settings::BackgroundValue>,
         cx: &mut Context<Self>,
     ) {
-        match self.settings.set_background(slot.key(), key, value) {
+        // LLM-580: the image and its opacity belong to the mode the app is
+        // in, so light and dark each keep their own.
+        let changes = self.mode_changes(slot, key, value, cx);
+        // The first change lifts the dimming and leaves the panel where it
+        // is, so the change shows.
+        if self.bg_panel_open && self.bg_panel_at.is_none() {
+            self.bg_panel_at = Some(self.bg_panel_bounds.get().origin);
+        }
+        match self.settings.set_background_keys(slot.key(), changes) {
             Ok(Some(config)) => {
                 self.apply_backgrounds(&config, cx);
                 self.persist(cx);
@@ -1914,6 +1922,61 @@ impl Workspace {
         }
         self.show_config_problem(cx);
         cx.notify();
+    }
+
+    /// The writes for one change from Settings or the panel. `image` and
+    /// `opacity` go to `image_dark` / `image_light` and `opacity_dark` /
+    /// `opacity_light` for the mode the app is in. A plain `image` or
+    /// `opacity` from before moves to the other mode, so that mode keeps
+    /// its look and this mode can differ.
+    fn mode_changes(
+        &self,
+        slot: crate::shell::backdrop::Slot,
+        key: &str,
+        value: Option<crate::settings::BackgroundValue>,
+        cx: &App,
+    ) -> Vec<(String, Option<crate::settings::BackgroundValue>)> {
+        use crate::settings::BackgroundValue;
+        use gpui_kit::component::ActiveTheme as _;
+        if !matches!(key, "image" | "opacity") {
+            return vec![(key.to_string(), value)];
+        }
+        let dark = cx.theme().is_dark();
+        let (mine, other) = if dark {
+            ("dark", "light")
+        } else {
+            ("light", "dark")
+        };
+        let c = self.background.get(slot).cloned().unwrap_or_default();
+        let (plain, other_set) = match key {
+            "image" => (
+                Some(c.image.trim().to_string())
+                    .filter(|i| !i.is_empty())
+                    .map(BackgroundValue::Text),
+                if dark {
+                    c.image_light.is_some()
+                } else {
+                    c.image_dark.is_some()
+                },
+            ),
+            _ => (
+                c.opacity.map(BackgroundValue::Number),
+                if dark {
+                    c.opacity_light.is_some()
+                } else {
+                    c.opacity_dark.is_some()
+                },
+            ),
+        };
+        let mut changes = Vec::new();
+        if let Some(plain) = plain {
+            if !other_set {
+                changes.push((format!("{key}_{other}"), Some(plain)));
+            }
+            changes.push((key.to_string(), None));
+        }
+        changes.push((format!("{key}_{mine}"), value));
+        changes
     }
 
     /// LLM-567: Choose image… opens the file picker for `slot`.

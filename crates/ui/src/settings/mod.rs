@@ -505,6 +505,16 @@ impl SettingsStore {
         key: &str,
         value: Option<BackgroundValue>,
     ) -> std::io::Result<Option<crate::shell::backdrop::BackgroundsConfig>> {
+        self.set_background_keys(slot, vec![(key.to_string(), value)])
+    }
+
+    /// Several keys of one slot's table in one write. A table left with
+    /// no image and no shader, in any mode, goes.
+    pub fn set_background_keys(
+        &mut self,
+        slot: &str,
+        changes: Vec<(String, Option<BackgroundValue>)>,
+    ) -> std::io::Result<Option<crate::shell::backdrop::BackgroundsConfig>> {
         let Some(config) = &self.config else {
             return Ok(None);
         };
@@ -520,30 +530,45 @@ impl SettingsStore {
                 app["background"] = toml_edit::Item::Table(table);
             }
             let background = app["background"].as_table_mut().expect("a table");
-            match value {
-                None if key == "image" => {
-                    background.remove(slot);
-                }
-                None => {
-                    if let Some(t) = background.get_mut(slot).and_then(|t| t.as_table_mut()) {
-                        t.remove(key);
-                    }
-                }
-                Some(value) => {
-                    if !background.get(slot).is_some_and(toml_edit::Item::is_table) {
-                        background[slot] = toml_edit::table();
-                    }
-                    let table = background[slot].as_table_mut().expect("a table");
-                    let value = match value {
-                        BackgroundValue::Text(t) => toml_edit::Value::from(t),
-                        // f32 to f64 adds noise: 0.35 would read 0.3499999940395355.
-                        BackgroundValue::Bool(b) => toml_edit::Value::from(b),
-                        BackgroundValue::Number(n) => {
-                            toml_edit::Value::from((f64::from(n) * 1e4).round() / 1e4)
+            for (key, value) in changes {
+                let key = key.as_str();
+                match value {
+                    None => {
+                        if let Some(t) = background.get_mut(slot).and_then(|t| t.as_table_mut()) {
+                            t.remove(key);
                         }
-                    };
-                    config::set_value(table, key, value);
+                    }
+                    Some(value) => {
+                        if !background.get(slot).is_some_and(toml_edit::Item::is_table) {
+                            background[slot] = toml_edit::table();
+                        }
+                        let table = background[slot].as_table_mut().expect("a table");
+                        let value = match value {
+                            BackgroundValue::Text(t) => toml_edit::Value::from(t),
+                            BackgroundValue::Bool(b) => toml_edit::Value::from(b),
+                            // f32 to f64 adds noise: 0.35 would read 0.3499999940395355.
+                            BackgroundValue::Number(n) => {
+                                toml_edit::Value::from((f64::from(n) * 1e4).round() / 1e4)
+                            }
+                        };
+                        config::set_value(table, key, value);
+                    }
                 }
+            }
+            const SOURCES: [&str; 6] = [
+                "image",
+                "image_dark",
+                "image_light",
+                "shader",
+                "shader_dark",
+                "shader_light",
+            ];
+            let empty = background
+                .get(slot)
+                .and_then(|t| t.as_table())
+                .is_some_and(|t| !SOURCES.iter().any(|k| t.contains_key(k)));
+            if empty {
+                background.remove(slot);
             }
             if background.is_empty() {
                 app.remove("background");
