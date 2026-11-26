@@ -87,7 +87,8 @@ pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> Api
         None => store::teams::next_status_position(w.c(), &t.id).await?,
     };
     let id = new_id();
-    let review = req.review.unwrap_or(false);
+    let review = req.review.unwrap_or(false) || req.review_role.is_some();
+    let review_role = review.then(|| req.review_role.unwrap_or(ReviewRole::Owner));
     store::teams::insert_status(
         w.c(),
         &id,
@@ -97,6 +98,7 @@ pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> Api
         &color,
         pos,
         review,
+        review_role,
     )
     .await?;
     w.event(
@@ -138,7 +140,27 @@ pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> Ap
     if let Some(p) = req.position {
         store::teams::set_status_position(w.c(), p, id).await?;
     }
-    if let Some(review) = req.review
+    // Setting a role also sets the review flag.
+    let review = if req.review_role.is_some() {
+        Some(true)
+    } else {
+        req.review
+    };
+    if let Some(role) = req.review_role
+        && Some(role) != s.role()
+    {
+        store::teams::set_status_review_role(w.c(), role, id).await?;
+        w.event(
+            EntityType::Status,
+            id,
+            None,
+            ActivityField::ReviewRole,
+            j(s.role()),
+            j(role),
+        )
+        .await?;
+    }
+    if let Some(review) = review
         && review != s.review
     {
         store::teams::set_status_review(w.c(), review, id).await?;

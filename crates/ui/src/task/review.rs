@@ -44,6 +44,7 @@ pub fn verdict_text(v: ReviewVerdict) -> &'static str {
     match v {
         ReviewVerdict::Approved => "Approved",
         ReviewVerdict::ChangesRequested => "Changes requested",
+        ReviewVerdict::Passed => "Passed",
     }
 }
 
@@ -210,12 +211,13 @@ fn controls(issue: &Issue, state: &PanelState<'_>, events: ViewEvents, cx: &App)
         let element = match verdict {
             ReviewVerdict::Approved => "review-approve",
             ReviewVerdict::ChangesRequested => "review-request-changes",
+            ReviewVerdict::Passed => "review-pass",
         };
         with_card(
             SharedString::from(format!("{element}-tip")),
             match verdict {
                 ReviewVerdict::Approved => filled_button(element, sending.is_some(), cx),
-                ReviewVerdict::ChangesRequested => {
+                ReviewVerdict::ChangesRequested | ReviewVerdict::Passed => {
                     inbox_button(element, false, cx).disabled(sending.is_some())
                 }
             }

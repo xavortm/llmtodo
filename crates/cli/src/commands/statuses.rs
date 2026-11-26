@@ -21,10 +21,15 @@ pub enum StatusCmd {
         color: Option<String>,
         #[arg(long)]
         position: Option<i64>,
-        /// Mark it a review status: tickets here wait for the owner's
-        /// review, and a move here ends the agent's claim.
+        /// Mark it a review status: tickets here wait for a review, and a
+        /// move here ends the agent's claim.
         #[arg(long)]
         review: bool,
+        /// Who reviews here: `agent` for a reviewer agent that passes
+        /// tickets on to the owner, or `owner`. Implies `--review`. The
+        /// owner when left out.
+        #[arg(long)]
+        review_role: Option<ReviewRole>,
     },
     Update {
         id: String,
@@ -38,6 +43,9 @@ pub enum StatusCmd {
         /// issues in this status.
         #[arg(long)]
         review: Option<bool>,
+        /// Who reviews here: `agent` or `owner`. Also sets the review flag.
+        #[arg(long)]
+        review_role: Option<ReviewRole>,
     },
     /// Delete a status no issue uses.
     Delete { id: String },
@@ -61,6 +69,7 @@ pub async fn run(app: &App, cmd: StatusCmd) -> CliResult {
             color,
             position,
             review,
+            review_role,
         } => app.out.ser(
             &c.create_status(
                 &team,
@@ -70,6 +79,7 @@ pub async fn run(app: &App, cmd: StatusCmd) -> CliResult {
                     color,
                     position,
                     review: Some(review),
+                    review_role,
                 },
             )
             .await?,
@@ -80,6 +90,7 @@ pub async fn run(app: &App, cmd: StatusCmd) -> CliResult {
             color,
             position,
             review,
+            review_role,
         } => app.out.ser(
             &c.update_status(
                 &id,
@@ -88,6 +99,7 @@ pub async fn run(app: &App, cmd: StatusCmd) -> CliResult {
                     color,
                     position,
                     review,
+                    review_role,
                 },
             )
             .await?,

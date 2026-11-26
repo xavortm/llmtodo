@@ -134,6 +134,7 @@ open_enum!(
         GitPr => "git_pr",
         Analyzing => "analyzing",
         Review => "review",
+        ReviewRole => "review_role",
         Claimed => "claimed",
         Ended => "ended",
         Actor => "actor",

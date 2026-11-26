@@ -424,7 +424,8 @@ List statuses of one team, or of every team
 - `--type <kind>` (required)
 - `--color <color>`
 - `--position <position>`
-- `--review` (one of: true, false): Mark it a review status: tickets here wait for the owner's review, and a move here ends the agent's claim
+- `--review` (one of: true, false): Mark it a review status: tickets here wait for a review, and a move here ends the agent's claim
+- `--review-role <review_role>`: Who reviews here: `agent` for a reviewer agent that passes tickets on to the owner, or `owner`. Implies `--review`. The owner when left out
 
 ### `llmtodo status update`
 
@@ -433,6 +434,7 @@ List statuses of one team, or of every team
 - `--color <color>`
 - `--position <position>`
 - `--review <review>` (one of: true, false): Set or clear the review flag. `true` also ends the claims on issues in this status
+- `--review-role <review_role>`: Who reviews here: `agent` or `owner`. Also sets the review flag
 
 ### `llmtodo status delete`
 

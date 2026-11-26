@@ -221,6 +221,7 @@ pub fn waiting_on(
     let (icon, tooltip) = match waiting {
         WaitingOn::Agent => (IconName::Bot, "Waiting on an agent"),
         WaitingOn::Owner => (IconName::User, "Waiting on you"),
+        WaitingOn::Reviewer => (IconName::Eye, "Waiting on a reviewer agent"),
     };
     // The small mark sits on the icon's lower right corner, on a disc of
     // the background color so it stays legible over the icon.
@@ -240,7 +241,7 @@ pub fn waiting_on(
                     .with_size(gpui_kit::px(9.))
                     .text_color(theme.success),
             ),
-            WaitingOn::Owner => this
+            WaitingOn::Owner | WaitingOn::Reviewer => this
                 .text_color(theme.foreground)
                 .text_size(gpui_kit::px(9.))
                 .font_weight(gpui_kit::FontWeight::BOLD)

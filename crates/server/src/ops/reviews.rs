@@ -1,5 +1,5 @@
 //! Review rounds: the owner approves a ticket in a review status, or asks for
-//! changes.
+//! changes. A reviewer agent can review first (LLM-588).
 //!
 //! The steps and checks live in the `+++ Review` section of the
 //! description (see `llmtodo_core::review`). The answers live in the
@@ -13,6 +13,13 @@
 //! - Request changes: feedback is required. The ticket moves to the team's
 //!   first unstarted status and waits on an agent. Any claim ends and the
 //!   assignee clears, so the frontier offers it again.
+//!
+//! - Pass: only in an agent-review status, such as In Review. The ticket
+//!   moves to the team's owner-review status and waits on the owner. The
+//!   feedback stays on the ticket as the reviewer's notes.
+//!
+//! Only the owner approves: an agent's approve is refused. A reviewer agent
+//! asks for changes the same way the owner does.
 //!
 //! One answer per round. A round ends when the ticket enters a review status
 //! again.
@@ -103,6 +110,23 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             ),
         ));
     }
+    if req.verdict == ReviewVerdict::Approved && w.ctx.actor.kind == ActorKind::Agent {
+        return Err(refuse(
+            "owner_only",
+            format!(
+                "{key}: only the owner can approve. A reviewer agent answers pass or request-changes"
+            ),
+        ));
+    }
+    if req.verdict == ReviewVerdict::Passed && !status.agent_review() {
+        return Err(refuse(
+            "not_agent_review",
+            format!(
+                "{key} is in {}, where the owner reviews. Pass is the reviewer agent's answer, in a status such as In Review",
+                status.name
+            ),
+        ));
+    }
     // The activity table must hold this write's events too.
     w.flush_events().await?;
     let (entered, answered) =
@@ -134,6 +158,23 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
     .await?;
 
     match req.verdict {
+        ReviewVerdict::Passed => {
+            let owner = w
+                .team_statuses(&row.team_id)
+                .await?
+                .into_iter()
+                .find(|s| s.owner_review())
+                .ok_or_else(|| {
+                    refuse(
+                        "owner_review_missing",
+                        format!(
+                            "{key}'s team has no status where the owner reviews. Add one with `llmtodo status create --review-role owner`"
+                        ),
+                    )
+                })?;
+            set_status(w, &row, &owner).await?;
+            apply_waiting_on(w, &row, Some(WaitingOn::Owner), false).await?;
+        }
         ReviewVerdict::Approved if has_open_pr(w, &row).await? => {
             free_for_agents(w, &row, "approved").await?;
             apply_waiting_on(w, &row, Some(WaitingOn::Agent), false).await?;

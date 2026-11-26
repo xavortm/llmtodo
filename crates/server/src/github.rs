@@ -301,6 +301,11 @@ async fn move_issue(
         return Ok(());
     }
     if crate::ops::issues::set_status(w, &row, &target).await? {
+        // A reviewer agent's status hands the ticket to that agent, as a
+        // manual move does (LLM-588).
+        if target.agent_review() {
+            crate::ops::issues::wait_on_reviewer(w, &row).await?;
+        }
         report
             .moves
             .push(format!("{}: {} -> {}", row.key, cur.name, target.name));

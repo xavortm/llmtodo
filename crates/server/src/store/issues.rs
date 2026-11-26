@@ -980,9 +980,10 @@ async fn executor_ok(
 }
 
 /// Open, live, unassigned issues with no open blocker, under a map issue
-/// (to `depth` levels) or in a project. An issue in a review status waits
-/// for the owner, so it shows only when it waits on an agent, as after an
-/// approval with an open PR. Sorted by priority, then key.
+/// (to `depth` levels) or in a project. Issues that wait on the owner or a
+/// reviewer agent are left out. An issue in a review status shows only when
+/// it waits on an agent, as after an approval with an open PR. Sorted by
+/// priority, then key.
 pub async fn frontier(
     conn: &mut Conn,
     root: Option<&str>,
@@ -992,7 +993,7 @@ pub async fn frontier(
 ) -> ApiResult<Vec<String>> {
     let base = "SELECT i.id FROM issues i JOIN statuses s ON s.id = i.status_id JOIN teams t ON t.id = i.team_id
         WHERE i.deleted_at IS NULL AND i.assignee_id IS NULL AND s.type NOT IN ('completed', 'canceled')
-        AND i.waiting_on IS DISTINCT FROM 'owner'
+        AND (i.waiting_on IS NULL OR i.waiting_on = 'agent')
         AND (s.review = 0 OR i.waiting_on IS NOT DISTINCT FROM 'agent')
         AND NOT EXISTS (
             SELECT 1 FROM relations r JOIN issues b ON b.id = r.from_id JOIN statuses bs ON bs.id = b.status_id
