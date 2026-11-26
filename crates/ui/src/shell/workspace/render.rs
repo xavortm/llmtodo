@@ -137,12 +137,29 @@ impl Workspace {
             .child(
                 // The rows' hover fills draw under the list, as a view of
                 // their own (LLM-345).
-                div()
+                v_flex()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(self.list.read(cx).fill_layer.clone())
-                    .child(cached(&self.list)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(self.list.read(cx).fill_layer.clone())
+                            .child(cached(&self.list)),
+                    )
+                    // LLM-560: tasks created and completed per day, under
+                    // a project's list only.
+                    .when(self.day_chart.read(cx).slug(cx).is_some(), |this| {
+                        this.child(
+                            self.day_chart.clone().cached(
+                                gpui_kit::StyleRefinement::default()
+                                    .w_full()
+                                    .flex_none()
+                                    .h(gpui_kit::px(crate::issues::day_chart::HEIGHT)),
+                            ),
+                        )
+                    }),
             )
             .when(filters_open > 0., |this| {
                 // Cached, over its background and its rows' hover fills,
@@ -228,7 +245,7 @@ impl Workspace {
         let mut context = KeyContext::default();
         context.add(CONTEXT);
         // The claims list takes its own keys, so no list key fires under it.
-        let mode = if self.claims.read(cx).is_open() {
+        let mode = if self.claims.read(cx).is_open() || self.day_tasks.read(cx).is_open() {
             "overlay"
         } else {
             self.vim_mode(window, cx)
@@ -573,6 +590,9 @@ impl Render for Workspace {
                 ))
             })
             .when(claims_open, |this| this.child(self.claims.clone()))
+            .when(self.day_tasks.read(cx).is_open(), |this| {
+                this.child(self.day_tasks.clone())
+            })
             .children(self.render_flash())
     }
 }

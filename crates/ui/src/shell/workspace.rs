@@ -40,6 +40,7 @@ use crate::inbox::{AnswerInputs, InboxView};
 use crate::issues::claims::{ClaimsEvent, ClaimsList};
 use crate::issues::columns::{Column, ToggleColumn};
 use crate::issues::create::{self, CreateEvent, CreateForm, Draft};
+use crate::issues::day_chart::{DayChart, DayChartEvent, DayTasks, DayTasksEvent};
 use crate::issues::filter::Filter;
 use crate::issues::filter_panel::FilterPanelView;
 use crate::issues::list::{GroupBy, IssueList, RowClick, SortKey};
@@ -311,6 +312,10 @@ pub struct Workspace {
     /// saves again, so a plain save never overwrites the other version.
     doc_stale: bool,
     claims: Entity<ClaimsList>,
+    /// LLM-560: the strip of tasks created and completed per day under a
+    /// project's list, and the list of a picked day's tasks.
+    day_chart: Entity<DayChart>,
+    day_tasks: Entity<DayTasks>,
     /// The API thread. None in tests on demo data.
     backend: Option<Backend>,
     /// Which writes are on their way, and the owner's unsaved text.
@@ -509,6 +514,8 @@ impl Workspace {
             )
         });
         let claims = cx.new(|cx| ClaimsList::new(issues.clone(), focus.clone(), cx));
+        let day_chart = cx.new(|cx| DayChart::new(issues.clone(), list.clone(), cx));
+        let day_tasks = cx.new(|cx| DayTasks::new(issues.clone(), focus.clone(), cx));
 
         let filter = list.read(cx).filter.clone();
         let mut subscriptions = vec![
@@ -533,6 +540,19 @@ impl Workspace {
                 let ClaimsEvent::Open(id) = event;
                 this.open_task(*id, window, cx);
             }),
+            cx.subscribe_in(&day_chart, window, |this, chart, event, window, cx| {
+                let DayChartEvent::Pick(date) = event;
+                if let Some(slug) = chart.read(cx).slug(cx) {
+                    let date = *date;
+                    this.day_tasks
+                        .update(cx, |tasks, cx| tasks.show(slug, date, window, cx));
+                }
+            }),
+            cx.subscribe_in(&day_tasks, window, |this, _, event, window, cx| {
+                let DayTasksEvent::Open(id) = event;
+                this.open_task(*id, window, cx);
+            }),
+            cx.observe(&day_tasks, |_, _, cx| cx.notify()),
             // Claims change live, so the open list redraws with the store.
             cx.observe(&issues, {
                 let claims = claims.clone();
@@ -685,6 +705,8 @@ impl Workspace {
             doc_draft: None,
             doc_stale: false,
             claims,
+            day_chart,
+            day_tasks,
             backend: None,
             pipeline: WritePipeline::default(),
             activity: Default::default(),
@@ -3738,6 +3760,14 @@ impl Workspace {
     }
 
     #[cfg(test)]
+    pub fn day_chart(&self) -> &Entity<DayChart> {
+        &self.day_chart
+    }
+
+    pub fn day_tasks(&self) -> &Entity<DayTasks> {
+        &self.day_tasks
+    }
+
     pub fn claims(&self) -> &Entity<ClaimsList> {
         &self.claims
     }

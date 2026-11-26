@@ -176,6 +176,7 @@ pub fn bind_keys(cx: &mut App) {
     crate::inbox::bind_keys(cx);
     crate::settings::view::bind_keys(cx);
     crate::issues::claims::bind_keys(cx);
+    crate::issues::day_chart::bind_keys(cx);
     crate::issues::filter_panel::bind_keys(cx);
 }
 

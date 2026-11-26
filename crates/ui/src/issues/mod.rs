@@ -4,6 +4,7 @@
 pub mod claims;
 pub mod columns;
 pub mod create;
+pub mod day_chart;
 pub mod filter;
 pub mod filter_menu;
 pub mod filter_panel;
@@ -22,6 +23,8 @@ mod column_fade_tests;
 mod cost_tests;
 #[cfg(test)]
 mod create_tests;
+#[cfg(test)]
+mod day_chart_tests;
 #[cfg(test)]
 mod deps_tests;
 #[cfg(test)]
