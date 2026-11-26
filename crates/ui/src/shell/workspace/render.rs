@@ -166,7 +166,9 @@ impl Workspace {
                     // LLM-560: tasks created and completed per day, under
                     // a project's list only.
                     .when(
-                        self.activity_strip && self.day_chart.read(cx).slug(cx).is_some(),
+                        self.activity_strip
+                            && !crate::shell::simplify::on(cx)
+                            && self.day_chart.read(cx).slug(cx).is_some(),
                         |this| {
                             this.child(self.day_chart.clone().cached(
                                 gpui_kit::StyleRefinement::default().w_full().flex_none().h(

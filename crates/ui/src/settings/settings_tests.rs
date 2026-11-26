@@ -1634,3 +1634,66 @@ fn each_mode_keeps_its_own_background(cx: &mut TestAppContext) {
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(!text.contains("background"), "{text}");
 }
+
+/// What Simplify UI hides, read from one frame: the task's meta line, the
+/// labels column, the activity strip and the status icon beside the title.
+fn simplified_parts(handle: AnyWindowHandle, cx: &mut TestAppContext) -> [bool; 4] {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        [
+            window.try_find("detail-meta").is_some(),
+            window
+                .within("column-header")
+                .try_find("col-labels")
+                .is_some(),
+            window.try_find("day-chart").is_some(),
+            window.try_find("detail-status").is_some(),
+        ]
+    })
+    .unwrap()
+}
+
+/// LLM-586: Simplify UI hides all but the essentials at once, keeps the
+/// title, the description and the four list columns, and survives a
+/// restart. Off, everything comes back.
+#[gpui_kit::test]
+fn simplify_ui_hides_the_extras_and_off_brings_them_back(cx: &mut TestAppContext) {
+    let (_dir, store) = saved_store();
+    let (handle, view) = open_with(UiSettings::default(), store.clone(), cx);
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [true; 4], "all shown by default");
+
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-simplify-ui", cx);
+    assert!(store.load().simplify_ui);
+    press(handle, &["escape"], cx);
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [false; 4]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("detail-title").is_some());
+        let header = window.within("column-header");
+        for id in ["col-llm", "col-key", "col-title", "col-waiting"] {
+            assert!(header.try_find(id).is_some(), "{id} stays");
+        }
+    })
+    .unwrap();
+
+    // The choice survives a restart, and turning it off brings all back.
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [false; 4]);
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-simplify-ui", cx);
+    assert!(!store.load().simplify_ui);
+    press(handle, &["escape"], cx);
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [true; 4]);
+}

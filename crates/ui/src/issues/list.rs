@@ -1214,10 +1214,10 @@ impl IssueList {
 
     /// The width at which this list shows every column and fits most of
     /// its titles. The task view beside it grows only past this width.
-    pub fn comfortable_width(&self, rem_size: Pixels, _cx: &App) -> Pixels {
+    pub fn comfortable_width(&self, rem_size: Pixels, cx: &App) -> Pixels {
         // The project column takes no room from the task view: when room is
         // short, the less useful columns hide before it does.
-        let mut hidden = self.layout_hidden();
+        let mut hidden = self.layout_hidden(cx);
         if !hidden.contains(&Column::Project) {
             hidden.push(Column::Project);
         }
@@ -1337,8 +1337,15 @@ impl IssueList {
     /// The columns the layout leaves out: the owner's hidden columns, and
     /// the status while the groups already name it. The status comes back
     /// on its own under another grouping, and the owner's setting stays.
-    fn layout_hidden(&self) -> Vec<Column> {
+    fn layout_hidden(&self, cx: &App) -> Vec<Column> {
         let mut hidden = self.hidden_columns.clone();
+        // Simplify UI keeps only its columns. The owner's own choice stays
+        // saved, so turning it off brings the list back as it was.
+        for column in Column::ALL {
+            if crate::shell::simplify::hides_column(column, cx) && !hidden.contains(&column) {
+                hidden.push(column);
+            }
+        }
         if self.group == GroupBy::Status && !hidden.contains(&Column::Status) {
             hidden.push(Column::Status);
         }
@@ -2196,7 +2203,7 @@ impl IssueList {
         // other columns, the list draws again with them.
         let width = self.width.clone();
         let entity = cx.entity_id();
-        let hidden = self.layout_hidden();
+        let hidden = self.layout_hidden(cx);
         let demand = self.demand;
         gpui_kit::canvas(
             move |bounds, _, cx| {
@@ -2806,7 +2813,8 @@ impl Render for IssueList {
         self.step_to_top(window, cx);
         let rem_size = window.rem_size();
         let demand = self.demand;
-        let mut layout = columns::plan(self.width.get(), rem_size, &self.layout_hidden(), &demand);
+        let mut layout =
+            columns::plan(self.width.get(), rem_size, &self.layout_hidden(cx), &demand);
         self.fade_columns(&mut layout, window, cx);
         if *self.layout != layout {
             self.layout = std::rc::Rc::new(layout);
