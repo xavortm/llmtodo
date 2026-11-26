@@ -352,7 +352,7 @@ List the tickets that wait on the reviewer agent, oldest first: open tickets in 
 
 ### `llmtodo issue review answer`
 
-Answer the review of an issue in a review status. The reviewer agent answers `pass` or `request-changes` in a status such as In Review. `pass` moves the ticket to the owner's review status, such as User review, and keeps the feedback as notes for the owner. Only the owner may `approve`: it moves the ticket to Done, or, with an open PR, leaves it waiting on an agent to merge. `request-changes` needs feedback and moves the ticket to Todo for an agent. Several keys send every answer in one write, and print one result per key. A refused answer leaves the others in place, and the exit code is then 6
+Answer the review of an issue in a review status. The reviewer agent answers `pass` or `request-changes` in a status such as In Review. `pass` moves the ticket to the owner's review status, such as User review, and keeps the feedback as notes for the owner. Only the owner may `approve`: it moves the ticket to Done, or, with an open PR, leaves it waiting on an agent to merge. `request-changes` needs feedback and moves the ticket back to In Progress for an agent. Several keys send every answer in one write, and print one result per key. A refused answer leaves the others in place, and the exit code is then 6
 
 - `<keys>` (repeatable)
 - `<verdict>`: `pass`, `request-changes` (or `changes`), or `approve`

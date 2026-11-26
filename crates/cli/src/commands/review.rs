@@ -39,7 +39,7 @@ pub enum ReviewCmd {
     /// review, and keeps the feedback as notes for the owner. Only the owner
     /// may `approve`: it moves the ticket to Done, or, with an open PR, leaves
     /// it waiting on an agent to merge. `request-changes` needs feedback and
-    /// moves the ticket to Todo for an agent. Several keys send every answer
+    /// moves the ticket back to In Progress for an agent. Several keys send every answer
     /// in one write, and print one result per key. A refused answer leaves
     /// the others in place, and the exit code is then 6.
     Answer {

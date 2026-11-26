@@ -3455,7 +3455,7 @@ impl Workspace {
             ),
             (ReviewVerdict::ChangesRequested, s) => format!(
                 "Asked for changes on {key}. It moved to {} for an agent",
-                s.map_or_else(|| "Todo".into(), |s| s.name)
+                s.map_or_else(|| "In Progress".into(), |s| s.name)
             ),
         }
         .into();

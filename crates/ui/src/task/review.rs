@@ -249,7 +249,7 @@ fn controls(issue: &Issue, state: &PanelState<'_>, events: ViewEvents, cx: &App)
                 .child(button(
                     ReviewVerdict::ChangesRequested,
                     "Request changes",
-                    "Send the feedback to an agent. The ticket goes back to Todo",
+                    "Send the feedback to an agent. The ticket goes back to In Progress",
                 )),
         )
         .into_any_element()

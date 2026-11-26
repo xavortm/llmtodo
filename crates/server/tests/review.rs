@@ -342,7 +342,8 @@ async fn request_changes_hands_the_ticket_back() {
         .answer(&k, "changes_requested", "The text is too small.")
         .await;
     assert!(s < 300, "{v}");
-    assert_eq!(v["status"]["name"], "Todo");
+    // The work has started, so it goes back to In Progress (LLM-603).
+    assert_eq!(v["status"]["name"], "In Progress");
     assert_eq!(v["waiting_on"], "agent");
     assert_eq!(v["claim"], Value::Null);
     assert_eq!(v["assignee"], Value::Null);
@@ -942,6 +943,39 @@ async fn the_reviewer_passes_a_ticket_on_to_the_owner() {
     t.stop().await;
 }
 
+/// LLM-603: a team with no work status sends a ticket with requested
+/// changes to its first unstarted status instead.
+#[tokio::test]
+async fn request_changes_falls_back_to_todo() {
+    let t = T::new().await;
+    let team = t.ok(&owner(), "GET", "/v1/teams/ALX", Value::Null).await;
+    let in_progress = team["statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "In Progress")
+        .expect("a new team has In Progress")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.ok(
+        &owner(),
+        "DELETE",
+        &format!("/v1/statuses/{in_progress}"),
+        Value::Null,
+    )
+    .await;
+    let k = t.issue(SECTION).await;
+    t.to_review(&k).await;
+    let (s, v) = t
+        .answer(&k, "changes_requested", "The text is too small.")
+        .await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["status"]["name"], "Todo");
+    assert_eq!(v["waiting_on"], "agent");
+    t.stop().await;
+}
+
 /// LLM-588: the reviewer's request for changes hands the ticket back to a
 /// coding agent, as the owner's does. One answer per round.
 #[tokio::test]
@@ -955,7 +989,7 @@ async fn the_reviewer_can_ask_for_changes() {
         .reviewer_answer(&k, "changes_requested", "src/lib.rs:4 drops the error.")
         .await;
     assert!(s < 300, "{v}");
-    assert_eq!(v["status"]["name"], "Todo");
+    assert_eq!(v["status"]["name"], "In Progress");
     assert_eq!(v["waiting_on"], "agent");
     assert_eq!(v["assignee"], Value::Null);
 

@@ -11,7 +11,9 @@
 //! - Approve, with an open PR: the ticket stays in its review status and waits on
 //!   an agent, which merges the PR and marks the ticket Done.
 //! - Request changes: feedback is required. The ticket moves to the team's
-//!   first unstarted status and waits on an agent. Any claim ends and the
+//!   first work status, such as In Progress, because its work has started
+//!   (LLM-603). A team with none falls back to its first unstarted status.
+//!   The ticket waits on an agent. Any claim ends and the
 //!   assignee clears, so the frontier offers it again.
 //!
 //! - Pass: only in an agent-review status, such as In Review. The ticket
@@ -200,12 +202,17 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             set_status(w, &row, &done).await?;
         }
         ReviewVerdict::ChangesRequested => {
-            let todo = w
-                .first_of_type(&row.team_id, StatusType::Unstarted)
-                .await?
-                .ok_or_else(|| {
-                    ApiError::validation(format!("{key}'s team has no unstarted status"))
-                })?;
+            let todo = match w.first_work_status(&row.team_id).await? {
+                Some(s) => s,
+                None => w
+                    .first_of_type(&row.team_id, StatusType::Unstarted)
+                    .await?
+                    .ok_or_else(|| {
+                        ApiError::validation(format!(
+                            "{key}'s team has no work status and no unstarted status"
+                        ))
+                    })?,
+            };
             free_for_agents(w, &row, "changes_requested").await?;
             set_status(w, &row, &todo).await?;
             apply_waiting_on(w, &row, Some(WaitingOn::Agent), false).await?;
