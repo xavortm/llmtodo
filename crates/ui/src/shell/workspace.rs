@@ -353,6 +353,8 @@ pub struct Workspace {
     _external_poll: Option<gpui_kit::Task<()>>,
     /// Restart to update: set only for the owner's real app.
     update: Option<update::UpdateState>,
+    /// LLM-592: the ticket key when this app is a preview build of it.
+    preview: Option<SharedString>,
     _events: Option<gpui_kit::Task<()>>,
     /// Redraws the claim timers once a minute.
     _clock: gpui_kit::Task<()>,
@@ -778,6 +780,7 @@ impl Workspace {
             external: ExternalEdits::from_env(),
             _external_poll: None,
             update: None,
+            preview: crate::model::preview::ticket_from_env().map(SharedString::from),
             _events: None,
             _clock: Self::start_clock(cx),
             project_dir: std::env::var_os("LLMTODO_PROJECT_DIR")

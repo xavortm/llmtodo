@@ -549,6 +549,13 @@ pub fn locked_badge(theme: &Theme) -> (Hsla, Hsla) {
     (fill, ensure_contrast(black_or_white(fill), &[fill], 4.5))
 }
 
+/// The fill and text of a preview build's title bar (LLM-592): the theme's
+/// yellow, with black or white text that keeps 4.5:1 on it.
+pub fn preview_bar(theme: &Theme) -> (Hsla, Hsla) {
+    let fill = blend(theme.yellow, theme.background);
+    (fill, ensure_contrast(black_or_white(fill), &[fill], 4.5))
+}
+
 fn luminance(color: Hsla) -> f32 {
     let rgb: Rgba = color.into();
     let channel = |v: f32| {
@@ -655,6 +662,21 @@ mod tests {
                 let t = cx.theme();
                 let (fill, text) = locked_badge(t);
                 assert!(contrast(text, fill) >= 4.5, "{name:?} {mode:?} badge text");
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_bar_is_yellow_and_readable(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for (name, mode) in every_theme() {
+            cx.update(|cx| {
+                set_theme(name, mode, cx);
+                let (fill, text) = preview_bar(cx.theme());
+                assert!(
+                    contrast(text, fill) >= 4.5,
+                    "{name:?} {mode:?} preview bar text"
+                );
             });
         }
     }
