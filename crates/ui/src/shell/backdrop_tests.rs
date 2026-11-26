@@ -623,3 +623,121 @@ fn a_new_image_fades_in_once_ready_and_the_old_one_out(cx: &mut gpui_kit::TestAp
     });
     assert_eq!(now, vec![("a.png".to_string(), 80.)]);
 }
+
+// LLM-585: when a shader may draw as an opaque surface.
+
+#[gpui_kit::test]
+fn a_missing_or_clear_window_slot_does_not_show(cx: &mut gpui_kit::TestAppContext) {
+    use std::time::Instant;
+    cx.update(|cx| {
+        crate::init(cx);
+        cx.set_global(Fades::default());
+    });
+    let shows_with = |b: Option<Backdrop>, cx: &mut gpui_kit::TestAppContext| {
+        cx.update(|cx| {
+            cx.set_global(Shown {
+                light: Backdrops::default(),
+                dark: Backdrops {
+                    window: b,
+                    ..Default::default()
+                },
+            });
+            shows(Slot::Window, cx)
+        })
+    };
+    let a = backdrop("a.png");
+    assert!(shows_with(Some(a.clone()), cx));
+    let missing = Backdrop {
+        stamp: None,
+        ..a.clone()
+    };
+    assert!(!shows_with(Some(missing.clone()), cx), "a missing file");
+    let clear = Backdrop {
+        opacity: 0.,
+        ..a.clone()
+    };
+    assert!(!shows_with(Some(clear), cx), "opacity 0");
+    assert!(!shows_with(None, cx), "no image");
+
+    // A slot that still fades shows, whatever its file does.
+    cx.update(|cx| {
+        fade(
+            Slot::Window,
+            Some(a.clone()),
+            true,
+            Instant::now(),
+            &|_| None,
+            cx,
+        );
+    });
+    assert!(shows_with(Some(missing), cx), "it fades");
+}
+
+#[test]
+fn a_surface_blend_needs_a_flat_color_and_a_parent_at_full() {
+    use std::{cell::Cell, rc::Rc};
+    let white = gpui_kit::hsla(0., 0., 1., 1.);
+    let blend = surface_blend(Some(white), None, 0.6).unwrap();
+    assert_eq!(blend.amount, 0.6);
+    assert!(
+        blend.under.iter().all(|c| (c - 1.).abs() < 1e-4),
+        "{blend:?}"
+    );
+    assert_eq!(surface_blend(None, None, 1.), None);
+    let parent: ParentFade = Rc::new(Cell::new(0.5));
+    assert_eq!(surface_blend(Some(white), Some(&parent), 1.), None);
+    parent.set(1.);
+    assert!(surface_blend(Some(white), Some(&parent), 1.).is_some());
+}
+
+#[test]
+fn a_paint_without_a_blend_never_takes_a_surface() {
+    use crate::shell::shader::Blend;
+    let blend = |r: f32, amount: f32| Blend {
+        under: [r, 0., 0.],
+        amount,
+    };
+    let (sidebar, window, window_half) = (blend(0.2, 1.), blend(0.1, 1.), blend(0.1, 0.5));
+    let surfaces = [(sidebar, "sidebar"), (window, "window")];
+    // Fading or over another background: the image or nothing, never an
+    // opaque surface.
+    assert_eq!(pick_surface(&surfaces, false, None), None);
+    assert_eq!(pick_surface(&surfaces, true, None), None);
+    // The surface for this blend.
+    assert_eq!(pick_surface(&surfaces, true, Some(window)), Some(&"window"));
+    // A blend not there yet: the image while there is one ...
+    assert_eq!(pick_surface(&surfaces, true, Some(window_half)), None);
+    // ... else one over the same color, else any.
+    assert_eq!(
+        pick_surface(&surfaces, false, Some(window_half)),
+        Some(&"window")
+    );
+    assert_eq!(
+        pick_surface(&surfaces, false, Some(blend(0.9, 1.))),
+        Some(&"sidebar")
+    );
+    assert_eq!(pick_surface::<&str>(&[], false, Some(window)), None);
+}
+
+#[test]
+fn wants_gathers_each_form_once() {
+    use crate::shell::shader::Blend;
+    let a = Blend {
+        under: [0.1, 0.1, 0.1],
+        amount: 1.,
+    };
+    let b = Blend { amount: 0.5, ..a };
+    let mut wants = Wants::default();
+    wants.add(Some(a));
+    wants.add(Some(a));
+    assert!(!wants.image);
+    wants.add(None);
+    wants.add(Some(b));
+    assert_eq!(
+        wants,
+        Wants {
+            image: true,
+            blends: vec![a, b]
+        }
+    );
+}
