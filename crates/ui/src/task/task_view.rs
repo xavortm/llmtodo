@@ -633,14 +633,17 @@ impl TaskView {
             }
         };
         let header = self.render_detail_header(issue, window, cx);
-        let meta_line = self.render_meta_line(issue, cx);
+        // Simplify UI keeps the title, the description and the review panel.
+        let simple = crate::shell::simplify::on(cx);
+        let meta_line = (!simple).then(|| self.render_meta_line(issue, cx));
 
         let git = self
             .store
             .read(cx)
             .git_shared(issue.id)
             .filter(|g| has_git(g));
-        let claim_bar = issue.claim.clone().map(|claim| {
+        let git = git.filter(|_| !simple);
+        let claim_bar = issue.claim.clone().filter(|_| !simple).map(|claim| {
             self.render_claim_bar(&claim, git.as_deref(), cx)
                 .into_any_element()
         });
@@ -648,7 +651,7 @@ impl TaskView {
         let analyzing_bar = issue
             .analyzing
             .clone()
-            .filter(|a| issue.claim.is_none() && a.is_live(jiff::Timestamp::now()))
+            .filter(|a| !simple && issue.claim.is_none() && a.is_live(jiff::Timestamp::now()))
             .map(|a| Self::render_analyzing_bar(&a, issue.id, cx).into_any_element());
         // A project's linked repo wins over the worktree's `origin`.
         let repo = issue
@@ -714,7 +717,7 @@ impl TaskView {
             .border_b_1()
             .border_color(theme.border)
             .child(header)
-            .child(meta_line)
+            .children(meta_line)
             .into_any_element();
         let head = animated("head", Some(head), false);
         let theme = cx.theme();
@@ -1941,6 +1944,7 @@ impl TaskView {
             cx,
         )
         .into_any_element();
+        let simple = crate::shell::simplify::on(cx);
         let theme = cx.theme();
         // The panel sits inside the focus-ring padding and border, so the
         // row is that much shorter. A one-line title then sits on the filter
@@ -1969,18 +1973,20 @@ impl TaskView {
             .gap_2()
             .text_sm()
             .line_height(line)
-            .child(on_first_line(
-                "detail-status",
-                with_card(
-                    SharedString::from(format!("detail-status-{issue_id}")),
-                    Icon::new(issue.status.icon())
-                        .small()
-                        .when(issue.status.is_done(), |i| i.text_color(theme.success)),
-                    Card::text(format!("Status: {}", issue.status.name)),
-                )
-                .into_any_element(),
-            ))
-            .child(on_first_line("detail-key", key))
+            .when(!simple, |this| {
+                this.child(on_first_line(
+                    "detail-status",
+                    with_card(
+                        SharedString::from(format!("detail-status-{issue_id}")),
+                        Icon::new(issue.status.icon())
+                            .small()
+                            .when(issue.status.is_done(), |i| i.text_color(theme.success)),
+                        Card::text(format!("Status: {}", issue.status.name)),
+                    )
+                    .into_any_element(),
+                ))
+                .child(on_first_line("detail-key", key))
+            })
             .child(
                 div()
                     .id("detail-title")
@@ -1996,6 +2002,7 @@ impl TaskView {
                     issue.waiting_on,
                     cx,
                 )
+                .filter(|_| !simple)
                 .map(|w| on_first_line("detail-waiting", w.into_any_element())),
             )
     }

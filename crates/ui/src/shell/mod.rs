@@ -12,6 +12,7 @@ pub mod motion;
 pub mod palette;
 pub mod shader;
 pub mod sidebar;
+pub mod simplify;
 pub mod split;
 pub mod theme;
 pub mod tooltip;

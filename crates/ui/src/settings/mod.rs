@@ -108,6 +108,8 @@ pub struct UiSettings {
     /// Short animations for actions: panels, overlays, hover and press
     /// (LLM-195). Off, the app changes state at once.
     pub animations: bool,
+    /// LLM-586: hide all but the essentials. See `shell::simplify`.
+    pub simplify_ui: bool,
     /// LLM-566: background images, `[app.background.<slot>]` in
     /// `config.toml`. A settings save never writes them; the Background
     /// section writes one key at a time (LLM-567).
@@ -155,6 +157,7 @@ impl Default for UiSettings {
             mascot: true,
             strike_done: true,
             animations: false,
+            simplify_ui: false,
             background: Default::default(),
         }
     }
@@ -170,6 +173,7 @@ struct Preferences {
     vim_editor: bool,
     mascot: bool,
     animations: bool,
+    simplify_ui: bool,
     strike_done: bool,
     hidden_columns: Vec<String>,
     hide_closed: bool,
@@ -222,6 +226,7 @@ impl Preferences {
             vim_editor: s.vim_editor,
             mascot: s.mascot,
             animations: s.animations,
+            simplify_ui: s.simplify_ui,
             strike_done: s.strike_done,
             hidden_columns: s.hidden_columns.clone(),
             hide_closed: s.hide_closed,
@@ -238,6 +243,7 @@ impl Preferences {
         s.vim_editor = self.vim_editor;
         s.mascot = self.mascot;
         s.animations = self.animations;
+        s.simplify_ui = self.simplify_ui;
         s.strike_done = self.strike_done;
         s.hidden_columns = self.hidden_columns;
         s.hide_closed = self.hide_closed;

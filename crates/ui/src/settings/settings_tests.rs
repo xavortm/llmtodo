@@ -1634,3 +1634,172 @@ fn each_mode_keeps_its_own_background(cx: &mut TestAppContext) {
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(!text.contains("background"), "{text}");
 }
+
+/// What Simplify UI hides, read from one frame: the task's meta line, the
+/// labels column, the activity strip and the status icon beside the title.
+fn simplified_parts(handle: AnyWindowHandle, cx: &mut TestAppContext) -> [bool; 4] {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        [
+            window.try_find("detail-meta").is_some(),
+            window
+                .within("column-header")
+                .try_find("col-labels")
+                .is_some(),
+            window.try_find("day-chart").is_some(),
+            window.try_find("detail-status").is_some(),
+        ]
+    })
+    .unwrap()
+}
+
+/// Opens the first task in the store that `pick` takes.
+fn open_where(
+    handle: AnyWindowHandle,
+    view: &Entity<Workspace>,
+    pick: impl Fn(&crate::model::data::Issue) -> bool,
+    cx: &mut TestAppContext,
+) {
+    let key = cx.read(|cx| {
+        let store = view.read(cx).store().read(cx);
+        store
+            .iter()
+            .find(|i| !i.deleted && pick(i))
+            .map(|i| i.key.to_string())
+            .expect("a task of that kind")
+    });
+    view.update(cx, |this, cx| this.open_key(&key, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+}
+
+/// LLM-586: Simplify UI hides all but the essentials at once, keeps the
+/// title, the description, the review panel and the four list columns,
+/// and survives a restart. Off, everything comes back, with the owner's
+/// own hidden columns as they were.
+#[gpui_kit::test]
+fn simplify_ui_hides_the_extras_and_off_brings_them_back(cx: &mut TestAppContext) {
+    let (_dir, mut store) = saved_store();
+    let settings = UiSettings {
+        hidden_columns: vec!["deps".into()],
+        ..UiSettings::default()
+    };
+    store.save(&UiSettings::default(), &settings).unwrap();
+    let (handle, view) = open_with(settings, store.clone(), cx);
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(
+        simplified_parts(handle, cx),
+        [true; 4],
+        "all shown by default"
+    );
+
+    // A day's task list from the strip closes with the strip.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("day-2026-11-10", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| view.read(cx).day_tasks().read(cx).is_open()));
+
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-simplify-ui", cx);
+    assert!(store.load().simplify_ui);
+    assert!(!cx.read(|cx| view.read(cx).day_tasks().read(cx).is_open()));
+    press(handle, &["escape"], cx);
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [false; 4]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("detail-title").is_some());
+        assert!(window.try_find("detail-key").is_none());
+        assert!(window.try_find("detail-waiting").is_none());
+        let header = window.within("column-header");
+        for column in crate::issues::columns::Column::ALL {
+            let keep = crate::shell::simplify::LIST_COLUMNS.contains(&column);
+            if !keep {
+                assert!(header.try_find(column.id()).is_none(), "{column:?} hides");
+            }
+        }
+        for id in ["col-llm", "col-key", "col-title", "col-waiting"] {
+            assert!(header.try_find(id).is_some(), "{id} stays");
+        }
+    })
+    .unwrap();
+    // A claimed task shows no claim bar and no git panel. A task in
+    // review keeps its review panel.
+    open_where(handle, &view, |i| i.claim.is_some(), cx);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find("detail-title").is_some());
+        assert!(window.try_find("git-panel").is_none());
+        assert!(window.try_find("detail-meta").is_none());
+    })
+    .unwrap();
+    let claimed = cx.read(|cx| {
+        let store = view.read(cx).store().read(cx);
+        store.iter().find(|i| i.claim.is_some()).unwrap().id
+    });
+    view.update(cx, |this, cx| {
+        this.store().update(cx, |store, _| {
+            store.modify(claimed, |i| {
+                i.status = crate::model::data::Status::new(
+                    "User review",
+                    crate::model::data::StatusType::Started,
+                    9,
+                )
+                .with_review(true);
+                i.claim = None;
+            });
+        });
+    });
+    open_where(handle, &view, |i| i.status.review, cx);
+    cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find("review-panel").is_some());
+    })
+    .unwrap();
+
+    // A column the setting hides cannot be toggled meanwhile.
+    view.update(cx, |this, cx| {
+        this.list().update(cx, |list, cx| {
+            list.toggle_column(crate::issues::columns::Column::Labels, cx)
+        })
+    });
+    assert_eq!(
+        cx.read(|cx| view.read(cx).current_settings(cx).hidden_columns),
+        ["deps"]
+    );
+
+    // The choice survives a restart, and turning it off brings all back.
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [false; 4]);
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-simplify-ui", cx);
+    assert!(!store.load().simplify_ui);
+    press(handle, &["escape"], cx);
+    press(handle, &["j", "enter"], cx);
+    assert_eq!(simplified_parts(handle, cx), [true; 4]);
+    assert_eq!(
+        store.load().hidden_columns,
+        ["deps"],
+        "the owner's choice stays"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .within("column-header")
+                .try_find("col-deps")
+                .is_none()
+        );
+    })
+    .unwrap();
+}

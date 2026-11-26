@@ -87,10 +87,11 @@ pub enum Row {
     OpenLast,
     Mascot,
     Animations,
+    SimplifyUi,
     StrikeDone,
 }
 
-const ROWS: [Row; 10] = [
+const ROWS: [Row; 11] = [
     Row::HideClosed,
     Row::HideClosedDays,
     Row::Vim,
@@ -100,6 +101,7 @@ const ROWS: [Row; 10] = [
     Row::OpenLast,
     Row::Mascot,
     Row::Animations,
+    Row::SimplifyUi,
     Row::StrikeDone,
 ];
 
@@ -115,6 +117,7 @@ impl Row {
             Self::OpenLast => "settings-row-open-last",
             Self::Mascot => "settings-row-mascot",
             Self::Animations => "settings-row-animations",
+            Self::SimplifyUi => "settings-row-simplify-ui",
             Self::StrikeDone => "settings-row-strike-done",
         }
     }
@@ -130,6 +133,7 @@ impl Row {
             Self::OpenLast => "Open the last view at start",
             Self::Mascot => "Sudo the cat",
             Self::Animations => "Animations",
+            Self::SimplifyUi => "Simplify UI",
             Self::StrikeDone => "Line through done tasks",
         }
     }
@@ -495,6 +499,9 @@ impl SettingsView {
             }
             Row::Mascot => self.write(ViewEvent::SetMascot(!values.mascot), window, cx),
             Row::Animations => self.write(ViewEvent::SetAnimations(!values.animations), window, cx),
+            Row::SimplifyUi => {
+                self.write(ViewEvent::SetSimplifyUi(!values.simplify_ui), window, cx)
+            }
             Row::StrikeDone => {
                 self.write(ViewEvent::SetStrikeDone(!values.strike_done), window, cx)
             }
@@ -540,6 +547,9 @@ impl SettingsView {
             Row::Theme => "Every theme has a light and a dark mode".into(),
             Row::Appearance => "Auto follows macOS".into(),
             Row::Animations => "Short movement when panels open, menus appear, and you hover or click"
+                .into(),
+            Row::SimplifyUi => "Show only the essentials: fewer list columns, no stats strip, \
+                 and the task's title, description and review"
                 .into(),
             Row::StrikeDone => "A light line through the titles of Done tasks in the list".into(),
             Row::Zoom => return None,
@@ -613,6 +623,7 @@ impl SettingsView {
             Row::OpenLast => switch(values.open_last_view),
             Row::Mascot => switch(values.mascot),
             Row::Animations => switch(values.animations),
+            Row::SimplifyUi => switch(values.simplify_ui),
             Row::StrikeDone => switch(values.strike_done),
         }
     }

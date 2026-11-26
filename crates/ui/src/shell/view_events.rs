@@ -112,6 +112,8 @@ pub enum ViewEvent {
     SetMascot(bool),
     SetAnimations(bool),
     SetStrikeDone(bool),
+    /// LLM-586: the Simplify UI switch.
+    SetSimplifyUi(bool),
     SetZoom(f32),
     /// LLM-567: one key of a background table; `None` takes it out.
     SetBackground {

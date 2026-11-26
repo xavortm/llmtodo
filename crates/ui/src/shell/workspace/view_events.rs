@@ -84,6 +84,7 @@ impl Workspace {
             ViewEvent::SetMascot(on) => self.set_mascot(on, cx),
             ViewEvent::SetAnimations(on) => self.set_animations(on, window, cx),
             ViewEvent::SetStrikeDone(on) => self.set_strike_done(on, cx),
+            ViewEvent::SetSimplifyUi(on) => self.set_simplify_ui(on, window, cx),
             ViewEvent::SetZoom(level) => self.set_zoom(level, cx),
             ViewEvent::SetBackground { slot, key, value } => {
                 self.set_background(slot, key, value, cx)

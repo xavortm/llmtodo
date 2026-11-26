@@ -1678,6 +1678,7 @@ impl Workspace {
         self.backgrounds_on = settings.background_images;
         self.mascot_on = settings.mascot;
         crate::shell::motion::set(settings.animations, cx);
+        crate::shell::simplify::set(settings.simplify_ui, cx);
         self.apply_backgrounds(&settings.background, cx);
         self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
@@ -1794,6 +1795,7 @@ impl Workspace {
             mascot: self.mascot_on,
             strike_done: list.strike_done,
             animations: crate::shell::motion::enabled(cx),
+            simplify_ui: crate::shell::simplify::on(cx),
             background: self.background.clone(),
         }
     }
@@ -2188,6 +2190,8 @@ impl Workspace {
         crate::shell::theme::set_color_theme(color, cx);
         crate::shell::theme::set_zoom(now.zoom, cx);
         crate::shell::motion::set(now.animations, cx);
+        crate::shell::simplify::set(now.simplify_ui, cx);
+        self.close_day_tasks_if_simplified(window, cx);
         self.apply_backgrounds(&now.background, cx);
         self.mascot_on = now.mascot;
         self.sync_mascot(cx);
@@ -3083,6 +3087,26 @@ impl Workspace {
         crate::shell::motion::set(on, cx);
         window.refresh();
         self.persist(cx);
+    }
+
+    /// The Settings switch for Simplify UI (LLM-586). The change shows at
+    /// once: every view draws again with or without the extras.
+    pub fn set_simplify_ui(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        crate::shell::simplify::set(on, cx);
+        self.close_day_tasks_if_simplified(window, cx);
+        self.list_do(cx, |_, cx| cx.notify());
+        self.task.update(cx, |_, cx| cx.notify());
+        window.refresh();
+        self.persist(cx);
+    }
+
+    /// Simplify UI hides the activity strip, so a day's task list opened
+    /// from it closes too.
+    fn close_day_tasks_if_simplified(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::shell::simplify::on(cx) {
+            self.day_tasks
+                .update(cx, |tasks, cx| tasks.close(window, cx));
+        }
     }
 
     /// The experimental Settings switch for the line through Done titles.
