@@ -33,17 +33,15 @@ pub enum ReviewCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Answer the review of an issue in a review status.
-    ///
-    /// The reviewer agent answers `pass` or `request-changes` in a status
-    /// such as In Review. `pass` moves the ticket to the owner's review
-    /// status, such as User review, and keeps the feedback as notes for the
-    /// owner. Only the owner may `approve`: it moves the ticket to Done, or,
-    /// with an open PR, leaves it waiting on an agent to merge.
-    /// `request-changes` needs feedback and moves the ticket to Todo for an
-    /// agent. Several keys send every answer in one write, and print one
-    /// result per key. A refused answer leaves the others in place, and the
-    /// exit code is then 6.
+    /// Answer the review of an issue in a review status. The reviewer agent
+    /// answers `pass` or `request-changes` in a status such as In Review.
+    /// `pass` moves the ticket to the owner's review status, such as User
+    /// review, and keeps the feedback as notes for the owner. Only the owner
+    /// may `approve`: it moves the ticket to Done, or, with an open PR, leaves
+    /// it waiting on an agent to merge. `request-changes` needs feedback and
+    /// moves the ticket to Todo for an agent. Several keys send every answer
+    /// in one write, and print one result per key. A refused answer leaves
+    /// the others in place, and the exit code is then 6.
     Answer {
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
@@ -136,13 +134,15 @@ async fn queue(app: &App, c: &llmtodo_client::Client, project: Option<String>) -
         ..Default::default()
     };
     let mut items = c.query_all(&q).await?;
+    // `waiting_on reviewer` can outlive a move out of In Review, and anyone
+    // may set it by hand. Pass works only in an agent-review status.
+    items.retain(|i| i.status.review && i.status.review_role == Some(ReviewRole::Agent));
     items.sort_by_key(|i| i.updated_at);
     let mut rows = Vec::with_capacity(items.len());
     for i in &items {
         let key = i.key.to_string();
         let d = c.issue(&key).await?;
-        let r = c.review(&key).await?;
-        let round = r.answers.iter().map(|a| a.round).max().unwrap_or(0) + 1;
+        let round = d.reviews.iter().map(|a| a.round).max().unwrap_or(0) + 1;
         rows.push(json!({
             "key": key,
             "title": i.title,

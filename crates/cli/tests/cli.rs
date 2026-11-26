@@ -808,6 +808,9 @@ async fn reviewer_queue_pass_and_changes() {
     );
     t.json("s1", &["issue", "update", "LLM-1", "--status", "In Review"]);
     t.json("s1", &["issue", "update", "LLM-2", "--status", "In Review"]);
+    // Waiting on the reviewer outside an agent-review status is no review.
+    t.json("s1", &["issue", "create", "-t", "Stray", "--team", "LLM"]);
+    t.json("s1", &["issue", "update", "LLM-3", "-w", "reviewer"]);
 
     let q = t.json("s1", &["--json", "issue", "review", "queue"]);
     let rows = q.as_array().unwrap();
