@@ -66,6 +66,10 @@ pub struct UiSettings {
     /// LLM-560: the strip of tasks created and completed per day under a
     /// project's list. Shown unless the owner hides it.
     pub activity_strip: bool,
+    /// LLM-575: background images show. The owner hides them with View >
+    /// Show Background Images, `g b` or `:background`, as for a screen
+    /// share. It never changes `config.toml`.
+    pub background_images: bool,
     /// What the sidebar picked: `all`, `team:<key>` or `project:<slug>`.
     pub sidebar_scope: String,
     /// The teams whose groups the sidebar shows closed, by team key.
@@ -123,6 +127,7 @@ impl Default for UiSettings {
             collapsed_groups: Vec::new(),
             sidebar_open: false,
             activity_strip: true,
+            background_images: true,
             sidebar_scope: "all".into(),
             sidebar_collapsed: Vec::new(),
             split_side: None,
@@ -178,6 +183,7 @@ struct UiState {
     last_task: Option<String>,
     sidebar_open: bool,
     activity_strip: bool,
+    background_images: bool,
     sidebar_scope: String,
     sidebar_collapsed: Vec<String>,
     sort: String,
@@ -263,6 +269,7 @@ impl UiState {
             last_task: s.last_task.clone(),
             sidebar_open: s.sidebar_open,
             activity_strip: s.activity_strip,
+            background_images: s.background_images,
             sidebar_scope: s.sidebar_scope.clone(),
             sidebar_collapsed: s.sidebar_collapsed.clone(),
             sort: s.sort.clone(),
@@ -281,6 +288,7 @@ impl UiState {
         s.last_task = self.last_task;
         s.sidebar_open = self.sidebar_open;
         s.activity_strip = self.activity_strip;
+        s.background_images = self.background_images;
         s.sidebar_scope = self.sidebar_scope;
         s.sidebar_collapsed = self.sidebar_collapsed;
         s.sort = self.sort;

@@ -505,6 +505,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::show_claims))
             .on_action(cx.listener(Self::toggle_activity_strip))
+            .on_action(cx.listener(Self::toggle_backgrounds))
             .on_action(cx.listener(Self::show_inbox))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::cancel))
@@ -558,6 +559,11 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &app_menus::MenuActivityStrip, window, cx| {
                     this.toggle_activity_strip(&ToggleActivityStrip, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &app_menus::MenuBackgrounds, window, cx| {
+                    this.toggle_backgrounds(&ToggleBackgrounds, window, cx)
                 }),
             )
             .on_action(cx.listener(|this, _: &app_menus::MenuHelp, window, cx| {

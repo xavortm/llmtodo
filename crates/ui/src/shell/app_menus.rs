@@ -39,6 +39,7 @@ actions!(
         MenuFilter,
         MenuClaims,
         MenuActivityStrip,
+        MenuBackgrounds,
         MenuHelp,
         MenuCheckForUpdates,
     ]
@@ -85,8 +86,24 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+/// What the menu bar shows that changes while the app runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MenuState {
+    /// LLM-575: `config.toml` names a background image.
+    pub backgrounds_set: bool,
+    /// The owner shows background images.
+    pub backgrounds_shown: bool,
+}
+
+impl gpui_kit::Global for MenuState {}
+
 /// The menu bar: App, Edit, Issue, View and Window.
 pub fn menus() -> Vec<Menu> {
+    menus_for(MenuState::default())
+}
+
+/// The menu bar for `state`.
+pub fn menus_for(state: MenuState) -> Vec<Menu> {
     vec![
         Menu::new(APP_NAME).items([
             MenuItem::action("Check for Updates…", MenuCheckForUpdates),
@@ -125,6 +142,9 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", workspace::ToggleSidebar),
             MenuItem::action("Toggle Activity Strip", MenuActivityStrip),
+            MenuItem::action("Show Background Images", MenuBackgrounds)
+                .checked(state.backgrounds_set && state.backgrounds_shown)
+                .disabled(!state.backgrounds_set),
             MenuItem::action("Keyboard Shortcuts", MenuHelp),
             MenuItem::separator(),
             MenuItem::action("Toggle Full Screen", ToggleFullScreen),
@@ -138,5 +158,15 @@ pub fn menus() -> Vec<Menu> {
 
 /// Puts the menu bar up. Call it after `init`, so the menus show the keys.
 pub fn set_menus(cx: &mut App) {
-    cx.set_menus(menus());
+    let state = cx.try_global::<MenuState>().copied().unwrap_or_default();
+    cx.set_menus(menus_for(state));
+}
+
+/// Puts the menu bar up again when `state` changed.
+pub fn update_state(state: MenuState, cx: &mut App) {
+    if cx.try_global::<MenuState>() == Some(&state) {
+        return;
+    }
+    cx.set_global(state);
+    set_menus(cx);
 }

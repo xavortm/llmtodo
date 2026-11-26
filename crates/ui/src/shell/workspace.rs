@@ -323,6 +323,9 @@ pub struct Workspace {
     /// The owner shows the day strip under a project's list. View > Toggle
     /// Activity Strip, `g a` and `:activity` flip it.
     activity_strip: bool,
+    /// LLM-575: background images show. Off, the config stays in
+    /// `background`, so turning them on again needs no reload.
+    backgrounds_on: bool,
     /// The API thread. None in tests on demo data.
     backend: Option<Backend>,
     /// Which writes are on their way, and the owner's unsaved text.
@@ -729,6 +732,7 @@ impl Workspace {
             day_tasks,
             tracker_scopes: Default::default(),
             activity_strip: true,
+            backgrounds_on: true,
             backend: None,
             pipeline: WritePipeline::default(),
             activity: Default::default(),
@@ -1632,6 +1636,7 @@ impl Workspace {
         self.window_frame = settings.window;
         self.layout.sidebar_open = settings.sidebar_open;
         self.activity_strip = settings.activity_strip;
+        self.backgrounds_on = settings.background_images;
         self.mascot_on = settings.mascot;
         crate::shell::motion::set(settings.animations, cx);
         self.apply_backgrounds(&settings.background, cx);
@@ -1722,6 +1727,7 @@ impl Workspace {
             collapsed_groups: collapsed,
             sidebar_open: self.layout.sidebar_open,
             activity_strip: self.activity_strip,
+            background_images: self.backgrounds_on,
             sidebar_scope: scope.to_setting(),
             sidebar_collapsed: self.sidebar.read(cx).collapsed(),
             split_side: self.layout.split_sizes.0,
@@ -1766,7 +1772,7 @@ impl Workspace {
         let pick = self.background_pick(cx);
         let (backdrops, problems) = backdrop::Shown::resolve(config, base, &pick);
         let missing = backdrops.missing();
-        backdrop::set(backdrops, cx);
+        self.show_backgrounds(backdrops, cx);
         let mut lines = Vec::new();
         if !problems.is_empty() {
             lines.push(format!("config.toml: {}", problems.join("; ")));
@@ -1807,7 +1813,61 @@ impl Workspace {
         let base = self.settings.config_path().and_then(|p| p.parent());
         let pick = self.background_pick(cx);
         let (backdrops, _) = backdrop::Shown::resolve(&self.background, base, &pick);
-        backdrop::set(backdrops, cx);
+        self.show_backgrounds(backdrops, cx);
+    }
+
+    /// Shows `backdrops`, or none while the owner hides them (LLM-575),
+    /// and keeps the View menu item in step.
+    fn show_backgrounds(&mut self, backdrops: crate::shell::backdrop::Shown, cx: &mut App) {
+        use crate::shell::backdrop;
+        let set = backdrops != backdrop::Shown::default();
+        crate::shell::app_menus::update_state(
+            crate::shell::app_menus::MenuState {
+                backgrounds_set: set,
+                backgrounds_shown: self.backgrounds_on,
+            },
+            cx,
+        );
+        backdrop::set(
+            if self.backgrounds_on {
+                backdrops
+            } else {
+                Default::default()
+            },
+            cx,
+        );
+    }
+
+    /// Whether background images show.
+    pub fn backgrounds_on(&self) -> bool {
+        self.backgrounds_on
+    }
+
+    /// View > Show Background Images, `g b` and `:background`.
+    pub fn toggle_backgrounds(
+        &mut self,
+        _: &ToggleBackgrounds,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let set = cx
+            .try_global::<crate::shell::app_menus::MenuState>()
+            .is_some_and(|s| s.backgrounds_set);
+        if !set {
+            self.message = "No background image is set in config.toml".into();
+            cx.notify();
+            return;
+        }
+        self.backgrounds_on = !self.backgrounds_on;
+        self.refresh_background_scope(cx);
+        self.message = if self.backgrounds_on {
+            "Background images shown"
+        } else {
+            "Background images hidden"
+        }
+        .into();
+        cx.notify();
+        self.persist(cx);
     }
 
     /// LLM-568: loads each background image whose file changed on disk.

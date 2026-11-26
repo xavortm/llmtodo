@@ -1164,3 +1164,44 @@ fn the_background_follows_the_mode_and_the_project(cx: &mut TestAppContext) {
     view.update(cx, |w, cx| w.set_scope(Scope::All, cx));
     assert_eq!(image(cx).as_deref(), Some("night.png"));
 }
+
+/// LLM-575: `:background` and `g b` hide and show the images, the View
+/// menu follows, and the choice goes to ui-state.json, not config.toml.
+#[gpui_kit::test]
+fn background_images_hide_and_show_without_touching_config(cx: &mut TestAppContext) {
+    use crate::shell::app_menus::MenuState;
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    let text = "[app.background.window]\nimage = \"wall.png\"\n";
+    std::fs::write(&config, text).unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let shown = |cx: &TestAppContext| cx.read(crate::shell::backdrop::shown).window.is_some();
+    let menu = |cx: &TestAppContext| cx.read(|cx| *cx.global::<MenuState>());
+    assert!(shown(cx));
+    assert_eq!(
+        menu(cx),
+        MenuState {
+            backgrounds_set: true,
+            backgrounds_shown: true
+        }
+    );
+
+    run(handle, &view, "background", cx);
+    assert!(!shown(cx));
+    assert!(!menu(cx).backgrounds_shown);
+    assert!(!store.load().background_images);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+
+    press(handle, &["g", "b"], cx);
+    assert!(shown(cx));
+    assert!(store.load().background_images);
+
+    // With no image set, the switch says so and stays.
+    std::fs::write(&config, "").unwrap();
+    refocus(handle, &view, cx);
+    assert!(!menu(cx).backgrounds_set);
+    run(handle, &view, "background", cx);
+    assert!(store.load().background_images);
+    let message = cx.read(|cx| view.read(cx).message().to_string());
+    assert!(message.contains("No background image"), "{message}");
+}

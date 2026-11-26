@@ -242,6 +242,10 @@ impl Workspace {
                 self.set_sidebar_open(!self.sidebar_shown(), window, cx);
                 Some(String::new())
             }
+            ("background", _) => {
+                self.toggle_backgrounds(&ToggleBackgrounds, window, cx);
+                None
+            }
             ("activity", _) => {
                 self.toggle_activity_strip(&ToggleActivityStrip, window, cx);
                 None
