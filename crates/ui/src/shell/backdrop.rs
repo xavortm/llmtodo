@@ -857,56 +857,54 @@ impl Glide {
 /// edge of `area` inside `clip` is soft: there the image has not yet
 /// reached the panel's edge. Where two soft edges meet, the corner stays
 /// clear; a toggle changes one side at a time.
-pub fn soft_edges(area: Rect, clip: Rect) -> (Rect, Vec<Vec<Rect>>) {
+///
+/// Every cut between two masks falls on a whole device pixel at `scale`.
+/// GPUI widens a mask to whole pixels, so a cut between pixels would draw
+/// that line twice, as a seam.
+pub fn soft_edges(area: Rect, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) {
     const SLACK: f32 = 0.5;
+    let scale = if scale > 0. { scale } else { 1. };
+    let snap = |v: f32| (v * scale).round() / scale;
+    let (right_edge, bottom_edge) = (area.x + area.w, area.y + area.h);
     let left = area.x > clip.x + SLACK;
-    let right = area.x + area.w < clip.x + clip.w - SLACK;
+    let right = right_edge < clip.x + clip.w - SLACK;
     let top = area.y > clip.y + SLACK;
-    let bottom = area.y + area.h < clip.y + clip.h - SLACK;
-    let bx = GLIDE_EDGE.min(area.w / 2.);
-    let by = GLIDE_EDGE.min(area.h / 2.);
-    let (x0, x1) = (
-        area.x + if left { bx } else { 0. },
-        area.x + area.w - if right { bx } else { 0. },
+    let bottom = bottom_edge < clip.y + clip.h - SLACK;
+    let n = GLIDE_STRIPS;
+    let (sx, sy) = (
+        GLIDE_EDGE.min(area.w / 2.) / n as f32,
+        GLIDE_EDGE.min(area.h / 2.) / n as f32,
     );
-    let (y0, y1) = (
-        area.y + if top { by } else { 0. },
-        area.y + area.h - if bottom { by } else { 0. },
-    );
-    let inner = Rect {
-        x: x0,
-        y: y0,
-        w: (x1 - x0).max(0.),
-        h: (y1 - y0).max(0.),
+    // The cuts from each edge inwards: cut `k` is `k` strips in.
+    let cuts = |from: f32, step: f32| -> Vec<f32> {
+        (0..=n).map(|k| snap(from + step * k as f32)).collect()
     };
-    let (sx, sy) = (bx / GLIDE_STRIPS as f32, by / GLIDE_STRIPS as f32);
-    let strips = (0..GLIDE_STRIPS)
+    let (cl, cr) = (cuts(area.x, sx), cuts(right_edge, -sx));
+    let (ct, cb) = (cuts(area.y, sy), cuts(bottom_edge, -sy));
+    let x0 = if left { cl[n] } else { area.x };
+    let x1 = if right { cr[n] } else { right_edge };
+    let y0 = if top { ct[n] } else { area.y };
+    let y1 = if bottom { cb[n] } else { bottom_edge };
+    let edges = |l: f32, t: f32, r: f32, b: f32| Rect {
+        x: l,
+        y: t,
+        w: (r - l).max(0.),
+        h: (b - t).max(0.),
+    };
+    let strips = (0..n)
         .map(|i| {
-            let i = i as f32;
             let mut out = Vec::new();
-            let column = |x: f32| Rect {
-                x,
-                y: inner.y,
-                w: sx,
-                h: inner.h,
-            };
-            let row = |y: f32| Rect {
-                x: inner.x,
-                y,
-                w: inner.w,
-                h: sy,
-            };
             if left {
-                out.push(column(area.x + i * sx));
+                out.push(edges(cl[i], y0, cl[i + 1], y1));
             }
             if right {
-                out.push(column(area.x + area.w - (i + 1.) * sx));
+                out.push(edges(cr[i + 1], y0, cr[i], y1));
             }
             if top {
-                out.push(row(area.y + i * sy));
+                out.push(edges(x0, ct[i], x1, ct[i + 1]));
             }
             if bottom {
-                out.push(row(area.y + area.h - (i + 1.) * sy));
+                out.push(edges(x0, cb[i + 1], x1, cb[i]));
             }
             out.into_iter()
                 .map(|r| r.intersect(clip))
@@ -914,7 +912,7 @@ pub fn soft_edges(area: Rect, clip: Rect) -> (Rect, Vec<Vec<Rect>>) {
                 .collect()
         })
         .collect();
-    (inner.intersect(clip), strips)
+    (edges(x0, y0, x1, y1).intersect(clip), strips)
 }
 
 /// How strong strip `i` of a soft edge draws, from the edge inwards.
@@ -925,8 +923,8 @@ pub fn strip_strength(i: usize) -> f32 {
 /// Notes which panels show. A change lets panel images glide for a
 /// moment, and a panel that just appeared starts with its image in place.
 /// The workspace calls it as it renders.
-pub fn panels(sidebar: bool, task: bool, filters: bool, cx: &mut App) {
-    let next = (sidebar, task, filters);
+pub fn panels(sidebar: bool, task: bool, cx: &mut App) {
+    let next = (sidebar, task);
     let before = cx.try_global::<Loads>().and_then(|l| l.panels);
     if before == Some(next) {
         return;
@@ -986,8 +984,12 @@ struct Loads {
     glides: HashMap<Slot, Glide>,
     /// Until when a panel's new size glides, after a toggle.
     armed: Option<Instant>,
-    /// Whether the sidebar, the task panel and the filter panel show.
-    panels: Option<(bool, bool, bool)>,
+    /// Whether the sidebar and the task panel show. The filter panel
+    /// sits inside the list's layer, so it moves no panel image.
+    panels: Option<(bool, bool)>,
+    /// The rect each gliding image drew in this frame's main pass, which
+    /// its strips draw in too.
+    gliding: HashMap<Slot, Rect>,
 }
 
 impl gpui_kit::Global for Loads {}
@@ -1564,16 +1566,18 @@ fn paint(
     let loads = cx.default_global::<Loads>();
     // Where the image lays out, and whether it glides there.
     let (laid, gliding) = if strip.is_some() {
-        // A strip draws only while the main pass found a glide this frame.
-        let Some(g) = loads.glides.get(&slot).filter(|g| g.running(now)) else {
+        // A strip draws only while the main pass found a glide this
+        // frame, and in the same rect.
+        let Some(laid) = loads.gliding.get(&slot).copied() else {
             return false;
         };
-        (g.at(now), true)
+        (laid, true)
     } else if over {
         (loads.areas.get(&slot).copied().unwrap_or(own), false)
     } else if slot == Slot::Window || b.shader.is_some() {
         loads.areas.insert(slot, own);
         loads.glides.remove(&slot);
+        loads.gliding.remove(&slot);
         (own, false)
     } else {
         // LLM-584: a panel's new size glides only just after a toggle.
@@ -1588,6 +1592,11 @@ fn paint(
         }
         let (at, running) = (g.at(now), g.running(now));
         loads.areas.insert(slot, at);
+        if running {
+            loads.gliding.insert(slot, at);
+        } else {
+            loads.gliding.remove(&slot);
+        }
         (at, running)
     };
     if strip.is_none() {
@@ -1634,7 +1643,7 @@ fn paint(
     // each strip draws its part of them. Its repeats fill only the room it
     // has reached.
     let (mask, cover) = if gliding {
-        let (inner, strips) = soft_edges(laid, clip);
+        let (inner, strips) = soft_edges(laid, clip, window.scale_factor());
         let mask = match strip {
             None => vec![inner],
             Some(i) => strips.into_iter().nth(i).unwrap_or_default(),

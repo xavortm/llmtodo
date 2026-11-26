@@ -805,7 +805,7 @@ fn a_change_with_no_toggle_lands_at_once() {
 #[test]
 fn only_the_edge_inside_the_panel_is_soft() {
     // The panel grew to the right; the image has not caught up yet.
-    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.));
+    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.), 1.);
     assert_eq!(inner, rect(0., 600. - GLIDE_EDGE));
     assert_eq!(strips.len(), GLIDE_STRIPS);
     let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
@@ -815,14 +815,14 @@ fn only_the_edge_inside_the_panel_is_soft() {
     assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
     assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
     // Wider than the panel: no soft edge, the panel clips it.
-    let (inner, strips) = soft_edges(rect(-100., 1000.), rect(0., 800.));
+    let (inner, strips) = soft_edges(rect(-100., 1000.), rect(0., 800.), 1.);
     assert_eq!(inner, rect(0., 800.));
     assert!(strips.iter().all(Vec::is_empty));
 }
 
 #[test]
 fn a_panel_growing_left_softens_the_left_edge() {
-    let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.));
+    let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.), 1.);
     assert_eq!(inner, rect(200. + GLIDE_EDGE, 600. - GLIDE_EDGE));
     let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
     assert_eq!(strips[0], vec![rect(200., w)]);
@@ -925,4 +925,28 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
     let g = glide(cx);
     assert!(!g.running(cx.read(|cx| cx.background_executor().now())));
     assert_eq!(g.to.w, before.w);
+}
+
+#[test]
+fn soft_edge_cuts_fall_on_whole_device_pixels() {
+    // A mid-glide rect, nowhere near a whole pixel.
+    let area = Rect {
+        x: 0.,
+        y: 0.,
+        w: 613.37,
+        h: 100.,
+    };
+    let scale = 2.;
+    let (inner, strips) = soft_edges(area, rect(0., 800.), scale);
+    let whole = |v: f32| (v * scale).fract() == 0.;
+    // From the edge inwards: each strip ends where the next one starts,
+    // and the last meets the full-strength rect.
+    let mut at = strips[0][0].x + strips[0][0].w;
+    for s in &strips[..] {
+        let r = s[0];
+        assert!(whole(r.x) && whole(r.x + r.w), "{r:?}");
+        assert_eq!(r.x + r.w, at, "{r:?} meets the strip before it");
+        at = r.x;
+    }
+    assert_eq!(inner.x + inner.w, at, "the inner rect meets the last strip");
 }
