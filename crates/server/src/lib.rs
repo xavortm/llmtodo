@@ -202,7 +202,7 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
         .write(true)
         .open(&lock_path)
         .with_context(|| format!("open {}", lock_path.display()))?;
-    take_lock(&lock, &lock_path, &data_dir).await?;
+    take_lock(&lock, &lock_path, &data_dir)?;
 
     let (pool, shared) = match &config.database {
         Database::Sqlite => (db::open(&data_dir).await?, None),
@@ -314,28 +314,20 @@ pub async fn start(config: Config) -> anyhow::Result<Running> {
     })
 }
 
-/// How long `start` waits for a held server lock. A server that just
-/// stopped can leave it looking held for a moment (LLM-605).
-const LOCK_WAIT: Duration = Duration::from_secs(2);
-
-/// Takes the server lock. A held lock is retried for up to [`LOCK_WAIT`],
-/// then means another server runs. Any other error is reported as it is.
-async fn take_lock(lock: &File, lock_path: &Path, data_dir: &Path) -> anyhow::Result<()> {
-    let deadline = tokio::time::Instant::now() + LOCK_WAIT;
-    loop {
-        match lock.try_lock() {
-            Ok(()) => return Ok(()),
-            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
-                "another llmtodo server already runs on {}; see {}",
-                data_dir.display(),
-                server_json_path(data_dir).display()
-            ),
-            Err(std::fs::TryLockError::Error(e)) => {
-                return Err(e).with_context(|| format!("lock {}", lock_path.display()));
-            }
+/// Takes the server lock, or fails at once when another server holds it.
+/// It never waits: `db migrate` and `db use` count on a server started
+/// during their copy giving up right away (LLM-477). Any other error is
+/// reported as it is (LLM-605).
+fn take_lock(lock: &File, lock_path: &Path, data_dir: &Path) -> anyhow::Result<()> {
+    match lock.try_lock() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another llmtodo server already runs on {}; see {}",
+            data_dir.display(),
+            server_json_path(data_dir).display()
+        ),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("lock {}", lock_path.display()))
         }
     }
 }
