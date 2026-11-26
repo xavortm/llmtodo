@@ -138,7 +138,17 @@ impl Workspace {
             .size_full()
             .relative()
             .overflow_hidden()
-            .children(crate::shell::backdrop::layer(&[Slot::List], cx))
+            .children({
+                // LLM-576: a list image may scroll with the rows.
+                let scroll = self.list.read(cx).scroll_handle().clone();
+                crate::shell::backdrop::layer_with(
+                    &[Slot::List],
+                    Some(std::rc::Rc::new(move || {
+                        scroll.0.borrow().base_handle.offset()
+                    })),
+                    cx,
+                )
+            })
             .child(
                 // The rows' hover fills draw under the list, as a view of
                 // their own (LLM-345).
@@ -219,7 +229,16 @@ impl Workspace {
                             div()
                                 .size_full()
                                 .relative()
-                                .children(crate::shell::backdrop::layer(&[Slot::Task], cx))
+                                .children({
+                                    // LLM-576: a task image may scroll
+                                    // with the description.
+                                    let scroll = self.task.read(cx).preview_scroll.clone();
+                                    crate::shell::backdrop::layer_with(
+                                        &[Slot::Task],
+                                        Some(std::rc::Rc::new(move || scroll.offset())),
+                                        cx,
+                                    )
+                                })
                                 .child(cached(&self.task))
                                 .child(tab_hover),
                             "task-slide",

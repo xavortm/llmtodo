@@ -444,3 +444,58 @@ fn the_most_specific_table_wins_per_slot() {
     assert_eq!(name(project.list), "site-list.png");
     assert_eq!(name(project.window), "work.png");
 }
+
+// LLM-576: images that scroll with the content.
+
+#[test]
+fn attachment_reads_and_only_panels_scroll() {
+    let text = r#"
+        [list]
+        image = "a.png"
+        attachment = "scroll"
+        [task]
+        image = "b.png"
+        [window]
+        image = "c.png"
+        attachment = "scroll"
+    "#;
+    let config: BackgroundsConfig = toml::from_str(text).unwrap();
+    let (b, problems) = Backdrops::resolve(&config, None, &Pick::default(), false);
+    assert!(b.list.unwrap().scroll);
+    assert!(!b.task.unwrap().scroll);
+    assert!(!b.window.unwrap().scroll);
+    assert_eq!(
+        problems,
+        vec!["background.window: unknown attachment \"scroll\"".to_string()]
+    );
+}
+
+#[test]
+fn a_scrolled_repeat_still_fills_the_panel() {
+    let panel = area(100., 100.);
+    let l = layout(BgSize::Scale(1.), "top left", "repeat");
+    // Scrolled down by 130: the area starts 130 above the panel.
+    let moved = Rect {
+        x: 0.,
+        y: -130.,
+        w: 100.,
+        h: 100.,
+    };
+    let t = tiles_over(moved, panel, (50., 50.), &l);
+    let ys: Vec<f32> = t.iter().map(|r| r.y).collect();
+    // Rows at -30, 20 and 70 cover 0..100, lined up with the content.
+    assert_eq!(ys, vec![-30., -30., 20., 20., 70., 70.]);
+}
+
+#[test]
+fn a_scrolled_single_image_scrolls_away() {
+    let panel = area(100., 100.);
+    let l = layout(BgSize::Scale(1.), "top left", "no-repeat");
+    let moved = Rect {
+        x: 0.,
+        y: -130.,
+        w: 100.,
+        h: 100.,
+    };
+    assert!(tiles_over(moved, panel, (50., 50.), &l).is_empty());
+}

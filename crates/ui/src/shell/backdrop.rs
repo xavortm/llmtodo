@@ -168,6 +168,9 @@ pub struct BackgroundConfig {
     /// A color such as `"#1e1e2e"`, washed over the image.
     pub tint: Option<String>,
     pub tint_opacity: Option<f32>,
+    /// LLM-576: `fixed` (the default) or `scroll`, as CSS
+    /// `background-attachment`. Only `list` and `task` scroll.
+    pub attachment: Option<String>,
 }
 
 /// `size` takes a word or a bare number.
@@ -241,6 +244,8 @@ pub struct Backdrop {
     pub grayscale: bool,
     /// A color washed over the image, with its own opacity.
     pub tint: Option<Hsla>,
+    /// LLM-576: the image moves with its panel's content.
+    pub scroll: bool,
 }
 
 impl Backdrop {
@@ -299,7 +304,7 @@ impl Backdrops {
             let Some(c) = config.pick(slot, pick) else {
                 continue;
             };
-            *out.get_mut(slot) = resolve_slot(slot.key(), c, base, dark, &mut problems);
+            *out.get_mut(slot) = resolve_slot(slot, c, base, dark, &mut problems);
         }
         (out, problems)
     }
@@ -372,7 +377,7 @@ pub const DEFAULT_TINT_OPACITY: f32 = 0.3;
 
 /// One slot's table, resolved. `name` names it in problems.
 fn resolve_slot(
-    name: &str,
+    slot: Slot,
     c: &BackgroundConfig,
     base: Option<&Path>,
     dark: bool,
@@ -383,6 +388,7 @@ fn resolve_slot(
     } else {
         (&c.image_light, c.opacity_light)
     };
+    let name = slot.key();
     let image = image.as_deref().unwrap_or(&c.image).trim();
     if image.is_empty() {
         return None;
@@ -446,8 +452,22 @@ fn resolve_slot(
             }
         },
     };
+    let scroll = match c
+        .attachment
+        .as_deref()
+        .map(|a| a.trim().to_ascii_lowercase())
+    {
+        None => false,
+        Some(a) if a == "fixed" => false,
+        Some(a) if a == "scroll" && matches!(slot, Slot::List | Slot::Task) => true,
+        Some(a) => {
+            problem("attachment", &a);
+            false
+        }
+    };
     let image = resolve_path(image, base);
     Some(Backdrop {
+        scroll,
         stamp: stamp_of(&image),
         image,
         opacity,
@@ -615,6 +635,13 @@ fn image_size(area: Rect, natural: (f32, f32), size: BgSize) -> (f32, f32) {
 /// Where the image goes in `area`: one rect, or one per tile. A tile that
 /// lies outside `area` is left out.
 pub fn tiles(area: Rect, natural: (f32, f32), layout: &Layout) -> Vec<Rect> {
+    tiles_over(area, area, natural, layout)
+}
+
+/// Like [`tiles`], but fills `cover` with the tiles laid out in `area`.
+/// An image that scrolls lays out in its moved area, and its repeats
+/// still fill the panel (LLM-576).
+pub fn tiles_over(area: Rect, cover: Rect, natural: (f32, f32), layout: &Layout) -> Vec<Rect> {
     if natural.0 <= 0. || natural.1 <= 0. || area.w <= 0. || area.h <= 0. {
         return Vec::new();
     }
@@ -643,8 +670,8 @@ pub fn tiles(area: Rect, natural: (f32, f32), layout: &Layout) -> Vec<Rect> {
             .map(|i| first + i as f32 * len)
             .collect()
     };
-    let xs = starts(x, area.x, area.w, w, layout.repeat.x);
-    let ys = starts(y, area.y, area.h, h, layout.repeat.y);
+    let xs = starts(x, cover.x, cover.w, w, layout.repeat.x);
+    let ys = starts(y, cover.y, cover.h, h, layout.repeat.y);
     let mut out = Vec::with_capacity((xs.len() * ys.len()).min(MAX_TILES));
     'rows: for &ty in &ys {
         for &tx in &xs {
@@ -753,6 +780,15 @@ pub fn surface(color: Hsla, under: &[Slot], cx: &App) -> Hsla {
 /// order. Put it first in a `relative` parent, after the parent's own
 /// fill. `None` when no slot has an image.
 pub fn layer(slots: &[Slot], cx: &App) -> Option<AnyElement> {
+    layer_with(slots, None, cx)
+}
+
+/// Reads a panel's scroll offset at paint, so a scroll needs no new
+/// render of the panel (LLM-576).
+pub type ScrollOffset = std::rc::Rc<dyn Fn() -> gpui_kit::Point<Pixels>>;
+
+/// [`layer`] for a panel whose images may scroll with `scroll`.
+pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Option<AnyElement> {
     let images: Vec<(Slot, Backdrop)> = slots
         .iter()
         .filter_map(|s| current(*s, cx).map(|b| (*s, b)))
@@ -768,6 +804,7 @@ pub fn layer(slots: &[Slot], cx: &App) -> Option<AnyElement> {
             .left_0()
             .size_full()
             .children(images.into_iter().map(|(slot, b)| {
+                let scroll = scroll.clone().filter(|_| b.scroll);
                 div()
                     .absolute()
                     .top_0()
@@ -777,7 +814,10 @@ pub fn layer(slots: &[Slot], cx: &App) -> Option<AnyElement> {
                     .child(
                         canvas(
                             |_, _, _| {},
-                            move |bounds, _, window, cx| paint(slot, &b, bounds, window, cx),
+                            move |bounds, _, window, cx| {
+                                let offset = scroll.as_ref().map(|f| f());
+                                paint(slot, &b, offset, bounds, window, cx)
+                            },
                         )
                         .size_full(),
                     )
@@ -812,7 +852,14 @@ fn key_for(b: &Backdrop, window: &Window, cx: &App) -> ImageKey {
     }
 }
 
-fn paint(slot: Slot, b: &Backdrop, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+fn paint(
+    slot: Slot,
+    b: &Backdrop,
+    scroll: Option<gpui_kit::Point<Pixels>>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
     for image in retired {
         let _ = window.drop_image(image);
@@ -841,10 +888,16 @@ fn paint(slot: Slot, b: &Backdrop, bounds: Bounds<Pixels>, window: &mut Window, 
             h: f32::from(view.height),
         }
     } else {
-        rect_of(bounds)
+        let mut area = rect_of(bounds);
+        // The offset is negative as the content moves up.
+        if let Some(offset) = scroll {
+            area.x += f32::from(offset.x);
+            area.y += f32::from(offset.y);
+        }
+        area
     };
     let clip = rect_of(bounds);
-    for t in tiles(area, loaded.natural, &b.layout) {
+    for t in tiles_over(area, clip, loaded.natural, &b.layout) {
         if t.x >= clip.x + clip.w
             || t.y >= clip.y + clip.h
             || t.x + t.w <= clip.x

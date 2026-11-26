@@ -493,6 +493,7 @@ Gap review additions:
   - Light and dark (LLM-571): `image_dark`, `image_light`, `opacity_dark` and `opacity_light` override `image` and `opacity` in that mode. The app resolves both modes at once and draws the one the theme is in, so a macOS switch in Auto mode changes the image with the theme.
   - Per team and project (LLM-574): `[app.background.project.<slug>.<slot>]` and `[app.background.team.<KEY>.<slot>]` take the same keys. The most specific table wins, per slot: the sidebar's project, then its team (or the project's teams), then the global table. A sidebar scope change switches the images.
   - View > Show Background Images, `g b` and `:background` hide or show all images, as for a screen share (LLM-575). The switch is saved in `ui-state.json` and never changes `config.toml`. The menu item is disabled while no image is set.
+  - `attachment` (LLM-576): `fixed` by default, or `scroll`, as CSS `background-attachment`. With `scroll`, the list image moves with the list's scroll offset and the task image with the description's. A repeated image keeps filling the panel; one that does not repeat scrolls away. The window and sidebar slots take only `fixed`.
 - The app never fights the person's setup for `config.toml`:
   - No file is fine. The app does not create it at start, and writes only the keys the person changes.
   - A save edits the file in place with `toml_edit`, so comments, key order, formatting and unknown keys survive.

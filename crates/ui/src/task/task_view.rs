@@ -100,7 +100,7 @@ pub struct TaskView {
     shown: std::cell::RefCell<std::collections::HashSet<IssueId>>,
     /// Focus for the task view while it shows the preview.
     pub focus: FocusHandle,
-    preview_scroll: ScrollHandle,
+    pub(crate) preview_scroll: ScrollHandle,
     /// The preview's width in the last frame. Wide enough, and the tabs
     /// show side by side as columns.
     preview_width: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
