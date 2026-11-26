@@ -1,7 +1,8 @@
 //! Shader backgrounds (LLM-578): a slot can run a fragment shader in
 //! place of an image. `translate` turns WGSL or GLSL into Metal Shading
 //! Language with naga, and `metal` runs it on our own pipeline. The
-//! background layer in `backdrop.rs` paints each frame as an image.
+//! background layer in `backdrop.rs` paints each frame as a GPUI surface
+//! where it can, and as an image where it must (LLM-579).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -74,6 +75,41 @@ impl Source {
     }
 }
 
+/// How a frame is laid over what lies under its slot, for a surface
+/// (LLM-579). A surface is opaque, so the frame is blended with `under`
+/// at `amount`, the slot's opacity, before GPUI draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blend {
+    /// The flat color under the slot, as sRGB-encoded RGB.
+    pub under: [f32; 3],
+    pub amount: f32,
+}
+
+/// A frame as an IOSurface-backed YCbCr pixel buffer, for
+/// `Window::paint_surface`.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub struct Surface(pub objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>);
+
+// SAFETY: a CVPixelBuffer is reference counted with atomics, and nothing
+// writes to it once the GPU has drawn the frame.
+#[cfg(target_os = "macos")]
+unsafe impl Send for Surface {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for Surface {}
+
+/// Other platforms have no surfaces.
+#[cfg(not(target_os = "macos"))]
+#[derive(Clone)]
+pub enum Surface {}
+
+/// One rendered frame: the BGRA bytes, row by row, when asked for, and a
+/// surface for each blend asked for.
+pub struct Frame {
+    pub pixels: Option<Vec<u8>>,
+    pub surfaces: Vec<(Blend, Surface)>,
+}
+
 /// A compiled shader, ready to render frames.
 #[derive(Debug)]
 pub struct Program {
@@ -82,15 +118,23 @@ pub struct Program {
 }
 
 impl Program {
-    /// Renders a frame as BGRA bytes, row by row. Blocks on the GPU.
-    pub fn render(&self, width: u32, height: u32, inputs: &Inputs) -> Result<Vec<u8>, String> {
+    /// Renders a frame: as bytes with `pixels`, and as one surface per
+    /// blend. The shader runs once for all of them. Blocks on the GPU.
+    pub fn render(
+        &self,
+        width: u32,
+        height: u32,
+        inputs: &Inputs,
+        pixels: bool,
+        blends: &[Blend],
+    ) -> Result<Frame, String> {
         #[cfg(target_os = "macos")]
         {
-            self.pipeline.render(width, height, inputs)
+            self.pipeline.render(width, height, inputs, pixels, blends)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (width, height, inputs);
+            let _ = (width, height, inputs, pixels, blends);
             Err("shader backgrounds run only on macOS".into())
         }
     }

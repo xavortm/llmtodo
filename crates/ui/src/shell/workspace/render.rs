@@ -225,6 +225,10 @@ impl Workspace {
                         // The tab bar's hover background draws over the
                         // task view, as a view of its own (LLM-220).
                         let tab_hover = self.task.read(cx).tab_hover.clone();
+                        // LLM-579: the task shader draws as a surface only
+                        // once the panel has faded in.
+                        let fade: crate::shell::backdrop::ParentFade = Default::default();
+                        let layer_fade = fade.clone();
                         this.child(crate::shell::motion::slide_in(
                             div()
                                 .size_full()
@@ -233,9 +237,10 @@ impl Workspace {
                                     // LLM-576: a task image may scroll
                                     // with the description.
                                     let scroll = self.task.read(cx).preview_scroll.clone();
-                                    crate::shell::backdrop::layer_with(
+                                    crate::shell::backdrop::layer_faded(
                                         &[Slot::Task],
                                         Some(std::rc::Rc::new(move || scroll.offset())),
+                                        layer_fade,
                                         cx,
                                     )
                                 })
@@ -243,7 +248,7 @@ impl Workspace {
                                 .child(tab_hover),
                             "task-slide",
                             1.5,
-                            true,
+                            Some(fade),
                             cx,
                         ))
                     }),

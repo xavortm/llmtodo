@@ -60,3 +60,8 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSString", "NSError"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
+# LLM-579: a shader frame goes to GPUI's `surface()` as an IOSurface-backed
+# YCbCr pixel buffer, with no copy through the CPU. The versions GPUI's
+# macOS renderer already compiles.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVMetalTexture", "CVMetalTextureCache", "CVReturn", "objc2", "objc2-metal"] }

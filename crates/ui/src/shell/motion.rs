@@ -374,22 +374,38 @@ where
 
 /// A panel sliding in when it opens. It starts `from` rem to the side,
 /// negative for the left, and settles in place. With `fade`, it also fades
-/// in. Keyed by `id`, so it plays each time the panel mounts. It moves by a
-/// `left` offset, so the panel must not set its own.
-pub fn slide_in<E>(el: E, id: impl Into<ElementId>, from: f32, fade: bool, cx: &App) -> AnyElement
+/// in, and writes its opacity to the cell on each frame, so a background
+/// layer inside can see it (LLM-579). Keyed by `id`, so it plays each time
+/// the panel mounts. It moves by a `left` offset, so the panel must not set
+/// its own.
+pub fn slide_in<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    from: f32,
+    fade: Option<crate::shell::backdrop::ParentFade>,
+    cx: &App,
+) -> AnyElement
 where
     E: Styled + IntoElement + 'static,
 {
     if !on(cx) {
+        if let Some(cell) = &fade {
+            cell.set(1.);
+        }
         return el.into_any_element();
     }
     el.with_animation(
         id,
         Animation::new(SLIDE).with_easing(ease_out),
         move |el, t| {
-            el.relative()
-                .left(rems(from * (1. - t)))
-                .when(fade, |el| el.opacity(t))
+            let el = el.relative().left(rems(from * (1. - t)));
+            match &fade {
+                Some(cell) => {
+                    cell.set(t);
+                    el.opacity(t)
+                }
+                None => el,
+            }
         },
     )
     .into_any_element()

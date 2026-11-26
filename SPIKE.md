@@ -147,4 +147,12 @@ The spike works: a WGSL or GLSL fragment shader goes through naga to Metal Shadi
 - **Why not `surface()`.** GPUI's `surface()` only draws `kCVPixelFormatType_420YpCbCr8BiPlanarFullRange` buffers (see `draw_surfaces` in `gpui-pre-apple`'s `metal_renderer.rs`). It has no alpha and ignores element opacity, so a slot's `opacity` and the fade could not work. Instead each frame is read back and painted as a `RenderImage`, like any background image.
 - **Cost of the read back.** Each frame is uploaded again into GPUI's sprite atlas. The driver compresses the upload on the CPU (`processCompressedRegion2D` in a sample). Measured in a release build on an M5 Max, a 1380×740 pt window, `builtin:aurora` in the window slot: scale 0.5 at 30 fps about 21% CPU; scale 0.25 at 30 fps about 12%; scale 0.5 at 15 fps about 10%. With Animations off, the window in the background (2 fps) or hidden, about 0 to 4%. No shader: 0%. Two shaders at 0.5 and 30 fps: about 33%.
 - **Power.** All shader slots share one frame clock, and a finished frame waits for the next tick, so the window draws once per tick. Only the workspace root draws again; the cached panels do not. I did not run `gpui-bench` on the list's frame time.
-- **Next step.** A zero-copy path would render YCbCr into an IOSurface-backed `CVPixelBuffer` and hand it to `surface()`, blending the shader with the slot's own color in the shader pass to stand in for opacity. That loses the image under a panel shader. It is a separate ticket.
+- **Zero-copy path (LLM-579).** Where one flat color lies under the slot, a second pass in `shader/metal.rs` blends the frame with that color at the slot's opacity and writes the two planes of an IOSurface-backed YCbCr 4:2:0 `CVPixelBuffer` from a `CVPixelBufferPool`. GPUI's `surface()` draws it, with no read back and no atlas upload. The shader runs once per frame; each place it shows over a different color gets its own buffer, such as the window shader under the main area and again under the sidebar. Fades, the task panel's fade-in and a panel shader over another background keep the read back. Same settings as above, release build, M5 Max, 1380×740 pt:
+
+  | Setup, `builtin:aurora` at 0.5 and 30 fps | Read back | Surface |
+  |---|---|---|
+  | Window slot | 21% | 6% |
+  | Sidebar slot | 10% | 7% |
+  | Window and sidebar (the sidebar shader still reads back) | 28% | 19% |
+
+  What is left is GPUI drawing the window 30 times a second. 4:2:0 halves the color resolution; the built-in shaders are smooth, so it does not show. A screenshot at opacity 0.6 looks the same both ways.

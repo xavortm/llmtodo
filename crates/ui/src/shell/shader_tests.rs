@@ -13,6 +13,16 @@ fn inputs(w: f32, h: f32) -> Inputs {
     }
 }
 
+/// A frame's BGRA bytes, read back.
+#[cfg(target_os = "macos")]
+fn pixels(program: &shader::Program, w: u32, h: u32) -> Vec<u8> {
+    let frame = program
+        .render(w, h, &inputs(w as f32, h as f32), true, &[])
+        .unwrap();
+    assert!(frame.surfaces.is_empty());
+    frame.pixels.unwrap()
+}
+
 #[test]
 fn every_builtin_translates() {
     for (name, text) in shader::BUILTINS {
@@ -52,7 +62,7 @@ fn a_shader_renders_on_the_gpu() {
     return vec4<f32>(frag.x / u.resolution.x, 0.0, 1.0, 1.0);
 }";
     let program = shader::compile(text, Lang::Wgsl).unwrap();
-    let bytes = program.render(64, 8, &inputs(64., 8.)).unwrap();
+    let bytes = pixels(&program, 64, 8);
     assert_eq!(bytes.len(), 64 * 8 * 4);
     // BGRA: blue full, red rises from left to right.
     let px = |x: usize| &bytes[x * 4..x * 4 + 4];
@@ -67,7 +77,7 @@ fn a_shader_renders_on_the_gpu() {
 fn every_builtin_renders() {
     for (name, text) in shader::BUILTINS {
         let program = shader::compile(text, Lang::Wgsl).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let bytes = program.render(32, 32, &inputs(32., 32.)).unwrap();
+        let bytes = pixels(&program, 32, 32);
         assert!(bytes.chunks(4).all(|p| p[3] == 255), "{name} is opaque");
     }
 }
@@ -79,7 +89,7 @@ fn a_glsl_shader_renders_with_shadertoy_coordinates() {
     let text =
         "void mainImage(out vec4 c, in vec2 p) { c = vec4(p.y / iResolution.y, 0.0, 0.0, 1.0); }";
     let program = shader::compile(text, Lang::Glsl).unwrap();
-    let bytes = program.render(4, 16, &inputs(4., 16.)).unwrap();
+    let bytes = pixels(&program, 4, 16);
     let top_red = bytes[2];
     let bottom_red = bytes[(15 * 4) * 4 + 2];
     assert!(top_red > bottom_red, "top {top_red}, bottom {bottom_red}");
@@ -105,4 +115,116 @@ fn a_broken_change_keeps_the_last_good_program() {
     ));
     // The same broken file is not compiled or named again.
     assert_eq!(programs.prepare(&source, Some(later)), None);
+}
+
+/// LLM-579: the Y, Cb and Cr of a surface's pixel at `(x, y)`.
+#[cfg(target_os = "macos")]
+fn ycbcr(surface: &shader::Surface, x: usize, y: usize) -> (u8, u8, u8) {
+    use objc2_core_video::{
+        CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
+        CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+    };
+    let buffer = &surface.0;
+    // SAFETY: the buffer is locked for reading while the planes are read,
+    // and each offset lies inside its plane.
+    unsafe {
+        CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly);
+        let luma = CVPixelBufferGetBaseAddressOfPlane(buffer, 0).cast::<u8>();
+        let chroma = CVPixelBufferGetBaseAddressOfPlane(buffer, 1).cast::<u8>();
+        let luma_row = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
+        let chroma_row = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
+        let y_ = *luma.add(y * luma_row + x);
+        let c = chroma.add((y / 2) * chroma_row + (x / 2) * 2);
+        let out = (y_, *c, *c.add(1));
+        CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly);
+        out
+    }
+}
+
+/// What GPUI's `surface_fragment` turns Y, Cb and Cr back into, 0 to 255.
+#[cfg(target_os = "macos")]
+fn rgb_of((y, cb, cr): (u8, u8, u8)) -> [f32; 3] {
+    let (y, cb, cr) = (
+        y as f32 / 255.,
+        cb as f32 / 255. - 0.5,
+        cr as f32 / 255. - 0.5,
+    );
+    [
+        (y + 1.402 * cr) * 255.,
+        (y - 0.3441 * cb - 0.7141 * cr) * 255.,
+        (y + 1.772 * cb) * 255.,
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn near(a: [f32; 3], b: [f32; 3]) -> bool {
+    a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 3.)
+}
+
+/// LLM-579: a frame goes out as a YCbCr surface that GPUI turns back into
+/// the shader's color, with no read back.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_surface_holds_the_shaders_color() {
+    use objc2_core_video::{
+        CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth,
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    };
+    let text = "fn main_image(frag: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(0.8, 0.4, 0.2, 1.0);
+}";
+    let program = shader::compile(text, Lang::Wgsl).unwrap();
+    let opaque = shader::Blend {
+        under: [0., 0., 1.],
+        amount: 1.,
+    };
+    let half = shader::Blend {
+        under: [0., 0., 1.],
+        amount: 0.5,
+    };
+    let frame = program
+        .render(30, 17, &inputs(30., 17.), false, &[opaque, half])
+        .unwrap();
+    assert!(frame.pixels.is_none(), "no read back was asked for");
+    assert_eq!(frame.surfaces.len(), 2);
+    let (blend, surface) = &frame.surfaces[0];
+    assert_eq!(*blend, opaque);
+    assert_eq!(CVPixelBufferGetWidth(&surface.0), 30);
+    assert_eq!(CVPixelBufferGetHeight(&surface.0), 17);
+    assert_eq!(
+        CVPixelBufferGetPixelFormatType(&surface.0),
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+    );
+    for (x, y) in [(0, 0), (29, 16), (15, 8)] {
+        let rgb = rgb_of(ycbcr(surface, x, y));
+        assert!(near(rgb, [204., 102., 51.]), "({x}, {y}): {rgb:?}");
+    }
+    // At half opacity, half the blue under it shows through.
+    let rgb = rgb_of(ycbcr(&frame.surfaces[1].1, 4, 4));
+    assert!(near(rgb, [102., 51., 153.]), "{rgb:?}");
+}
+
+/// LLM-579: one render gives the image and the surfaces from the same
+/// frame, and a surface keeps the frame's top at the top.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_surface_keeps_the_frame_upright() {
+    let text = "fn main_image(frag: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(select(0.0, 1.0, frag.y < u.resolution.y * 0.5), 0.0, 0.0, 1.0);
+}";
+    let program = shader::compile(text, Lang::Wgsl).unwrap();
+    let blend = shader::Blend {
+        under: [0., 0., 0.],
+        amount: 1.,
+    };
+    let frame = program
+        .render(8, 16, &inputs(8., 16.), true, &[blend])
+        .unwrap();
+    let bytes = frame.pixels.unwrap();
+    assert_eq!(bytes[2], 255, "the image's top row is red");
+    let surface = &frame.surfaces[0].1;
+    let top = rgb_of(ycbcr(surface, 2, 1));
+    let bottom = rgb_of(ycbcr(surface, 2, 14));
+    assert!(near(top, [255., 0., 0.]), "top {top:?}");
+    assert!(near(bottom, [0., 0., 0.]), "bottom {bottom:?}");
 }

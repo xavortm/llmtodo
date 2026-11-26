@@ -836,7 +836,7 @@ pub fn set(backdrops: Shown, cx: &mut App) {
     let mut gone = Vec::new();
     for slot in drop_runs {
         if let Some(run) = cx.default_global::<Runs>().0.remove(&slot) {
-            gone.extend(run.image);
+            gone.extend(run.frame.and_then(|f| f.image));
         }
     }
     cx.default_global::<Loads>().retired.extend(gone);
@@ -945,6 +945,16 @@ fn current(slot: Slot, cx: &App) -> Option<Backdrop> {
         .and_then(|s| s.mode(cx.theme().is_dark()).get(slot).cloned())
 }
 
+/// Whether `slot` draws anything now, or still fades out.
+fn shows(slot: Slot, cx: &App) -> bool {
+    current(slot, cx).is_some_and(|b| b.opacity > 0.)
+        || cx.try_global::<Fades>().is_some_and(|f| {
+            f.0.borrow()
+                .get(&slot)
+                .is_some_and(|s| s.current.is_some() || s.previous.is_some())
+        })
+}
+
 /// Whether any of `slots` shows an image.
 pub fn any(slots: &[Slot], cx: &App) -> bool {
     slots.iter().any(|s| current(*s, cx).is_some())
@@ -973,7 +983,22 @@ pub type ScrollOffset = std::rc::Rc<dyn Fn() -> gpui_kit::Point<Pixels>>;
 
 /// [`layer`] for a panel whose images may scroll with `scroll`.
 pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Option<AnyElement> {
-    layer_inner(slots, scroll, false, cx)
+    layer_inner(slots, scroll, false, None, cx)
+}
+
+/// The opacity a parent gives the layer, from 0 to 1, written while the
+/// parent renders, such as a panel that fades in (LLM-579). A shader
+/// draws as a surface only at 1: a surface ignores element opacity.
+pub type ParentFade = std::rc::Rc<std::cell::Cell<f32>>;
+
+/// [`layer_with`] inside a parent whose opacity `fade` reports.
+pub fn layer_faded(
+    slots: &[Slot],
+    scroll: Option<ScrollOffset>,
+    fade: ParentFade,
+    cx: &App,
+) -> Option<AnyElement> {
+    layer_inner(slots, scroll, false, Some(fade), cx)
 }
 
 /// A layer for a surface that covers part of a panel and must show the
@@ -981,15 +1006,17 @@ pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Opt
 /// animation (LLM-570). Each panel image lines up with where the panel's
 /// own layer last drew, not with this layer. Put it over the page color.
 pub fn layer_over(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Option<AnyElement> {
-    layer_inner(slots, scroll, true, cx)
+    layer_inner(slots, scroll, true, None, cx)
 }
 
 fn layer_inner(
     slots: &[Slot],
     scroll: Option<ScrollOffset>,
     over: bool,
+    parent: Option<ParentFade>,
     cx: &App,
 ) -> Option<AnyElement> {
+    use gpui_kit::component::ActiveTheme as _;
     let now = cx.background_executor().now();
     let animate = crate::shell::motion::on(cx);
     let mut draws: Vec<(Slot, Backdrop, f32, bool)> = Vec::new();
@@ -1010,34 +1037,71 @@ fn layer_inner(
     if draws.is_empty() {
         return None;
     }
+    // LLM-579: a shader draws as an opaque surface where one flat color
+    // lies under it: the panel's fill, with no other background drawn
+    // before it in this layer, and no window background under a panel. It
+    // blends with that color at its own opacity, so it must not be fading
+    // either. Elsewhere it draws as an image.
+    let theme = cx.theme();
+    let base = if slots.contains(&Slot::Sidebar) {
+        theme.sidebar
+    } else {
+        theme.background
+    };
+    let window_under = shows(Slot::Window, cx);
+    let flat: Vec<Option<Hsla>> = draws
+        .iter()
+        .enumerate()
+        .map(|(i, (slot, _, _, fading))| {
+            (i == 0 && !fading && base.a >= 1. && (*slot == Slot::Window || !window_under))
+                .then_some(base)
+        })
+        .collect();
     Some(
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
-            .children(draws.into_iter().map(move |(slot, b, opacity, _)| {
-                let scroll = scroll.clone().filter(|_| b.scroll);
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .opacity(opacity)
-                    .child(
-                        canvas(
-                            |_, _, _| {},
-                            move |bounds, _, window, cx| {
-                                let offset = scroll.as_ref().map(|f| f());
-                                paint(slot, &b, offset, over, bounds, window, cx);
-                                if running {
-                                    window.request_animation_frame();
-                                }
-                            },
-                        )
-                        .size_full(),
-                    )
-            }))
+            .children(
+                draws
+                    .into_iter()
+                    .zip(flat)
+                    .map(move |((slot, b, opacity, _), flat)| {
+                        let scroll = scroll.clone().filter(|_| b.scroll);
+                        let parent = parent.clone();
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .opacity(opacity)
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, window, cx| {
+                                        let offset = scroll.as_ref().map(|f| f());
+                                        let blend = flat
+                                            .filter(|_| {
+                                                parent.as_ref().is_none_or(|p| p.get() >= 1.)
+                                            })
+                                            .map(|c| {
+                                                let [r, g, b, _] = rgba_of(c);
+                                                crate::shell::shader::Blend {
+                                                    under: [r, g, b],
+                                                    amount: opacity,
+                                                }
+                                            });
+                                        paint(slot, &b, offset, over, blend, bounds, window, cx);
+                                        if running {
+                                            window.request_animation_frame();
+                                        }
+                                    },
+                                )
+                                .size_full(),
+                            )
+                    }),
+            )
             .into_any_element(),
     )
 }
@@ -1219,11 +1283,13 @@ fn key_for(b: &Backdrop, window: &Window, cx: &App) -> ImageKey {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint(
     slot: Slot,
     b: &Backdrop,
     scroll: Option<gpui_kit::Point<Pixels>>,
     over: bool,
+    blend: Option<crate::shell::shader::Blend>,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -1251,7 +1317,7 @@ fn paint(
         } else {
             own
         };
-        paint_shader(slot, b, spec, area, over, bounds, window, cx);
+        paint_shader(slot, b, spec, area, over, blend, bounds, window, cx);
         return;
     }
     let key = key_for(b, window, cx);
@@ -1360,13 +1426,50 @@ pub fn prepare_shaders(cx: &mut App) -> Vec<String> {
 struct Run {
     program: Arc<crate::shell::shader::Program>,
     started: Instant,
-    image: Option<Arc<RenderImage>>,
-    /// When the frame in `image`, or the one on its way, was asked for.
+    frame: Option<ShaderFrame>,
+    /// When the frame in `frame`, or the one on its way, was asked for.
     asked: Option<Instant>,
     size: (u32, u32),
     pending: bool,
     /// A finished frame waiting for the next paint.
-    done: Option<(Arc<RenderImage>, (u32, u32))>,
+    done: Option<(ShaderFrame, (u32, u32))>,
+    /// What the paints since the last request wanted, so the next frame
+    /// renders each of them (LLM-579).
+    wants: Wants,
+}
+
+/// One frame of a shader in each form a paint wanted: an image for the
+/// paints that fade or lie over another background, and a surface for each
+/// flat color it lies over (LLM-579).
+#[derive(Clone, Default)]
+struct ShaderFrame {
+    image: Option<Arc<RenderImage>>,
+    surfaces: Vec<(crate::shell::shader::Blend, crate::shell::shader::Surface)>,
+}
+
+impl ShaderFrame {
+    fn has(&self, blend: Option<crate::shell::shader::Blend>) -> bool {
+        match blend {
+            Some(blend) => self.surfaces.iter().any(|(b, _)| *b == blend),
+            None => self.image.is_some(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Wants {
+    image: bool,
+    blends: Vec<crate::shell::shader::Blend>,
+}
+
+impl Wants {
+    fn add(&mut self, blend: Option<crate::shell::shader::Blend>) {
+        match blend {
+            Some(blend) if !self.blends.contains(&blend) => self.blends.push(blend),
+            Some(_) => {}
+            None => self.image = true,
+        }
+    }
 }
 
 /// Every slot's shader, and one clock for all, so two shaders at the same
@@ -1386,6 +1489,8 @@ fn rgba_of(color: Hsla) -> [f32; 4] {
     [c.r, c.g, c.b, c.a]
 }
 
+/// Paints a slot's shader. With `blend`, the slot lies over one flat
+/// color and the frame draws as a surface; without, as an image.
 #[allow(clippy::too_many_arguments)]
 fn paint_shader(
     slot: Slot,
@@ -1393,6 +1498,7 @@ fn paint_shader(
     spec: &ShaderSpec,
     area: Rect,
     over: bool,
+    blend: Option<crate::shell::shader::Blend>,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -1438,11 +1544,12 @@ fn paint_shader(
     let run = runs.0.entry(slot).or_insert_with(|| Run {
         program: program.clone(),
         started: now,
-        image: None,
+        frame: None,
         asked: None,
         size: target,
         pending: false,
         done: None,
+        wants: Wants::default(),
     });
     let mut retired = Vec::new();
     if !Arc::ptr_eq(&run.program, &program) {
@@ -1451,26 +1558,33 @@ fn paint_shader(
         run.started = now;
         run.asked = None;
     }
-    if let Some((image, made)) = run.done.take() {
-        retired.extend(run.image.replace(image));
+    if let Some((frame, made)) = run.done.take() {
+        let old = run.frame.replace(frame);
+        retired.extend(old.and_then(|f| f.image));
         run.size = made;
     }
+    run.wants.add(blend);
     let interval = (fps > 0.).then(|| Duration::from_secs_f32(1. / fps));
     // Frames fall on ticks of the shared clock.
     let tick_of = |at: Instant, i: Duration| {
         (at.saturating_duration_since(epoch).as_secs_f64() / i.as_secs_f64()).floor() as u64
     };
-    // A surface over the panel shows the panel's frame; it asks for none.
-    let due = !over
-        && !run.pending
-        && (run.image.is_none()
-            || run.size != target
-            || interval.is_some_and(|i| run.asked.is_none_or(|a| tick_of(now, i) > tick_of(a, i))));
-    let image = run.image.clone();
+    let missing = run.frame.as_ref().is_none_or(|f| !f.has(blend));
+    // A surface over the panel shows the panel's frame. It asks for one
+    // only when that frame lacks the form it needs.
+    let due = !run.pending
+        && (missing
+            || (!over
+                && (run.size != target
+                    || interval.is_some_and(|i| {
+                        run.asked.is_none_or(|a| tick_of(now, i) > tick_of(a, i))
+                    }))));
+    let frame = run.frame.clone();
     let next = interval.map(|i| epoch + i.mul_f64((tick_of(now, i) + 1) as f64));
     if due {
         run.pending = true;
         run.asked = Some(now);
+        let wants = std::mem::take(&mut run.wants);
         let inputs = crate::shell::shader::Inputs {
             time: now.saturating_duration_since(run.started).as_secs_f32(),
             pad: 0.,
@@ -1486,9 +1600,9 @@ fn paint_shader(
         };
         let view = window.current_view();
         let program = program.clone();
-        let render = cx
-            .background_executor()
-            .spawn(async move { program.render(target.0, target.1, &inputs) });
+        let render = cx.background_executor().spawn(async move {
+            program.render(target.0, target.1, &inputs, wants.image, &wants.blends)
+        });
         cx.spawn(async move |cx| {
             let result = render.await;
             cx.update(|cx| {
@@ -1497,20 +1611,36 @@ fn paint_shader(
                     return;
                 };
                 run.pending = false;
-                // A frame shows at the next tick, which draws anyway. Only
-                // the first frame, or one for a new size, draws at once.
-                let now_please = run.image.is_none() || run.size != target;
                 match result {
-                    Ok(bgra) => {
-                        if let Some(buffer) = image::RgbaImage::from_raw(target.0, target.1, bgra) {
-                            let frame = image::Frame::new(buffer);
-                            run.done = Some((Arc::new(RenderImage::new(vec![frame])), target));
+                    Ok(rendered) => {
+                        let image = rendered.pixels.and_then(|bgra| {
+                            let buffer = image::RgbaImage::from_raw(target.0, target.1, bgra)?;
+                            Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
+                        });
+                        let made = ShaderFrame {
+                            image,
+                            surfaces: rendered.surfaces,
+                        };
+                        // A frame shows at the next tick, which draws
+                        // anyway. The first frame, one for a new size, or
+                        // one with a form a paint lacked draws at once.
+                        let now_please = run.size != target
+                            || run.frame.as_ref().is_none_or(|old| {
+                                (made.image.is_some() && old.image.is_none())
+                                    || made.surfaces.iter().any(|(b, _)| !old.has(Some(*b)))
+                            });
+                        // A frame that was not shown yet gives its image
+                        // back to the atlas.
+                        if let Some((stale, _)) = run.done.replace((made, target))
+                            && let Some(image) = stale.image
+                        {
+                            cx.default_global::<Loads>().retired.push(image);
+                        }
+                        if now_please {
+                            cx.notify(view);
                         }
                     }
                     Err(e) => eprintln!("llmtodo: background shader: {e}"),
-                }
-                if now_please {
-                    cx.notify(view);
                 }
             });
         })
@@ -1520,12 +1650,54 @@ fn paint_shader(
     if let Some(at) = next.filter(|_| !over) {
         wake_at(at.max(now + Duration::from_millis(1)), window, cx);
     }
-    let Some(image) = image else { return };
+    let Some(frame) = frame else { return };
     let loads = cx.default_global::<Loads>();
     loads.ready.entry(ident(b)).or_insert(now);
     // The frame stretches over the slot: it renders at `scale`.
     let image_bounds = Bounds::new(point(px(area.x), px(area.y)), size(px(area.w), px(area.h)));
-    let _ = window.paint_image(bounds, image_bounds, Default::default(), image, 0, false);
+    // The surface for this paint's color; else the image, which honors
+    // opacity; else any surface, for the one frame until the right one
+    // arrives.
+    let surface = blend
+        .and_then(|blend| frame.surfaces.iter().find(|(b, _)| *b == blend))
+        .or_else(|| {
+            frame
+                .image
+                .is_none()
+                .then(|| frame.surfaces.first())
+                .flatten()
+        })
+        .map(|(_, s)| s.clone());
+    match (surface, frame.image) {
+        (Some(surface), _) => paint_surface(surface, bounds, image_bounds, window),
+        (None, Some(image)) => {
+            let _ = window.paint_image(bounds, image_bounds, Default::default(), image, 0, false);
+        }
+        (None, None) => {}
+    }
+}
+
+/// Draws a shader frame as a GPUI surface, clipped to the slot.
+#[cfg(target_os = "macos")]
+fn paint_surface(
+    surface: crate::shell::shader::Surface,
+    clip: Bounds<Pixels>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    window.with_content_mask(Some(gpui_kit::ContentMask { bounds: clip }), |window| {
+        window.paint_surface(bounds, surface.0)
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paint_surface(
+    surface: crate::shell::shader::Surface,
+    _: Bounds<Pixels>,
+    _: Bounds<Pixels>,
+    _: &mut Window,
+) {
+    match surface {}
 }
 
 fn rect_of(bounds: Bounds<Pixels>) -> Rect {
