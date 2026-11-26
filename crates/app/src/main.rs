@@ -12,6 +12,8 @@ use llmtodo_ui::shell::workspace::{self, Workspace};
 use llmtodo_ui::shell::{app_icon, app_menus, theme};
 
 fn main() {
+    // A panic goes to logs/app-panic.log in the data folder.
+    llmtodo_ui::crash_log::install();
     // AllAssets bundles every Lucide icon, so the app can draw any project
     // icon an agent picks. It adds 0.9 MiB to the release binary (LLM-196).
     gpui_kit::application().with_assets(AllAssets).run(|cx| {

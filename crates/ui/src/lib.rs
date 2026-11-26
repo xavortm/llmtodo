@@ -3,6 +3,7 @@
 //! draws them through GPUI's headless Metal renderer. `model/backend.rs`
 //! talks to the local API server; SPIKE.md records how the GPUI parts work.
 
+pub mod crash_log;
 pub mod docs;
 pub mod inbox;
 pub mod issues;
