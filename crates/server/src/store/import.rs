@@ -184,7 +184,8 @@ pub async fn insert_status(
     position: i64,
     lid: &str,
 ) -> ApiResult<()> {
-    backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, linear_id, review) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    let review = llmtodo_core::is_default_review_status(name);
+    backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, linear_id, review, review_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(id)
         .bind(team_id)
         .bind(name)
@@ -192,7 +193,8 @@ pub async fn insert_status(
         .bind(color)
         .bind(position)
         .bind(lid)
-        .bind(llmtodo_core::is_default_review_status(name))
+        .bind(review)
+        .bind(review.then_some("owner"))
         .execute(&mut *c)
         .await?;
     Ok(())

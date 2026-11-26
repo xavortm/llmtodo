@@ -3410,6 +3410,7 @@ impl Workspace {
         self.message = match verdict {
             ReviewVerdict::Approved => format!("Approving {key}"),
             ReviewVerdict::ChangesRequested => format!("Asking for changes on {key}"),
+            ReviewVerdict::Passed => format!("Passing {key} on"),
         }
         .into();
         self.send(
@@ -3448,6 +3449,10 @@ impl Workspace {
             (ReviewVerdict::Approved, _) => {
                 format!("Approved {key}. An agent will merge its PR and close it")
             }
+            (ReviewVerdict::Passed, s) => format!(
+                "Passed {key} on. It moved to {}",
+                s.map_or_else(|| "User review".into(), |s| s.name)
+            ),
             (ReviewVerdict::ChangesRequested, s) => format!(
                 "Asked for changes on {key}. It moved to {} for an agent",
                 s.map_or_else(|| "Todo".into(), |s| s.name)
@@ -4951,6 +4956,7 @@ impl Workspace {
             match waiting {
                 Some(WaitingOn::Agent) => format!("{} waits on an agent", issue.key),
                 Some(WaitingOn::Owner) => format!("{} waits on you", issue.key),
+                Some(WaitingOn::Reviewer) => format!("{} waits on a reviewer agent", issue.key),
                 None => format!("{} waits on no one", issue.key),
             }
         }) else {

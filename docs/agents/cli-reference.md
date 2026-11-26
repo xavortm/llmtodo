@@ -105,7 +105,7 @@ List issues that match filters. Sorted by priority, then last update
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
@@ -135,7 +135,7 @@ Create an issue
 - `--milestone <milestone>`
 - `--parent <parent>`
 - `--for <for_executor>`: Wanted executor, such as `kind=agent` or `model=opus-5.5,effort=high`
-- `-w, --waiting-on <waiting_on>`: `agent` when it is ready for an agent, `owner` when it needs your input
+- `-w, --waiting-on <waiting_on>`: `agent` when it is ready for an agent, `owner` when it needs your input, `reviewer` when a reviewer agent must review it
 - `--blocks <blocks>` (repeatable)
 - `--blocked-by <blocked_by>` (repeatable)
 - `--related <related>` (repeatable)
@@ -161,7 +161,7 @@ Change an issue. Only the flags you pass change
 - `--order-step <order_step>`: The step in the parent's order: an existing step, the last step plus one for a new last step, or `none` to take the task out of the order
 - `--team <team>`: Move to another team. The issue gets a new key and keeps the old one as an alias
 - `--for <for_executor>`: Wanted executor, or `none` to clear
-- `-w, --waiting-on <waiting_on>`: `agent`, `owner`, or `none` to clear
+- `-w, --waiting-on <waiting_on>`: `agent`, `owner`, `reviewer`, or `none` to clear
 - `--branch <branch>`: The git branch for the git panel, or `none` to clear
 - `--worktree <worktree>`: The worktree path for the git panel, or `none` to clear. This machine's host name is stored with it
 - `--pr <pr>`: The PR URL for the git panel, or `none` to clear. It is also attached
@@ -424,7 +424,8 @@ List statuses of one team, or of every team
 - `--type <kind>` (required)
 - `--color <color>`
 - `--position <position>`
-- `--review` (one of: true, false): Mark it a review status: tickets here wait for the owner's review, and a move here ends the agent's claim
+- `--review` (one of: true, false): Mark it a review status: tickets here wait for a review, and a move here ends the agent's claim
+- `--review-role <review_role>`: Who reviews here: `agent` for a reviewer agent that passes tickets on to the owner, or `owner`. Implies `--review`. The owner when left out
 
 ### `llmtodo status update`
 
@@ -433,6 +434,7 @@ List statuses of one team, or of every team
 - `--color <color>`
 - `--position <position>`
 - `--review <review>` (one of: true, false): Set or clear the review flag. `true` also ends the claims on issues in this status
+- `--review-role <review_role>`: Who reviews here: `agent` or `owner`. Also sets the review flag
 
 ### `llmtodo status delete`
 
@@ -618,7 +620,7 @@ Save the filters of `issue query` under a name
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
@@ -650,7 +652,7 @@ Save the filters of `issue query` under a name
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either

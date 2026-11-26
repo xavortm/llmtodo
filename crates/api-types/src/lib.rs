@@ -22,8 +22,8 @@ pub use llmtodo_core::{
     ASSIGNEE_NONE, ASSIGNEE_OWNER, ActorFields, ActorId, ActorKind, AssigneeRef, AttachmentId,
     AttachmentKind, CommentId, DocumentId, FilterSubject, IssueFilter, IssueId, IssueKey, LabelId,
     MilestoneId, Patch, Priority, ProjectId, ProjectState, RelationId, RelationInput,
-    RelationSource, RelationType, SessionNoteId, StatusId, StatusType, TeamId, ViewId, WaitingOn,
-    WantedExecutor, WorkSessionId,
+    RelationSource, RelationType, ReviewRole, SessionNoteId, StatusId, StatusType, TeamId, ViewId,
+    WaitingOn, WantedExecutor, WorkSessionId,
 };
 
 /// Version of this build. The server sends it in the `x-llmtodo-version`
@@ -351,10 +351,14 @@ pub struct Status {
     pub kind: StatusType,
     pub color: String,
     pub position: i64,
-    /// Tickets here wait for the owner's review. A move here needs a review
-    /// section and ends the agent's claim.
+    /// Tickets here wait for a review. A move here needs a review section
+    /// and ends the agent's claim.
     #[serde(default)]
     pub review: bool,
+    /// Who reviews here, when `review` is set: a reviewer agent or the
+    /// owner (LLM-588). None on a status without the review flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_role: Option<ReviewRole>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -393,6 +397,10 @@ pub struct CreateStatus {
     /// Marks a review status. False when left out.
     #[serde(default)]
     pub review: Option<bool>,
+    /// Who reviews here. Setting it also marks a review status. The owner
+    /// when left out.
+    #[serde(default)]
+    pub review_role: Option<ReviewRole>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -403,6 +411,9 @@ pub struct UpdateStatus {
     /// Sets or clears the review flag.
     #[serde(default)]
     pub review: Option<bool>,
+    /// Sets who reviews here. Setting it also sets the review flag.
+    #[serde(default)]
+    pub review_role: Option<ReviewRole>,
 }
 
 // ---------------------------------------------------------------- labels
@@ -627,9 +638,12 @@ pub struct StatusRef {
     #[serde(rename = "type")]
     pub kind: StatusType,
     pub color: String,
-    /// A review status: the ticket waits for the owner's review.
+    /// A review status: the ticket waits for a review.
     #[serde(default)]
     pub review: bool,
+    /// Who reviews here, when `review` is set (LLM-588).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_role: Option<ReviewRole>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -752,12 +766,17 @@ pub struct QuestionEntry {
     pub question: llmtodo_core::Question,
 }
 
-/// The owner's answer to one review round.
+/// The answer to one review round. The owner approves. A reviewer agent
+/// passes the ticket on to the owner (LLM-588). Both can ask for changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewVerdict {
+    #[serde(alias = "approve")]
     Approved,
+    #[serde(alias = "changes", alias = "request_changes")]
     ChangesRequested,
+    #[serde(alias = "pass")]
+    Passed,
 }
 
 impl ReviewVerdict {
@@ -765,6 +784,7 @@ impl ReviewVerdict {
         match self {
             ReviewVerdict::Approved => "approved",
             ReviewVerdict::ChangesRequested => "changes_requested",
+            ReviewVerdict::Passed => "passed",
         }
     }
 }
@@ -777,8 +797,9 @@ impl std::str::FromStr for ReviewVerdict {
             "changes_requested" | "request_changes" | "changes" => {
                 Ok(ReviewVerdict::ChangesRequested)
             }
+            "passed" | "pass" => Ok(ReviewVerdict::Passed),
             other => Err(format!(
-                "unknown verdict {other:?}; use approve or request-changes"
+                "unknown verdict {other:?}; use approve, pass or request-changes"
             )),
         }
     }

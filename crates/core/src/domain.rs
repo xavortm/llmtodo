@@ -101,9 +101,21 @@ impl Priority {
 }
 
 string_enum!(
-    /// Who an issue waits on: an agent can pick it up, or the owner must
-    /// answer first. At most one of the two.
+    /// Who an issue waits on: an agent can pick it up, the owner must
+    /// answer first, or a reviewer agent must review it (LLM-588). At most
+    /// one of the three.
     WaitingOn {
+        Agent => "agent",
+        Owner => "owner",
+        Reviewer => "reviewer",
+    }
+);
+
+string_enum!(
+    /// Who reviews the tickets in a review status (LLM-588). In an `agent`
+    /// status a reviewer agent passes the ticket on or asks for changes. In
+    /// an `owner` status the owner approves or asks for changes.
+    ReviewRole {
         Agent => "agent",
         Owner => "owner",
     }

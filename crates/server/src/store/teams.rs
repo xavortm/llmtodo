@@ -1,5 +1,5 @@
 use crate::store::backend::Conn;
-use llmtodo_api_types::{Status, StatusType, Team};
+use llmtodo_api_types::{ReviewRole, Status, StatusType, Team};
 
 use crate::db::{new_id, now, parse_ts, parse_uuid};
 use crate::error::{ApiError, ApiResult};
@@ -16,11 +16,33 @@ pub struct StatusRow {
     pub color: String,
     pub position: i64,
     pub review: bool,
+    pub review_role: Option<String>,
 }
 
 impl StatusRow {
     pub fn kind(&self) -> StatusType {
         self.kind.parse().unwrap_or(StatusType::Backlog)
+    }
+
+    /// Who reviews here, on a review status. A review status with no role
+    /// stored is the owner's (LLM-588).
+    pub fn role(&self) -> Option<ReviewRole> {
+        self.review.then(|| {
+            self.review_role
+                .as_deref()
+                .and_then(|r| r.parse().ok())
+                .unwrap_or(ReviewRole::Owner)
+        })
+    }
+
+    /// A review status where a reviewer agent reviews first.
+    pub fn agent_review(&self) -> bool {
+        self.role() == Some(ReviewRole::Agent)
+    }
+
+    /// A review status where the owner reviews.
+    pub fn owner_review(&self) -> bool {
+        self.role() == Some(ReviewRole::Owner)
     }
 
     pub fn to_api(&self) -> Status {
@@ -32,6 +54,7 @@ impl StatusRow {
             color: self.color.clone(),
             position: self.position,
             review: self.review,
+            review_role: self.role(),
         }
     }
 
@@ -42,11 +65,12 @@ impl StatusRow {
             kind: self.kind(),
             color: self.color.clone(),
             review: self.review,
+            review_role: self.role(),
         }
     }
 }
 
-const STATUS_COLS: &str = "s.id, s.team_id, t.key AS team_key, s.name, s.type, s.color, s.position, (s.review <> 0) AS review";
+const STATUS_COLS: &str = "s.id, s.team_id, t.key AS team_key, s.name, s.type, s.color, s.position, (s.review <> 0) AS review, s.review_role";
 
 #[derive(sqlx::FromRow, Clone)]
 pub struct TeamRow {
@@ -208,14 +232,16 @@ pub async fn create(
     let mut merged = None;
     for (pos, (sname, kind, color)) in llmtodo_core::DEFAULT_STATUSES.iter().enumerate() {
         let sid = new_id();
-        backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        let review = llmtodo_core::is_default_review_status(sname);
+        backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, review, review_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&sid)
             .bind(&id)
             .bind(*sname)
             .bind(kind.as_str())
             .bind(*color)
             .bind(pos as i64)
-            .bind(llmtodo_core::is_default_review_status(sname))
+            .bind(review)
+            .bind(review.then_some(ReviewRole::Owner.as_str()))
             .execute(&mut *conn)
             .await?;
         if *sname == "In Review" {
@@ -344,9 +370,10 @@ pub async fn insert_status(
     color: &str,
     position: i64,
     review: bool,
+    review_role: Option<ReviewRole>,
 ) -> ApiResult<()> {
     backend::query(
-        "INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO statuses (id, team_id, name, type, color, position, review, review_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(team_id)
@@ -355,8 +382,22 @@ pub async fn insert_status(
     .bind(color)
     .bind(position)
     .bind(review)
+    .bind(review_role.map(ReviewRole::as_str))
     .execute(&mut *c)
     .await?;
+    Ok(())
+}
+
+pub async fn set_status_review_role(
+    c: &mut Conn,
+    role: Option<ReviewRole>,
+    id: &str,
+) -> ApiResult<()> {
+    backend::query("UPDATE statuses SET review_role = ? WHERE id = ?")
+        .bind(role.map(ReviewRole::as_str))
+        .bind(id)
+        .execute(&mut *c)
+        .await?;
     Ok(())
 }
 

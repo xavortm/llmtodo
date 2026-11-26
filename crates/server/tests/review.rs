@@ -819,3 +819,409 @@ async fn one_request_answers_many_reviews() {
     assert_eq!(r["answers"][0]["feedback"], "Nice.");
     t.stop().await;
 }
+
+impl T {
+    /// Makes the team's In Review the reviewer agent's step (LLM-588).
+    /// User review stays the owner's.
+    async fn agent_review(&self) {
+        let team = self.ok(&owner(), "GET", "/v1/teams/ALX", json!({})).await;
+        let id = team["statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "In Review")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let v = self
+            .ok(
+                &owner(),
+                "PATCH",
+                &format!("/v1/statuses/{id}"),
+                json!({ "review_role": "agent" }),
+            )
+            .await;
+        assert_eq!(v["review_role"], "agent", "{v}");
+    }
+
+    async fn reviewer_answer(&self, key: &str, verdict: &str, feedback: &str) -> (u16, Value) {
+        self.call(
+            &agent("reviewer"),
+            "POST",
+            &format!("/v1/issues/{key}/review"),
+            json!({ "verdict": verdict, "feedback": feedback }),
+        )
+        .await
+    }
+
+    /// A claimed ticket that the coding agent moved to In Review.
+    async fn in_agent_review(&self) -> String {
+        let k = self.issue(SECTION).await;
+        self.ok(
+            &agent("a1"),
+            "POST",
+            &format!("/v1/issues/{k}/claim"),
+            json!({}),
+        )
+        .await;
+        let v = self
+            .ok(
+                &agent("a1"),
+                "PATCH",
+                &format!("/v1/issues/{k}"),
+                json!({ "status": "In Review" }),
+            )
+            .await;
+        assert_eq!(v["status"]["review_role"], "agent", "{v}");
+        k
+    }
+}
+
+/// LLM-588: a move to the reviewer's status ends the claim and waits on the
+/// reviewer, so coding agents leave it alone. A pass moves it to the owner.
+#[tokio::test]
+async fn the_reviewer_passes_a_ticket_on_to_the_owner() {
+    let t = T::new().await;
+    t.agent_review().await;
+    let map = t.issue("").await;
+    let k = t.in_agent_review().await;
+    t.ok(
+        &owner(),
+        "PATCH",
+        &format!("/v1/issues/{k}"),
+        json!({ "parent": map, "assignee": "" }),
+    )
+    .await;
+    let v = t
+        .ok(&owner(), "GET", &format!("/v1/issues/{k}"), json!({}))
+        .await;
+    assert_eq!(v["claim"], Value::Null, "{v}");
+    assert_eq!(v["waiting_on"], "reviewer", "{v}");
+    let f = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/frontier",
+            json!({ "issue": map }),
+        )
+        .await
+        .to_string();
+    assert!(!f.contains(&format!("\"{k}\"")), "{f}");
+    // The reviewer's queue: open tickets that wait on the reviewer.
+    let page = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "waiting_on": "reviewer" }),
+        )
+        .await;
+    let keys: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, [k.as_str()], "{page}");
+
+    let (s, v) = t
+        .reviewer_answer(&k, "pass", "Line 12 could use a test.")
+        .await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["status"]["name"], "User review");
+    assert_eq!(v["waiting_on"], "owner");
+    assert_eq!(v["reviews"][0]["verdict"], "passed");
+    assert_eq!(v["reviews"][0]["feedback"], "Line 12 could use a test.");
+
+    // The owner's round is a new one.
+    let (s, v) = t.answer(&k, "approved", "").await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["status"]["name"], "Done");
+    assert_eq!(v["reviews"][1]["round"], 2);
+    t.stop().await;
+}
+
+/// LLM-588: the reviewer's request for changes hands the ticket back to a
+/// coding agent, as the owner's does. One answer per round.
+#[tokio::test]
+async fn the_reviewer_can_ask_for_changes() {
+    let t = T::new().await;
+    t.agent_review().await;
+    let k = t.in_agent_review().await;
+    let (_, v) = t.reviewer_answer(&k, "changes", " ").await;
+    assert_eq!(v["error"]["details"]["reason"], "feedback_missing", "{v}");
+    let (s, v) = t
+        .reviewer_answer(&k, "changes_requested", "src/lib.rs:4 drops the error.")
+        .await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["status"]["name"], "Todo");
+    assert_eq!(v["waiting_on"], "agent");
+    assert_eq!(v["assignee"], Value::Null);
+
+    // Back to the reviewer, who passes it this time.
+    t.ok(
+        &agent("a2"),
+        "POST",
+        &format!("/v1/issues/{k}/claim"),
+        json!({}),
+    )
+    .await;
+    let v = t
+        .ok(
+            &agent("a2"),
+            "PATCH",
+            &format!("/v1/issues/{k}"),
+            json!({ "status": "In Review" }),
+        )
+        .await;
+    assert_eq!(v["waiting_on"], "reviewer");
+    let (s, _) = t.reviewer_answer(&k, "pass", "").await;
+    assert!(s < 300);
+    let (_, v) = t.reviewer_answer(&k, "pass", "").await;
+    assert_eq!(v["error"]["details"]["reason"], "not_agent_review", "{v}");
+    t.stop().await;
+}
+
+/// LLM-588: only the owner approves, and pass belongs to the reviewer's
+/// status.
+#[tokio::test]
+async fn only_the_owner_approves() {
+    let t = T::new().await;
+    t.agent_review().await;
+    let k = t.in_agent_review().await;
+    let (s, v) = t.reviewer_answer(&k, "approved", "").await;
+    assert_eq!(s, 422, "{v}");
+    assert_eq!(v["error"]["code"], "validation", "{v}");
+    assert_eq!(v["error"]["details"]["reason"], "owner_only", "{v}");
+
+    // In the owner's status, an agent cannot approve either, and nobody
+    // can pass.
+    let (s, _) = t.reviewer_answer(&k, "pass", "").await;
+    assert!(s < 300);
+    let (_, v) = t.reviewer_answer(&k, "approved", "").await;
+    assert_eq!(v["error"]["details"]["reason"], "owner_only", "{v}");
+    let (_, v) = t.answer(&k, "pass", "").await;
+    assert_eq!(v["error"]["details"]["reason"], "not_agent_review", "{v}");
+    let (s, _) = t.answer(&k, "approved", "").await;
+    assert!(s < 300);
+    t.stop().await;
+}
+
+/// LLM-588: the stored role follows the review flag. Clearing the flag
+/// clears the role, setting it again starts as the owner's, and a role with
+/// `review: false` is refused.
+#[tokio::test]
+async fn the_role_follows_the_review_flag() {
+    let mut t = T::new().await;
+    let qa = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/teams/ALX/statuses",
+            json!({ "name": "QA", "type": "started", "review_role": "agent" }),
+        )
+        .await;
+    assert_eq!(qa["review_role"], "agent", "{qa}");
+    let id = qa["id"].as_str().unwrap().to_string();
+    let patch = async |body: Value| {
+        t.call(&owner(), "PATCH", &format!("/v1/statuses/{id}"), body)
+            .await
+    };
+    let (s, v) = patch(json!({ "review": false, "review_role": "agent" })).await;
+    assert_eq!(s, 422, "{v}");
+    let (s, v) = t
+        .call(
+            &owner(),
+            "POST",
+            "/v1/teams/ALX/statuses",
+            json!({ "name": "QB", "type": "started", "review": false, "review_role": "owner" }),
+        )
+        .await;
+    assert_eq!(s, 422, "{v}");
+
+    let (_, v) = patch(json!({ "review": false })).await;
+    assert_eq!(v["review"], false, "{v}");
+    assert_eq!(v["review_role"], Value::Null, "{v}");
+    let (_, v) = patch(json!({ "review": true })).await;
+    assert_eq!(v["review_role"], "owner", "{v}");
+    let (_, v) = patch(json!({ "review_role": "agent" })).await;
+    assert_eq!(v["review_role"], "agent", "{v}");
+    t.running.take().unwrap().stop().await.unwrap();
+
+    // The column itself agrees, for any SQL that reads it.
+    if !llmtodo_server::testing_postgres() {
+        let path = llmtodo_server::db::db_path(t._dir.path());
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let rows: Vec<(String, bool, Option<String>)> =
+            sqlx::query_as("SELECT name, review <> 0, review_role FROM statuses ORDER BY position")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for (name, review, role) in rows {
+            assert_eq!(review, role.is_some(), "{name}: {role:?}");
+        }
+        pool.close().await;
+    }
+}
+
+/// LLM-588: a team with one review status keeps today's flow: that status is
+/// the owner's, and a reviewer cannot pass there.
+#[tokio::test]
+async fn one_review_status_stays_the_owners() {
+    let t = T::new().await;
+    let k = t.issue(SECTION).await;
+    let v = t.to_review(&k).await;
+    assert_eq!(v["status"]["review_role"], "owner", "{v}");
+    assert_eq!(v["waiting_on"], "owner");
+    let (_, v) = t.reviewer_answer(&k, "pass", "").await;
+    assert_eq!(v["error"]["details"]["reason"], "not_agent_review", "{v}");
+    t.stop().await;
+}
+
+/// LLM-588: migration 0023 makes In Review the reviewer's step only in a
+/// team that also has User review, and widens the CHECK constraints.
+#[tokio::test]
+async fn the_migration_sets_review_roles() {
+    // SQLite only: it rolls back a SQLite migration.
+    if llmtodo_server::testing_postgres() {
+        return;
+    }
+    let mut t = T::bare().await;
+    for (key, name) in [("ASTRO", "Astro starter"), ("LLM", "llmtodo")] {
+        t.ok(
+            &owner(),
+            "POST",
+            "/v1/teams",
+            json!({ "key": key, "name": name }),
+        )
+        .await;
+    }
+    t.ok(
+        &owner(),
+        "POST",
+        "/v1/teams/LLM/statuses",
+        json!({ "name": "User review", "type": "started", "review": true }),
+    )
+    .await;
+    // A ticket already in In Review, from before the migration.
+    let v = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues",
+            json!({ "team": "LLM", "title": "Old", "description": SECTION,
+                    "estimate_minutes": 30, "estimate_cost_usd": 1.5 }),
+        )
+        .await;
+    let old = v["key"].as_str().unwrap().to_string();
+    let v = t
+        .ok(
+            &agent("a1"),
+            "PATCH",
+            &format!("/v1/issues/{old}"),
+            json!({ "status": "In Review" }),
+        )
+        .await;
+    assert_eq!(v["waiting_on"], "owner", "{v}");
+    t.running.take().unwrap().stop().await.unwrap();
+    {
+        let path = llmtodo_server::db::db_path(t._dir.path());
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        // One connection, so the schema edit runs with writable_schema on.
+        let mut c = pool.acquire().await.unwrap();
+        for sql in [
+            "ALTER TABLE statuses DROP COLUMN review_role",
+            "DELETE FROM _sqlx_migrations WHERE version = 23",
+            "PRAGMA writable_schema = ON",
+            "UPDATE sqlite_schema SET sql = replace(sql, 'CHECK (waiting_on IN (''agent'', ''owner'', ''reviewer''))', 'CHECK (waiting_on IN (''agent'', ''owner''))') WHERE type = 'table' AND name = 'issues'",
+            "UPDATE sqlite_schema SET sql = replace(sql, 'CHECK (verdict IN (''approved'', ''changes_requested'', ''passed''))', 'CHECK (verdict IN (''approved'', ''changes_requested''))') WHERE type = 'table' AND name = 'reviews'",
+            "PRAGMA writable_schema = RESET",
+        ] {
+            sqlx::query(sql).execute(&mut *c).await.unwrap();
+        }
+        let schema: String = sqlx::query_scalar(
+            "SELECT group_concat(sql, ' ') FROM sqlite_schema WHERE name IN ('issues', 'reviews')",
+        )
+        .fetch_one(&mut *c)
+        .await
+        .unwrap();
+        assert!(
+            !schema.contains("reviewer") && !schema.contains("passed"),
+            "{schema}"
+        );
+        drop(c);
+        pool.close().await;
+    }
+    t.running = Some(start(t._dir.path()).await);
+    t.url = t.running.as_ref().unwrap().url();
+    let roles = async |team: &str| -> Vec<(String, Value)> {
+        let v = t
+            .ok(&owner(), "GET", &format!("/v1/teams/{team}"), json!({}))
+            .await;
+        v["statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["review"] == true)
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_string(),
+                    s["review_role"].clone(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(roles("ASTRO").await, [("In Review".into(), json!("owner"))]);
+    let mut llm = roles("LLM").await;
+    llm.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        llm,
+        [
+            ("In Review".into(), json!("agent")),
+            ("User review".into(), json!("owner"))
+        ]
+    );
+
+    // The old ticket now waits on the reviewer agent.
+    let v = t
+        .ok(&owner(), "GET", &format!("/v1/issues/{old}"), json!({}))
+        .await;
+    assert_eq!(v["waiting_on"], "reviewer", "{v}");
+
+    // The widened CHECK takes the new values.
+    let v = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues",
+            json!({ "team": "LLM", "title": "Task", "description": SECTION,
+                    "estimate_minutes": 30, "estimate_cost_usd": 1.5 }),
+        )
+        .await;
+    let k = v["key"].as_str().unwrap().to_string();
+    let v = t
+        .ok(
+            &agent("a1"),
+            "PATCH",
+            &format!("/v1/issues/{k}"),
+            json!({ "status": "In Review" }),
+        )
+        .await;
+    assert_eq!(v["waiting_on"], "reviewer", "{v}");
+    let (s, v) = t
+        .call(
+            &agent("reviewer"),
+            "POST",
+            &format!("/v1/issues/{k}/review"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["reviews"][0]["verdict"], "passed");
+    t.stop().await;
+}

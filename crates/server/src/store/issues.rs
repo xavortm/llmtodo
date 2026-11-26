@@ -7,7 +7,7 @@ use crate::store::backend::{Backend, Conn, QueryBuilder};
 use base64::Engine;
 use llmtodo_api_types::{
     ANALYZING_EXPIRY_SECS, Actor, AnalyzingSummary, ClaimSummary, Issue, IssueKey, IssueLink,
-    IssueQuery, Priority, WantedExecutor,
+    IssueQuery, Priority, WaitingOn, WantedExecutor,
 };
 use serde_json::Value;
 
@@ -811,19 +811,15 @@ async fn push_link_filters(b: &mut QueryBuilder, conn: &mut Conn, q: &IssueQuery
 
 fn push_waiting_on(b: &mut QueryBuilder, q: &IssueQuery) -> ApiResult<()> {
     if let Some(w) = q.waiting_on.as_deref().map(str::trim) {
-        match w.to_ascii_lowercase().as_str() {
-            "none" | "" => {
-                b.push(" AND i.waiting_on IS NULL");
-            }
-            "agent" | "owner" => {
-                b.push(" AND i.waiting_on = ")
-                    .push_bind(w.to_ascii_lowercase());
-            }
-            other => {
-                return Err(ApiError::bad_request(format!(
-                    "waiting_on must be agent, owner or none, got {other:?}"
-                )));
-            }
+        if w.is_empty() || w.eq_ignore_ascii_case("none") {
+            b.push(" AND i.waiting_on IS NULL");
+        } else {
+            let who = w.parse::<WaitingOn>().map_err(|_| {
+                ApiError::bad_request(format!(
+                    "waiting_on must be agent, owner, reviewer or none, got {w:?}"
+                ))
+            })?;
+            b.push(" AND i.waiting_on = ").push_bind(who.as_str());
         }
     }
     Ok(())
@@ -980,9 +976,10 @@ async fn executor_ok(
 }
 
 /// Open, live, unassigned issues with no open blocker, under a map issue
-/// (to `depth` levels) or in a project. An issue in a review status waits
-/// for the owner, so it shows only when it waits on an agent, as after an
-/// approval with an open PR. Sorted by priority, then key.
+/// (to `depth` levels) or in a project. Issues that wait on the owner or a
+/// reviewer agent are left out. An issue in a review status shows only when
+/// it waits on an agent, as after an approval with an open PR. Sorted by
+/// priority, then key.
 pub async fn frontier(
     conn: &mut Conn,
     root: Option<&str>,
@@ -992,7 +989,7 @@ pub async fn frontier(
 ) -> ApiResult<Vec<String>> {
     let base = "SELECT i.id FROM issues i JOIN statuses s ON s.id = i.status_id JOIN teams t ON t.id = i.team_id
         WHERE i.deleted_at IS NULL AND i.assignee_id IS NULL AND s.type NOT IN ('completed', 'canceled')
-        AND i.waiting_on IS DISTINCT FROM 'owner'
+        AND (i.waiting_on IS NULL OR i.waiting_on = 'agent')
         AND (s.review = 0 OR i.waiting_on IS NOT DISTINCT FROM 'agent')
         AND NOT EXISTS (
             SELECT 1 FROM relations r JOIN issues b ON b.id = r.from_id JOIN statuses bs ON bs.id = b.status_id
