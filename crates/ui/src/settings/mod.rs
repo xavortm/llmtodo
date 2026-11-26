@@ -534,7 +534,10 @@ impl SettingsStore {
                     let table = background[slot].as_table_mut().expect("a table");
                     let value = match value {
                         BackgroundValue::Text(t) => toml_edit::Value::from(t),
-                        BackgroundValue::Number(n) => toml_edit::Value::from(f64::from(n)),
+                        // f32 to f64 adds noise: 0.35 would read 0.3499999940395355.
+                        BackgroundValue::Number(n) => {
+                            toml_edit::Value::from((f64::from(n) * 1e4).round() / 1e4)
+                        }
                     };
                     config::set_value(table, key, value);
                 }

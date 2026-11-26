@@ -1247,12 +1247,45 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
         .unwrap();
     };
     end(cx);
-    click(handle, "settings-bg-list-opacity-3", cx);
+    // Opacity: typed, then Enter.
+    let settings = cx.read(|cx| view.read(cx).settings_view().clone());
+    let field = cx.read(|cx| settings.read(cx).bg_opacity(Slot::List));
+    cx.update_window(handle, |_, window, cx| {
+        field.update(cx, |f, cx| {
+            f.set_value("50", window, cx);
+            cx.emit(gpui_kit::component::input::InputEvent::PressEnter {
+                secondary: false,
+                shift: false,
+            });
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The dropdowns: a confirmed choice writes its value.
+    for (key, value) in [
+        ("repeat", "repeat"),
+        ("size", "auto"),
+        ("position", "left top"),
+    ] {
+        let select = cx.read(|cx| settings.read(cx).bg_select(Slot::List, key));
+        cx.update_window(handle, |_, _, cx| {
+            select.update(cx, |_, cx| {
+                cx.emit(gpui_kit::component::select::SelectEvent::Confirm(Some(
+                    value,
+                )))
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
     end(cx);
-    click(handle, "settings-bg-list-repeat-1", cx);
-    end(cx);
-    click(handle, "settings-bg-list-size-3", cx);
-    end(cx);
+    // The dropdown shows the saved choice: `left top` is "Top left".
+    let position = cx.read(|cx| settings.read(cx).bg_select(Slot::List, "position"));
+    assert_eq!(
+        cx.read(|cx| position.read(cx).selected_value().copied()),
+        Some("top left")
+    );
+    assert_eq!(cx.read(|cx| field.read(cx).value().to_string()), "50");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(
         text.starts_with("# my settings\n[app]\nmascot = true # keep\n"),
@@ -1260,10 +1293,35 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     );
     assert!(text.contains("[app.background.list]"), "{text}");
     assert!(!text.contains("[app.background]\n"), "{text}");
+    assert!(text.contains("position = \"left top\""), "{text}");
     let list = shown(cx).list.unwrap();
     assert_eq!(list.opacity, 0.5);
     assert!(list.layout.repeat.x && list.layout.repeat.y);
+    assert_eq!(list.layout.size, crate::shell::backdrop::BgSize::Scale(1.));
 
+    // + steps by 5.
+    cx.update_window(handle, |_, _, cx| {
+        field.update(cx, |_, cx| {
+            cx.emit(gpui_kit::component::input::NumberInputEvent::Step(
+                gpui_kit::component::input::StepAction::Increment,
+            ))
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx).list.unwrap().opacity, 0.55);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("opacity = 0.55\n"), "{text}");
+    assert_eq!(cx.read(|cx| field.read(cx).value().to_string()), "55");
+
+    // A hand-written size with no entry leaves the dropdown on none.
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.replace("size = \"auto\"", "size = \"40%\"")).unwrap();
+    refocus(handle, &view, cx);
+    let size = cx.read(|cx| settings.read(cx).bg_select(Slot::List, "size"));
+    assert_eq!(cx.read(|cx| size.read(cx).selected_value().copied()), None);
+
+    end(cx);
     click(handle, "settings-bg-list-remove", cx);
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(!text.contains("background"), "{text}");
