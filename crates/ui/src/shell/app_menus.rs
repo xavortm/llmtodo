@@ -38,6 +38,7 @@ actions!(
         MenuPalette,
         MenuFilter,
         MenuClaims,
+        MenuActivityStrip,
         MenuHelp,
     ]
 );
@@ -120,6 +121,7 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Actual Size", ZoomReset),
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", workspace::ToggleSidebar),
+            MenuItem::action("Toggle Activity Strip", MenuActivityStrip),
             MenuItem::action("Keyboard Shortcuts", MenuHelp),
             MenuItem::separator(),
             MenuItem::action("Toggle Full Screen", ToggleFullScreen),

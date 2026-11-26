@@ -264,3 +264,20 @@ fn the_readme_example_reads() {
     assert_eq!(loaded.zoom, 1.1);
     assert!(loaded.hide_closed);
 }
+
+/// LLM-560: the activity strip shows by default, also for a state file
+/// from before it existed, and a hidden strip stays hidden.
+#[test]
+fn the_activity_strip_is_on_by_default_and_saves() {
+    assert!(UiSettings::default().activity_strip);
+    let dir = Dir::new();
+    let mut store = dir.store();
+    std::fs::write(dir.state(), r#"{"group":"label"}"#).unwrap();
+    assert!(store.load().activity_strip, "an old file shows it");
+    let hidden = UiSettings {
+        activity_strip: false,
+        ..Default::default()
+    };
+    store.save(&UiSettings::default(), &hidden).unwrap();
+    assert!(!store.load().activity_strip);
+}

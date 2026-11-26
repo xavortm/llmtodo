@@ -63,6 +63,9 @@ pub struct UiSettings {
     /// Collapsed groups, as `grouping:title`, for example `status:Done`.
     pub collapsed_groups: Vec<String>,
     pub sidebar_open: bool,
+    /// LLM-560: the strip of tasks created and completed per day under a
+    /// project's list. Shown unless the owner hides it.
+    pub activity_strip: bool,
     /// What the sidebar picked: `all`, `team:<key>` or `project:<slug>`.
     pub sidebar_scope: String,
     /// The teams whose groups the sidebar shows closed, by team key.
@@ -115,6 +118,7 @@ impl Default for UiSettings {
             group: "none".into(),
             collapsed_groups: Vec::new(),
             sidebar_open: false,
+            activity_strip: true,
             sidebar_scope: "all".into(),
             sidebar_collapsed: Vec::new(),
             split_side: None,
@@ -165,6 +169,7 @@ struct UiState {
     open_tabs: BTreeMap<String, usize>,
     last_task: Option<String>,
     sidebar_open: bool,
+    activity_strip: bool,
     sidebar_scope: String,
     sidebar_collapsed: Vec<String>,
     sort: String,
@@ -247,6 +252,7 @@ impl UiState {
             open_tabs: s.open_tabs.clone(),
             last_task: s.last_task.clone(),
             sidebar_open: s.sidebar_open,
+            activity_strip: s.activity_strip,
             sidebar_scope: s.sidebar_scope.clone(),
             sidebar_collapsed: s.sidebar_collapsed.clone(),
             sort: s.sort.clone(),
@@ -264,6 +270,7 @@ impl UiState {
         s.open_tabs = self.open_tabs;
         s.last_task = self.last_task;
         s.sidebar_open = self.sidebar_open;
+        s.activity_strip = self.activity_strip;
         s.sidebar_scope = self.sidebar_scope;
         s.sidebar_collapsed = self.sidebar_collapsed;
         s.sort = self.sort;

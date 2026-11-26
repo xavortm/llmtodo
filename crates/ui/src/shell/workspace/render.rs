@@ -150,13 +150,16 @@ impl Workspace {
                     )
                     // LLM-560: tasks created and completed per day, under
                     // a project's list only.
-                    .when(self.day_chart.read(cx).slug(cx).is_some(), |this| {
-                        this.child(self.day_chart.clone().cached(
-                            gpui_kit::StyleRefinement::default().w_full().flex_none().h(
-                                gpui_kit::px(crate::issues::day_chart::Metrics::now(cx).height),
-                            ),
-                        ))
-                    }),
+                    .when(
+                        self.activity_strip && self.day_chart.read(cx).slug(cx).is_some(),
+                        |this| {
+                            this.child(self.day_chart.clone().cached(
+                                gpui_kit::StyleRefinement::default().w_full().flex_none().h(
+                                    gpui_kit::px(crate::issues::day_chart::Metrics::now(cx).height),
+                                ),
+                            ))
+                        },
+                    ),
             )
             .when(filters_open > 0., |this| {
                 // Cached, over its background and its rows' hover fills,
@@ -481,6 +484,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::prev_tab))
             .on_action(cx.listener(Self::toggle_help))
             .on_action(cx.listener(Self::show_claims))
+            .on_action(cx.listener(Self::toggle_activity_strip))
             .on_action(cx.listener(Self::show_inbox))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::cancel))
@@ -531,6 +535,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &app_menus::MenuClaims, window, cx| {
                 this.show_claims(&ShowClaims, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &app_menus::MenuActivityStrip, window, cx| {
+                    this.toggle_activity_strip(&ToggleActivityStrip, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &app_menus::MenuHelp, window, cx| {
                 this.toggle_help(&ToggleHelp, window, cx)
             }))

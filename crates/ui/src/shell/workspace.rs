@@ -320,6 +320,9 @@ pub struct Workspace {
     /// by tracker index. A switch back opens it again, so a project the
     /// other tracker lacks is not lost to All issues.
     tracker_scopes: std::collections::HashMap<usize, Scope>,
+    /// The owner shows the day strip under a project's list. View > Toggle
+    /// Activity Strip, `g a` and `:activity` flip it.
+    activity_strip: bool,
     /// The API thread. None in tests on demo data.
     backend: Option<Backend>,
     /// Which writes are on their way, and the owner's unsaved text.
@@ -721,6 +724,7 @@ impl Workspace {
             day_chart,
             day_tasks,
             tracker_scopes: Default::default(),
+            activity_strip: true,
             backend: None,
             pipeline: WritePipeline::default(),
             activity: Default::default(),
@@ -1619,6 +1623,7 @@ impl Workspace {
         self.layout.split_sizes = (settings.split_side, settings.split_stacked);
         self.window_frame = settings.window;
         self.layout.sidebar_open = settings.sidebar_open;
+        self.activity_strip = settings.activity_strip;
         self.mascot_on = settings.mascot;
         crate::shell::motion::set(settings.animations, cx);
         self.sync_mascot(cx);
@@ -1707,6 +1712,7 @@ impl Workspace {
             group: list.group.label().to_lowercase(),
             collapsed_groups: collapsed,
             sidebar_open: self.layout.sidebar_open,
+            activity_strip: self.activity_strip,
             sidebar_scope: scope.to_setting(),
             sidebar_collapsed: self.sidebar.read(cx).collapsed(),
             split_side: self.layout.split_sizes.0,
@@ -3770,6 +3776,37 @@ impl Workspace {
     fn toggle_help(&mut self, _: &ToggleHelp, _: &mut Window, cx: &mut Context<Self>) {
         self.help_open = !self.help_open;
         cx.notify();
+    }
+
+    /// Whether the day strip shows under a project's list.
+    pub fn activity_strip(&self) -> bool {
+        self.activity_strip
+    }
+
+    /// View > Toggle Activity Strip, `g a` and `:activity`.
+    pub fn toggle_activity_strip(
+        &mut self,
+        _: &ToggleActivityStrip,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_activity_strip(!self.activity_strip, window, cx);
+    }
+
+    fn set_activity_strip(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.activity_strip = on;
+        if !on {
+            self.day_tasks
+                .update(cx, |tasks, cx| tasks.close(window, cx));
+        }
+        self.message = if on {
+            "Activity strip shown under projects"
+        } else {
+            "Activity strip hidden"
+        }
+        .into();
+        cx.notify();
+        self.persist(cx);
     }
 
     /// `g c` and `:claims`: the list of tasks agents hold.

@@ -395,3 +395,49 @@ fn the_card_glides_to_the_next_days_height(cx: &mut TestAppContext) {
         "the card does not jump to the new height: {one:?}, {during:?}, {two:?}"
     );
 }
+
+/// `g a`, `:activity` and View > Toggle Activity Strip hide and show the
+/// strip, close an open day list, and save the choice.
+#[gpui_kit::test]
+fn the_strip_can_be_hidden_and_shown(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let strip = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("day-chart").is_some()
+        })
+        .unwrap()
+    };
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    assert!(strip(cx));
+    cx.update_window(handle, |_, window, cx| window.click("day-2026-11-10", cx))
+        .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx);
+        window.press("g", cx);
+        window.press("a", cx);
+    })
+    .unwrap();
+    assert!(!strip(cx), "g a hides it");
+    cx.read(|cx| {
+        let this = view.read(cx);
+        assert!(!this.day_tasks().read(cx).is_open());
+        assert!(!this.current_settings(cx).activity_strip, "saved");
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| this.run_command("activity", window, cx))
+    })
+    .unwrap();
+    assert!(strip(cx), ":activity shows it");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::shell::app_menus::MenuActivityStrip), cx)
+    })
+    .unwrap();
+    assert!(!strip(cx), "the View menu hides it");
+}
