@@ -534,12 +534,7 @@ pub async fn apply_fields(
         // agent, or the owner. The update can say otherwise.
         if moved && waiting_on_kept && status.review {
             let fresh = issues::row(w.c(), &row.id).await?;
-            let who = if status.agent_review() {
-                WaitingOn::Reviewer
-            } else {
-                WaitingOn::Owner
-            };
-            apply_waiting_on(w, &fresh, Some(who), false).await?;
+            wait_on_review(w, &fresh, &status).await?;
         }
         changed |= moved;
     }
@@ -719,10 +714,22 @@ pub(super) async fn apply_waiting_on(
     Ok(false)
 }
 
-/// Sets an issue to wait on a reviewer agent, for a move into that agent's
-/// review status from outside an update, such as the GitHub sync.
-pub(crate) async fn wait_on_reviewer(w: &mut Write<'_>, row: &IssueRow) -> ApiResult<()> {
-    apply_waiting_on(w, row, Some(WaitingOn::Reviewer), false).await?;
+/// Sets an issue in a review status to wait on that status's reviewer: a
+/// reviewer agent, or the owner. For a move from outside an update, such as
+/// the GitHub sync.
+pub(crate) async fn wait_on_review(
+    w: &mut Write<'_>,
+    row: &IssueRow,
+    status: &teams::StatusRow,
+) -> ApiResult<()> {
+    let who = if status.agent_review() {
+        WaitingOn::Reviewer
+    } else if status.owner_review() {
+        WaitingOn::Owner
+    } else {
+        return Ok(());
+    };
+    apply_waiting_on(w, row, Some(who), false).await?;
     Ok(())
 }
 

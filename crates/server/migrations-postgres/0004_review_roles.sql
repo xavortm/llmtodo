@@ -19,3 +19,12 @@ ALTER TABLE issues ADD CONSTRAINT issues_waiting_on_check
 ALTER TABLE reviews DROP CONSTRAINT reviews_verdict_check;
 ALTER TABLE reviews ADD CONSTRAINT reviews_verdict_check
     CHECK (verdict IN ('approved', 'changes_requested', 'passed'));
+
+-- Tickets already in the reviewer agent's step wait on that agent now,
+-- unless the owner still has an open question to answer.
+UPDATE issues SET waiting_on = 'reviewer'
+WHERE waiting_on = 'owner'
+  AND status_id IN (SELECT id FROM statuses WHERE review_role = 'agent')
+  AND NOT EXISTS (
+      SELECT 1 FROM questions q WHERE q.issue_id = issues.id AND q.answer IS NULL
+  );

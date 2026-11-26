@@ -7,7 +7,7 @@ use crate::store::backend::{Backend, Conn, QueryBuilder};
 use base64::Engine;
 use llmtodo_api_types::{
     ANALYZING_EXPIRY_SECS, Actor, AnalyzingSummary, ClaimSummary, Issue, IssueKey, IssueLink,
-    IssueQuery, Priority, WantedExecutor,
+    IssueQuery, Priority, WaitingOn, WantedExecutor,
 };
 use serde_json::Value;
 
@@ -811,19 +811,15 @@ async fn push_link_filters(b: &mut QueryBuilder, conn: &mut Conn, q: &IssueQuery
 
 fn push_waiting_on(b: &mut QueryBuilder, q: &IssueQuery) -> ApiResult<()> {
     if let Some(w) = q.waiting_on.as_deref().map(str::trim) {
-        match w.to_ascii_lowercase().as_str() {
-            "none" | "" => {
-                b.push(" AND i.waiting_on IS NULL");
-            }
-            "agent" | "owner" => {
-                b.push(" AND i.waiting_on = ")
-                    .push_bind(w.to_ascii_lowercase());
-            }
-            other => {
-                return Err(ApiError::bad_request(format!(
-                    "waiting_on must be agent, owner or none, got {other:?}"
-                )));
-            }
+        if w.is_empty() || w.eq_ignore_ascii_case("none") {
+            b.push(" AND i.waiting_on IS NULL");
+        } else {
+            let who = w.parse::<WaitingOn>().map_err(|_| {
+                ApiError::bad_request(format!(
+                    "waiting_on must be agent, owner, reviewer or none, got {w:?}"
+                ))
+            })?;
+            b.push(" AND i.waiting_on = ").push_bind(who.as_str());
         }
     }
     Ok(())

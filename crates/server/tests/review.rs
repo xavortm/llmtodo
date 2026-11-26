@@ -908,6 +908,22 @@ async fn the_reviewer_passes_a_ticket_on_to_the_owner() {
         .await
         .to_string();
     assert!(!f.contains(&format!("\"{k}\"")), "{f}");
+    // The reviewer's queue: open tickets that wait on the reviewer.
+    let page = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues/query",
+            json!({ "waiting_on": "reviewer" }),
+        )
+        .await;
+    let keys: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, [k.as_str()], "{page}");
 
     let (s, v) = t
         .reviewer_answer(&k, "pass", "Line 12 could use a test.")
@@ -992,6 +1008,65 @@ async fn only_the_owner_approves() {
     t.stop().await;
 }
 
+/// LLM-588: the stored role follows the review flag. Clearing the flag
+/// clears the role, setting it again starts as the owner's, and a role with
+/// `review: false` is refused.
+#[tokio::test]
+async fn the_role_follows_the_review_flag() {
+    let mut t = T::new().await;
+    let qa = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/teams/ALX/statuses",
+            json!({ "name": "QA", "type": "started", "review_role": "agent" }),
+        )
+        .await;
+    assert_eq!(qa["review_role"], "agent", "{qa}");
+    let id = qa["id"].as_str().unwrap().to_string();
+    let patch = async |body: Value| {
+        t.call(&owner(), "PATCH", &format!("/v1/statuses/{id}"), body)
+            .await
+    };
+    let (s, v) = patch(json!({ "review": false, "review_role": "agent" })).await;
+    assert_eq!(s, 422, "{v}");
+    let (s, v) = t
+        .call(
+            &owner(),
+            "POST",
+            "/v1/teams/ALX/statuses",
+            json!({ "name": "QB", "type": "started", "review": false, "review_role": "owner" }),
+        )
+        .await;
+    assert_eq!(s, 422, "{v}");
+
+    let (_, v) = patch(json!({ "review": false })).await;
+    assert_eq!(v["review"], false, "{v}");
+    assert_eq!(v["review_role"], Value::Null, "{v}");
+    let (_, v) = patch(json!({ "review": true })).await;
+    assert_eq!(v["review_role"], "owner", "{v}");
+    let (_, v) = patch(json!({ "review_role": "agent" })).await;
+    assert_eq!(v["review_role"], "agent", "{v}");
+    t.running.take().unwrap().stop().await.unwrap();
+
+    // The column itself agrees, for any SQL that reads it.
+    if !llmtodo_server::testing_postgres() {
+        let path = llmtodo_server::db::db_path(t._dir.path());
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let rows: Vec<(String, bool, Option<String>)> =
+            sqlx::query_as("SELECT name, review <> 0, review_role FROM statuses ORDER BY position")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for (name, review, role) in rows {
+            assert_eq!(review, role.is_some(), "{name}: {role:?}");
+        }
+        pool.close().await;
+    }
+}
+
 /// LLM-588: a team with one review status keeps today's flow: that status is
 /// the owner's, and a reviewer cannot pass there.
 #[tokio::test]
@@ -1031,18 +1106,55 @@ async fn the_migration_sets_review_roles() {
         json!({ "name": "User review", "type": "started", "review": true }),
     )
     .await;
+    // A ticket already in In Review, from before the migration.
+    let v = t
+        .ok(
+            &owner(),
+            "POST",
+            "/v1/issues",
+            json!({ "team": "LLM", "title": "Old", "description": SECTION,
+                    "estimate_minutes": 30, "estimate_cost_usd": 1.5 }),
+        )
+        .await;
+    let old = v["key"].as_str().unwrap().to_string();
+    let v = t
+        .ok(
+            &agent("a1"),
+            "PATCH",
+            &format!("/v1/issues/{old}"),
+            json!({ "status": "In Review" }),
+        )
+        .await;
+    assert_eq!(v["waiting_on"], "owner", "{v}");
     t.running.take().unwrap().stop().await.unwrap();
     {
         let path = llmtodo_server::db::db_path(t._dir.path());
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
             .await
             .unwrap();
+        // One connection, so the schema edit runs with writable_schema on.
+        let mut c = pool.acquire().await.unwrap();
         for sql in [
             "ALTER TABLE statuses DROP COLUMN review_role",
             "DELETE FROM _sqlx_migrations WHERE version = 23",
+            "PRAGMA writable_schema = ON",
+            "UPDATE sqlite_schema SET sql = replace(sql, 'CHECK (waiting_on IN (''agent'', ''owner'', ''reviewer''))', 'CHECK (waiting_on IN (''agent'', ''owner''))') WHERE type = 'table' AND name = 'issues'",
+            "UPDATE sqlite_schema SET sql = replace(sql, 'CHECK (verdict IN (''approved'', ''changes_requested'', ''passed''))', 'CHECK (verdict IN (''approved'', ''changes_requested''))') WHERE type = 'table' AND name = 'reviews'",
+            "PRAGMA writable_schema = RESET",
         ] {
-            sqlx::query(sql).execute(&pool).await.unwrap();
+            sqlx::query(sql).execute(&mut *c).await.unwrap();
         }
+        let schema: String = sqlx::query_scalar(
+            "SELECT group_concat(sql, ' ') FROM sqlite_schema WHERE name IN ('issues', 'reviews')",
+        )
+        .fetch_one(&mut *c)
+        .await
+        .unwrap();
+        assert!(
+            !schema.contains("reviewer") && !schema.contains("passed"),
+            "{schema}"
+        );
+        drop(c);
         pool.close().await;
     }
     t.running = Some(start(t._dir.path()).await);
@@ -1074,6 +1186,12 @@ async fn the_migration_sets_review_roles() {
             ("User review".into(), json!("owner"))
         ]
     );
+
+    // The old ticket now waits on the reviewer agent.
+    let v = t
+        .ok(&owner(), "GET", &format!("/v1/issues/{old}"), json!({}))
+        .await;
+    assert_eq!(v["waiting_on"], "reviewer", "{v}");
 
     // The widened CHECK takes the new values.
     let v = t

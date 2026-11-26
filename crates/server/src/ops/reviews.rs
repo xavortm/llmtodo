@@ -127,6 +127,9 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             ),
         ));
     }
+    // An agent may still ask for changes in the owner's status: the owner
+    // often relays feedback through an agent. A reviewer agent's queue holds
+    // only tickets that wait on the reviewer, so it never lands here.
     // The activity table must hold this write's events too.
     w.flush_events().await?;
     let (entered, answered) =
@@ -144,6 +147,26 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
             format!("{key}: say what to change. Request changes needs feedback"),
         ));
     }
+    // Find where a pass goes before anything is written.
+    let owner = if req.verdict == ReviewVerdict::Passed {
+        let owner = w
+            .team_statuses(&row.team_id)
+            .await?
+            .into_iter()
+            .find(|s| s.owner_review())
+            .ok_or_else(|| {
+                refuse(
+                    "owner_review_missing",
+                    format!(
+                        "{key}'s team has no status where the owner reviews. Add one with `llmtodo status create {team} \"User review\" --type started --review-role owner`",
+                        team = key.split('-').next().unwrap_or(&key)
+                    ),
+                )
+            })?;
+        Some(owner)
+    } else {
+        None
+    };
     let round = store::reviews::last_round(w.c(), &row.id).await? + 1;
     let author = w.ctx.actor_id();
     store::reviews::insert(w.c(), &row.id, round, req.verdict, &feedback, &author).await?;
@@ -159,19 +182,7 @@ pub async fn submit(w: &mut Write<'_>, r: &str, req: SubmitReview) -> ApiResult<
 
     match req.verdict {
         ReviewVerdict::Passed => {
-            let owner = w
-                .team_statuses(&row.team_id)
-                .await?
-                .into_iter()
-                .find(|s| s.owner_review())
-                .ok_or_else(|| {
-                    refuse(
-                        "owner_review_missing",
-                        format!(
-                            "{key}'s team has no status where the owner reviews. Add one with `llmtodo status create --review-role owner`"
-                        ),
-                    )
-                })?;
+            let owner = owner.expect("a pass resolves the owner's status");
             set_status(w, &row, &owner).await?;
             apply_waiting_on(w, &row, Some(WaitingOn::Owner), false).await?;
         }

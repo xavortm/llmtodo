@@ -208,7 +208,7 @@ pub struct QueryArgs {
     /// Wanted-executor filter, such as `kind=agent,model=opus-5.5`.
     #[arg(long = "for")]
     pub for_executor: Option<WantedExecutor>,
-    /// `agent`, `owner` or `none`.
+    /// `agent`, `owner`, `reviewer` or `none`.
     #[arg(long)]
     pub waiting_on: Option<String>,
     /// Open issues that wait for this issue, directly or through a chain.
@@ -335,7 +335,8 @@ pub struct CreateArgs {
     /// Wanted executor, such as `kind=agent` or `model=opus-5.5,effort=high`.
     #[arg(long = "for")]
     pub for_executor: Option<WantedExecutor>,
-    /// `agent` when it is ready for an agent, `owner` when it needs your input.
+    /// `agent` when it is ready for an agent, `owner` when it needs your input,
+    /// `reviewer` when a reviewer agent must review it.
     #[arg(long, short = 'w')]
     pub waiting_on: Option<WaitingOn>,
     #[arg(long)]
@@ -394,7 +395,7 @@ pub struct UpdateArgs {
     /// Wanted executor, or `none` to clear.
     #[arg(long = "for")]
     pub for_executor: Option<String>,
-    /// `agent`, `owner`, or `none` to clear.
+    /// `agent`, `owner`, `reviewer`, or `none` to clear.
     #[arg(long, short = 'w')]
     pub waiting_on: Option<String>,
     /// The git branch for the git panel, or `none` to clear.

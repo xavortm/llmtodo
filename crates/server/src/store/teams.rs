@@ -232,14 +232,16 @@ pub async fn create(
     let mut merged = None;
     for (pos, (sname, kind, color)) in llmtodo_core::DEFAULT_STATUSES.iter().enumerate() {
         let sid = new_id();
-        backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, review) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        let review = llmtodo_core::is_default_review_status(sname);
+        backend::query("INSERT INTO statuses (id, team_id, name, type, color, position, review, review_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&sid)
             .bind(&id)
             .bind(*sname)
             .bind(kind.as_str())
             .bind(*color)
             .bind(pos as i64)
-            .bind(llmtodo_core::is_default_review_status(sname))
+            .bind(review)
+            .bind(review.then_some(ReviewRole::Owner.as_str()))
             .execute(&mut *conn)
             .await?;
         if *sname == "In Review" {
@@ -386,9 +388,13 @@ pub async fn insert_status(
     Ok(())
 }
 
-pub async fn set_status_review_role(c: &mut Conn, role: ReviewRole, id: &str) -> ApiResult<()> {
+pub async fn set_status_review_role(
+    c: &mut Conn,
+    role: Option<ReviewRole>,
+    id: &str,
+) -> ApiResult<()> {
     backend::query("UPDATE statuses SET review_role = ? WHERE id = ?")
-        .bind(role.as_str())
+        .bind(role.map(ReviewRole::as_str))
         .bind(id)
         .execute(&mut *c)
         .await?;

@@ -157,6 +157,8 @@ async fn pull_requests_attach_and_move_issues() {
         .collect();
     assert_eq!(kinds, ["pull_request", "commit"]);
     assert_eq!(one["attachments"][0]["metadata"]["state"], "open");
+    // A team with one review status: In Review is the owner's.
+    assert_eq!(one["waiting_on"], "owner", "{one}");
     let two = call(&b, "GET", "/v1/issues/ALX-2", Value::Null, None).await;
     assert_eq!(
         two["attachments"].as_array().unwrap().len(),
@@ -448,5 +450,93 @@ async fn poll_reads_every_page_before_moving_the_poll_time() {
     // Now the walk finished, so the ETag is kept and nothing changes.
     let r = poll(&running.state, &api).await.unwrap();
     assert_eq!(r.pull_requests_seen, 0);
+    running.stop().await.unwrap();
+}
+
+/// LLM-588: a PR opening moves the issue to In Review. Where In Review is the
+/// reviewer agent's step, the issue then waits on the reviewer.
+#[tokio::test]
+async fn an_open_pr_hands_the_issue_to_the_reviewer() {
+    let dir = tempfile::tempdir().unwrap();
+    let running = llmtodo_server::start(llmtodo_server::Config {
+        data_dir: dir.path().to_path_buf(),
+        port: 0,
+        host: None,
+        github_poll: false,
+        offline_copy: false,
+        database: llmtodo_server::test_database(dir.path()).await,
+    })
+    .await
+    .unwrap();
+    let b = running.url();
+    call(
+        &b,
+        "POST",
+        "/v1/teams",
+        json!({ "key": "ALX", "name": "A" }),
+        None,
+    )
+    .await;
+    call(
+        &b,
+        "POST",
+        "/v1/teams/ALX/statuses",
+        json!({ "name": "User review", "type": "started", "review_role": "owner" }),
+        None,
+    )
+    .await;
+    let team = call(&b, "GET", "/v1/teams/ALX", Value::Null, None).await;
+    let in_review = team["statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "In Review")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &b,
+        "PATCH",
+        &format!("/v1/statuses/{in_review}"),
+        json!({ "review_role": "agent" }),
+        None,
+    )
+    .await;
+    call(&b, "POST", "/v1/projects", json!({ "name": "Quiz" }), None).await;
+    call(
+        &b,
+        "POST",
+        "/v1/projects/quiz/repos",
+        json!({ "repo": "o/r" }),
+        None,
+    )
+    .await;
+    let section =
+        "+++ Review\n### Steps to reproduce\n1. Log in.\n\n### What to check\n- It works.\n+++\n";
+    call(
+        &b,
+        "POST",
+        "/v1/issues",
+        json!({ "title": "Login", "description": section, "estimate_minutes": 30, "estimate_cost_usd": 1.5 }),
+        None,
+    )
+    .await;
+    call(&b, "POST", "/v1/issues/ALX-1/claim", json!({}), Some("s1")).await;
+
+    let api = Recorded {
+        calls: AtomicU32::new(0),
+    };
+    let r = poll(&running.state, &api).await.unwrap();
+    assert!(
+        r.moves
+            .iter()
+            .any(|m| m == "ALX-1: In Progress -> In Review"),
+        "{:?}",
+        r.moves
+    );
+    let one = call(&b, "GET", "/v1/issues/ALX-1", Value::Null, None).await;
+    assert_eq!(one["waiting_on"], "reviewer", "{one}");
+    assert_eq!(one["claim"], Value::Null, "{one}");
     running.stop().await.unwrap();
 }

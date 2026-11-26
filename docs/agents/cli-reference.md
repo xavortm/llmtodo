@@ -105,7 +105,7 @@ List issues that match filters. Sorted by priority, then last update
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
@@ -135,7 +135,7 @@ Create an issue
 - `--milestone <milestone>`
 - `--parent <parent>`
 - `--for <for_executor>`: Wanted executor, such as `kind=agent` or `model=opus-5.5,effort=high`
-- `-w, --waiting-on <waiting_on>`: `agent` when it is ready for an agent, `owner` when it needs your input
+- `-w, --waiting-on <waiting_on>`: `agent` when it is ready for an agent, `owner` when it needs your input, `reviewer` when a reviewer agent must review it
 - `--blocks <blocks>` (repeatable)
 - `--blocked-by <blocked_by>` (repeatable)
 - `--related <related>` (repeatable)
@@ -161,7 +161,7 @@ Change an issue. Only the flags you pass change
 - `--order-step <order_step>`: The step in the parent's order: an existing step, the last step plus one for a new last step, or `none` to take the task out of the order
 - `--team <team>`: Move to another team. The issue gets a new key and keeps the old one as an alias
 - `--for <for_executor>`: Wanted executor, or `none` to clear
-- `-w, --waiting-on <waiting_on>`: `agent`, `owner`, or `none` to clear
+- `-w, --waiting-on <waiting_on>`: `agent`, `owner`, `reviewer`, or `none` to clear
 - `--branch <branch>`: The git branch for the git panel, or `none` to clear
 - `--worktree <worktree>`: The worktree path for the git panel, or `none` to clear. This machine's host name is stored with it
 - `--pr <pr>`: The PR URL for the git panel, or `none` to clear. It is also attached
@@ -620,7 +620,7 @@ Save the filters of `issue query` under a name
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either
@@ -652,7 +652,7 @@ Save the filters of `issue query` under a name
 - `--milestone <milestone>`
 - `--priority <priority>`
 - `--for <for_executor>`: Wanted-executor filter, such as `kind=agent,model=opus-5.5`
-- `--waiting-on <waiting_on>`: `agent`, `owner` or `none`
+- `--waiting-on <waiting_on>`: `agent`, `owner`, `reviewer` or `none`
 - `--depends-on <depends_on>`: Open issues that wait for this issue, directly or through a chain
 - `--closed-blockers-of <closed_blockers_of>`: Closed issues that this issue waits for, directly or through other closed issues
 - `--claimed` (one of: true, false): Only issues an agent has claimed. With `--analyzing`, keeps either

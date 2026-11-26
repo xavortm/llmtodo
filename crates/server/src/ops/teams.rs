@@ -87,6 +87,7 @@ pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> Api
         None => store::teams::next_status_position(w.c(), &t.id).await?,
     };
     let id = new_id();
+    check_review_flags(req.review, req.review_role)?;
     let review = req.review.unwrap_or(false) || req.review_role.is_some();
     let review_role = review.then(|| req.review_role.unwrap_or(ReviewRole::Owner));
     store::teams::insert_status(
@@ -114,10 +115,22 @@ pub async fn create_status(w: &mut Write<'_>, r: &str, req: CreateStatus) -> Api
     Ok(id)
 }
 
+/// A role makes a status a review status, so `review: false` with a role
+/// contradicts itself.
+fn check_review_flags(review: Option<bool>, role: Option<ReviewRole>) -> ApiResult<()> {
+    if review == Some(false) && role.is_some() {
+        return Err(ApiError::validation(
+            "review_role needs a review status: drop review false or the role",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> ApiResult<()> {
     // Statuses, teams and the default team are cached per write.
     w.catalog_changed();
     let s = teams::status_by_id(w.c(), id).await?;
+    check_review_flags(req.review, req.review_role)?;
     if let Some(name) = req.name.as_deref().map(str::trim) {
         if name.is_empty() {
             return Err(ApiError::validation("status name is empty"));
@@ -140,16 +153,19 @@ pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> Ap
     if let Some(p) = req.position {
         store::teams::set_status_position(w.c(), p, id).await?;
     }
-    // Setting a role also sets the review flag.
+    // Setting a role also sets the review flag. A review status always
+    // stores its role, `owner` unless told otherwise; a status that is not
+    // a review status stores none.
     let review = if req.review_role.is_some() {
-        Some(true)
+        true
     } else {
-        req.review
+        req.review.unwrap_or(s.review)
     };
-    if let Some(role) = req.review_role
-        && Some(role) != s.role()
-    {
+    let role = review.then(|| req.review_role.or(s.role()).unwrap_or(ReviewRole::Owner));
+    if role != s.role() || (review && s.review_role.is_none()) {
         store::teams::set_status_review_role(w.c(), role, id).await?;
+    }
+    if role != s.role() {
         w.event(
             EntityType::Status,
             id,
@@ -160,9 +176,7 @@ pub async fn update_status(w: &mut Write<'_>, id: &str, req: UpdateStatus) -> Ap
         )
         .await?;
     }
-    if let Some(review) = review
-        && review != s.review
-    {
+    if review != s.review {
         store::teams::set_status_review(w.c(), review, id).await?;
         w.event(
             EntityType::Status,
