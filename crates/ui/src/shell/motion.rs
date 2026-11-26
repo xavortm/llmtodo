@@ -91,6 +91,23 @@ where
     .into_any_element()
 }
 
+/// A card opening upward from an edge, such as the day list over the
+/// strip: it fades in and slides up a few pixels into place. The slide is a
+/// relative offset, so it never changes the card's size or where an
+/// anchored card lands.
+pub fn rise<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if !on(cx) {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(ENTER).with_easing(ease_out), |el, t| {
+        el.relative().opacity(t).top(px(ENTER_TRAVEL * (1. - t)))
+    })
+    .into_any_element()
+}
+
 /// The chevron of a group header turning, from 0 for closed to 1 for open.
 /// Off, it is the end value at once.
 pub fn turn(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut App) -> f32 {

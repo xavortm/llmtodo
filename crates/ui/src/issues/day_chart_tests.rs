@@ -97,6 +97,17 @@ fn a_project_shows_the_strip_and_a_day_click_lists_its_tasks(cx: &mut TestAppCon
         window.render_frame(cx);
         let tasks = view.read(cx).day_tasks().clone();
         assert!(tasks.read(cx).is_open());
+        // It opens on the strip's top edge, not over the strip.
+        window.render_frame(cx);
+        let list = window.find("day-tasks").bounds();
+        let strip = window.find("day-chart").bounds();
+        assert_eq!(list.bottom(), strip.top(), "the list touches the strip");
+        let day = window.find("day-2026-11-10").bounds();
+        assert!(
+            (list.center().x - day.center().x).abs() < gpui_kit::px(10.)
+                || list.left() == gpui_kit::px(8.),
+            "centered on the click, or kept inside the window"
+        );
         let keys: Vec<String> = tasks
             .read(cx)
             .rows(cx)

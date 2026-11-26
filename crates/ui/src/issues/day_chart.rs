@@ -35,6 +35,9 @@ const LABEL_ROW: f32 = 14.;
 /// its outline, which holds two dots with even gaps at 1x, 1.5x and 2x.
 const SLOT: f32 = 10.;
 const BAR: f32 = 7.;
+/// Created bars are fainter than completed ones, so finished work reads
+/// first.
+const CREATED_ALPHA: f32 = 0.55;
 /// The bar's offset in its slot, in whole px so it stays sharp.
 const BAR_INSET: f32 = 1.;
 /// The strip shows at most this many days, the newest kept.
@@ -158,6 +161,9 @@ pub struct DayChart {
     drawn: Option<(SharedString, usize)>,
     /// The day under the pointer, by index. The readout shows it.
     hovered: Option<usize>,
+    /// The strip's bounds at the last paint. The day list opens on its top
+    /// edge.
+    bounds: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
 }
 
 impl EventEmitter<DayChartEvent> for DayChart {}
@@ -178,6 +184,7 @@ impl DayChart {
             scroll: ScrollHandle::new(),
             drawn: None,
             hovered: None,
+            bounds: Default::default(),
         }
     }
 
@@ -252,7 +259,7 @@ fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
             let (x_gap, rows) = dot_run(h - 2 * line, dot);
             // The bottom row keeps the same gap as the sides.
             let bottom_gap = x0.min(x_gap);
-            let dots = color.opacity(0.8);
+            let dots = color.opacity(0.75);
             for row in 0..rows {
                 let y = h - line - bottom_gap - dot - row * dot * 2;
                 if y < line + dot {
@@ -275,10 +282,22 @@ fn solid_bar(height: f32, color: Hsla) -> impl IntoElement {
     div().flex_none().w(px(BAR)).h(px(height)).bg(color)
 }
 
+/// The icon for created or completed tasks, in the readout and the day
+/// list.
+fn kind_icon(created: bool) -> gpui_kit::component::Icon {
+    use gpui_kit::component::Sizable as _;
+    gpui_kit::component::Icon::new(if created {
+        gpui_kit::assets::IconName::CirclePlus
+    } else {
+        gpui_kit::assets::IconName::CircleCheck
+    })
+    .xsmall()
+}
+
 /// The legend's sample of a bar, beside a count.
 fn swatch(dotted: bool, color: Hsla) -> gpui_kit::AnyElement {
     if dotted {
-        dotted_bar(11., color).into_any_element()
+        dotted_bar(11., color.opacity(CREATED_ALPHA)).into_any_element()
     } else {
         solid_bar(11., color).into_any_element()
     }
@@ -315,6 +334,8 @@ impl Render for DayChart {
         }
         let theme = cx.theme();
         let color = theme.primary;
+        // Created bars step back, so completed work reads first.
+        let created_color = color.opacity(CREATED_ALPHA);
         let hover_bg = theme.foreground.opacity(0.14);
         let axis = theme.foreground.opacity(0.28);
         let muted = theme.muted_foreground;
@@ -357,8 +378,12 @@ impl Render for DayChart {
                 }))
                 .when(!empty, |this| {
                     this.cursor_pointer().on_click(cx.listener(
-                        move |_, event: &gpui_kit::ClickEvent, _, cx| {
-                            cx.emit(DayChartEvent::Pick(date, event.position()));
+                        move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                            // Centered on the pointer, on the strip's top edge.
+                            // The bounds sit inside the 1 px top border.
+                            let top = this.bounds.get().top() - px(1.);
+                            let at = point(event.position().x, top);
+                            cx.emit(DayChartEvent::Pick(date, at));
                         },
                     ))
                 })
@@ -372,7 +397,7 @@ impl Render for DayChart {
                             |this| {
                                 this.child(dotted_bar(
                                     bar_height(day.created.len(), max, half),
-                                    color,
+                                    created_color,
                                 ))
                             },
                         ))
@@ -409,39 +434,50 @@ impl Render for DayChart {
                     )
                 })
         });
-        let count = |n: usize, word: &'static str, dotted: bool| {
+        let count = |n: usize, word: &'static str, created: bool| {
             h_flex()
                 .gap_1p5()
                 .items_center()
-                .child(swatch(dotted, color))
+                .child(swatch(created, color))
                 .child(
                     div()
                         .font_family(theme.mono_font_family.clone())
                         .text_color(theme.foreground)
                         .child(n.to_string()),
                 )
+                .child(kind_icon(created).text_color(muted))
                 .child(div().text_color(muted).child(word))
         };
+        let today = days.last().map(|d| d.date.strftime("%b %-d").to_string());
+        let bounds = self.bounds.clone();
         h_flex()
             .id("day-chart")
             .test_support()
+            .relative()
             .size_full()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.background)
             .child(
+                gpui_kit::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
                 v_flex()
                     .id("day-chart-readout")
                     .test_support()
                     .flex_none()
-                    // Wide enough for any day, so a hover never moves the
-                    // strip beside it.
-                    .min_w(gpui_kit::rems(13.))
+                    // A fixed width, so a hover never moves the strip
+                    // beside it.
+                    .w(gpui_kit::rems(10.5))
                     .h_full()
                     .px_4()
                     .justify_center()
                     .gap_1p5()
                     .text_xs()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
                     .border_r_1()
                     .border_color(theme.border)
                     .child(
@@ -450,12 +486,8 @@ impl Render for DayChart {
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .child(label),
                     )
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(count(made, "created", true))
-                            .child(count(done, "completed", false)),
-                    ),
+                    .child(count(made, "created", true))
+                    .child(count(done, "completed", false)),
             )
             .child(
                 h_flex()
@@ -466,7 +498,23 @@ impl Render for DayChart {
                     .px_2()
                     .overflow_x_scroll()
                     .track_scroll(&self.scroll)
-                    .children(slots),
+                    .children(slots)
+                    // Today's date caps the line on the right.
+                    .children(today.map(|today| {
+                        div()
+                            .id("day-chart-today")
+                            .test_support()
+                            .flex_none()
+                            .h_full()
+                            .pl_1p5()
+                            .pt(px(PAD_TOP + half - 5.))
+                            .text_size(px(10.))
+                            .line_height(px(10.))
+                            .whitespace_nowrap()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(theme.foreground)
+                            .child(today)
+                    })),
             )
             .into_any_element()
     }
@@ -648,7 +696,15 @@ impl Render for DayTasks {
                                 .child(row.key.clone()),
                         )
                         .child(div().flex_1().min_w_0().truncate().child(row.title))
-                        .child(div().flex_none().text_xs().text_color(muted).child(word))
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .gap_1()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(kind_icon(!row.completed))
+                                .child(word),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_row(ix, window, cx);
                         }))
@@ -694,14 +750,15 @@ impl Render for DayTasks {
                 )
                 .child(body),
         );
-        // Above the click and centered on it, kept 8 px inside the window.
-        let at = self.at - point(px(0.), px(6.));
+        // On the strip's top edge, centered on the click, and kept 8 px
+        // inside the window.
+        let at = self.at;
         gpui_kit::deferred(
             gpui_kit::anchored()
                 .position(at)
                 .anchor(gpui_kit::Anchor::BottomCenter)
                 .snap_to_window_with_margin(px(8.))
-                .child(crate::shell::motion::enter(panel, "day-tasks-enter", cx)),
+                .child(crate::shell::motion::rise(panel, "day-tasks-enter", cx)),
         )
         .with_priority(1)
         .into_any_element()
