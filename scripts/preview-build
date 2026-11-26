@@ -8,7 +8,8 @@
 # copies both into target/preview/<KEY>/. The app starts its server with the
 # `llmtodo` next to it, so the preview runs its own commit's server. The
 # folder is per ticket, so a later build of another ticket or scripts/publish
-# leaves it alone. The ticket gets the path and the commit; `issue view`
+# leaves it alone. The ticket gets the path, the commit, and this checkout's
+# branch and worktree, which tell whether the build is current; `issue view`
 # shows `preview_build.stale: true` once the branch moves past that commit.
 #
 # Launch a preview with LLMTODO_PREVIEW_TICKET=<KEY> set, so the app knows
@@ -60,7 +61,7 @@ cp target/release/llmtodo "$out/llmtodo"
 printf '%s\n' "$commit" > "$out/build-commit"
 
 "${LLMTODO_BIN:-llmtodo}" issue update "$key" \
-  --preview-build "$(pwd)/$out/llmtodo-app" --preview-commit "$commit" \
+  --preview-build "$(pwd)/$out/llmtodo-app" --preview-commit "$commit" --git-here \
   --no-input --fields key >/dev/null
 echo "PREVIEW_BUILD=$(pwd)/$out/llmtodo-app"
 echo "PREVIEW_COMMIT=$commit"
