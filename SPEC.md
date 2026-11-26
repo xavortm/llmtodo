@@ -490,6 +490,8 @@ Gap review additions:
   - Filters (LLM-572): `blur` (a radius in px), `grayscale` (true or false), `brightness` (a factor, 1 by default; below 1 darkens) and `tint` (a color such as `"#1e1e2e"`) with `tint_opacity` (0.3 by default). Blur and brightness are baked in as the image loads; the tint washes over the image only.
   - Images load on a background thread and shrink to the largest size they can show at: the largest screen times its scale factor, or the tile size for a sized image. They never grow, and an image past the GPU limit of 16384 px still shows, shrunk (LLM-573). `crates/ui/src/shell/backdrop/load.rs` is the loader.
   - When the window gets focus, the app checks each image file's modification time and loads a changed file again. A missing file draws nothing and is named once in the status bar (LLM-568).
+  - Light and dark (LLM-571): `image_dark`, `image_light`, `opacity_dark` and `opacity_light` override `image` and `opacity` in that mode. The app resolves both modes at once and draws the one the theme is in, so a macOS switch in Auto mode changes the image with the theme.
+  - Per team and project (LLM-574): `[app.background.project.<slug>.<slot>]` and `[app.background.team.<KEY>.<slot>]` take the same keys. The most specific table wins, per slot: the sidebar's project, then its team (or the project's teams), then the global table. A sidebar scope change switches the images.
 - The app never fights the person's setup for `config.toml`:
   - No file is fine. The app does not create it at start, and writes only the keys the person changes.
   - A save edits the file in place with `toml_edit`, so comments, key order, formatting and unknown keys survive.

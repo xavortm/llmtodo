@@ -1064,14 +1064,14 @@ fn a_hand_edit_applies_when_the_window_gets_focus(cx: &mut TestAppContext) {
 /// save of another key keeps the tables as they are.
 #[gpui_kit::test]
 fn background_tables_load_apply_and_are_never_written(cx: &mut TestAppContext) {
-    use crate::shell::backdrop::{Backdrops, BgSize};
+    use crate::shell::backdrop::BgSize;
     let (dir, store) = saved_store();
     let config = dir.path().join("config.toml");
     let text = "[app.background.window]\nimage = \"wall.png\"\nopacity = 0.3\n";
     std::fs::write(&config, text).unwrap();
     let (handle, view) = open_with(store.load(), store.clone(), cx);
-    let shown = |cx: &TestAppContext| cx.read(|cx| cx.try_global::<Backdrops>().cloned());
-    let window = shown(cx).and_then(|b| b.window).expect("window image");
+    let shown = |cx: &TestAppContext| cx.read(crate::shell::backdrop::shown);
+    let window = shown(cx).window.expect("window image");
     assert_eq!(window.image, dir.path().join("wall.png"));
     assert_eq!(window.opacity, 0.3);
 
@@ -1087,7 +1087,7 @@ fn background_tables_load_apply_and_are_never_written(cx: &mut TestAppContext) {
     )
     .unwrap();
     refocus(handle, &view, cx);
-    let b = shown(cx).unwrap();
+    let b = shown(cx);
     assert!(b.window.is_none());
     assert_eq!(b.task.unwrap().layout.size, BgSize::Scale(1.));
     let message = cx.read(|cx| view.read(cx).message().to_string());
@@ -1101,7 +1101,6 @@ fn background_tables_load_apply_and_are_never_written(cx: &mut TestAppContext) {
 /// and a missing one is named once in the status bar.
 #[gpui_kit::test]
 fn a_changed_background_file_reloads_and_a_missing_one_is_named_once(cx: &mut TestAppContext) {
-    use crate::shell::backdrop::Backdrops;
     let (dir, store) = saved_store();
     let wall = dir.path().join("wall.png");
     std::fs::write(&wall, b"one").unwrap();
@@ -1111,7 +1110,7 @@ fn a_changed_background_file_reloads_and_a_missing_one_is_named_once(cx: &mut Te
     )
     .unwrap();
     let (handle, view) = open_with(store.load(), store.clone(), cx);
-    let shown = |cx: &TestAppContext| cx.read(|cx| cx.try_global::<Backdrops>().cloned().unwrap());
+    let shown = |cx: &TestAppContext| cx.read(crate::shell::backdrop::shown);
     let message = |cx: &TestAppContext| cx.read(|cx| view.read(cx).message().to_string());
     let before = shown(cx).window.unwrap().stamp;
     assert!(before.is_some());
@@ -1135,4 +1134,33 @@ fn a_changed_background_file_reloads_and_a_missing_one_is_named_once(cx: &mut Te
         "{}",
         message(cx)
     );
+}
+
+/// LLM-571 and LLM-574: the image follows the mode, and the sidebar's
+/// project picks its own table.
+#[gpui_kit::test]
+fn the_background_follows_the_mode_and_the_project(cx: &mut TestAppContext) {
+    let (dir, store) = saved_store();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[app.background.window]\nimage = \"day.png\"\nimage_dark = \"night.png\"\n\
+         [app.background.project.server.window]\nimage = \"server.png\"\n",
+    )
+    .unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let image = |cx: &TestAppContext| {
+        cx.read(crate::shell::backdrop::shown)
+            .window
+            .map(|b| b.image.file_name().unwrap().to_string_lossy().into_owned())
+    };
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-appearance-light", cx);
+    assert_eq!(image(cx).as_deref(), Some("day.png"));
+    click(handle, "settings-appearance-dark", cx);
+    assert_eq!(image(cx).as_deref(), Some("night.png"));
+
+    view.update(cx, |w, cx| w.set_scope(Scope::Project("server".into()), cx));
+    assert_eq!(image(cx).as_deref(), Some("server.png"));
+    view.update(cx, |w, cx| w.set_scope(Scope::All, cx));
+    assert_eq!(image(cx).as_deref(), Some("night.png"));
 }

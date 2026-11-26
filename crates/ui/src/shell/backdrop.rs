@@ -29,7 +29,7 @@
 //! image. Each image draws over the panel's own color and under its
 //! content. The app reads these keys and never writes them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -69,7 +69,8 @@ impl Slot {
 
 // Config, as written in `config.toml`.
 
-/// `[app.background]`: one optional table per slot.
+/// `[app.background]`: one optional table per slot, and the same tables
+/// per project and per team (LLM-574).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BackgroundsConfig {
@@ -77,6 +78,10 @@ pub struct BackgroundsConfig {
     pub sidebar: Option<BackgroundConfig>,
     pub list: Option<BackgroundConfig>,
     pub task: Option<BackgroundConfig>,
+    /// `[app.background.project.<slug>.<slot>]`.
+    pub project: BTreeMap<String, SlotTables>,
+    /// `[app.background.team.<KEY>.<slot>]`.
+    pub team: BTreeMap<String, SlotTables>,
 }
 
 impl BackgroundsConfig {
@@ -88,6 +93,56 @@ impl BackgroundsConfig {
             Slot::Task => self.task.as_ref(),
         }
     }
+
+    /// The table that applies to `slot` for `pick`: the project's, then
+    /// the first of its teams', then the global one. The choice is per
+    /// slot, so a project can set only its list.
+    pub fn pick(&self, slot: Slot, pick: &Pick) -> Option<&BackgroundConfig> {
+        fn find<'a>(
+            map: &'a BTreeMap<String, SlotTables>,
+            name: &str,
+            slot: Slot,
+        ) -> Option<&'a BackgroundConfig> {
+            map.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .and_then(|(_, t)| t.get(slot))
+        }
+        pick.project
+            .as_deref()
+            .and_then(|p| find(&self.project, p, slot))
+            .or_else(|| pick.teams.iter().find_map(|t| find(&self.team, t, slot)))
+            .or_else(|| self.get(slot))
+    }
+}
+
+/// The four slot tables of one project or team.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlotTables {
+    pub window: Option<BackgroundConfig>,
+    pub sidebar: Option<BackgroundConfig>,
+    pub list: Option<BackgroundConfig>,
+    pub task: Option<BackgroundConfig>,
+}
+
+impl SlotTables {
+    pub fn get(&self, slot: Slot) -> Option<&BackgroundConfig> {
+        match slot {
+            Slot::Window => self.window.as_ref(),
+            Slot::Sidebar => self.sidebar.as_ref(),
+            Slot::List => self.list.as_ref(),
+            Slot::Task => self.task.as_ref(),
+        }
+    }
+}
+
+/// What decides which table and image apply.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Pick {
+    /// The sidebar's project, by slug.
+    pub project: Option<String>,
+    /// The sidebar's team, or the project's teams, by key.
+    pub teams: Vec<String>,
 }
 
 /// One slot's table. Every key but `image` is optional.
@@ -95,7 +150,13 @@ impl BackgroundsConfig {
 #[serde(default)]
 pub struct BackgroundConfig {
     pub image: String,
+    /// LLM-571: the image and opacity in dark and in light mode. Each
+    /// falls back to `image` or `opacity`.
+    pub image_dark: Option<String>,
+    pub image_light: Option<String>,
     pub opacity: Option<f32>,
+    pub opacity_dark: Option<f32>,
+    pub opacity_light: Option<f32>,
     pub size: Option<SizeValue>,
     pub position: Option<String>,
     pub repeat: Option<String>,
@@ -194,7 +255,7 @@ pub fn stamp_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// The images in use, as a global. Empty slots are `None`.
+/// The images of one mode. Empty slots are `None`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Backdrops {
     pub window: Option<Backdrop>,
@@ -202,8 +263,6 @@ pub struct Backdrops {
     pub list: Option<Backdrop>,
     pub task: Option<Backdrop>,
 }
-
-impl gpui_kit::Global for Backdrops {}
 
 impl Backdrops {
     pub fn get(&self, slot: Slot) -> Option<&Backdrop> {
@@ -224,15 +283,23 @@ impl Backdrops {
         }
     }
 
-    /// Resolves the config. A relative `image` is read from `base`, the
-    /// folder of `config.toml`. Each value the app does not understand
-    /// falls back to its default and adds a line to the returned problems.
-    pub fn resolve(config: &BackgroundsConfig, base: Option<&Path>) -> (Self, Vec<String>) {
+    /// Resolves the config for one mode. A relative `image` is read
+    /// from `base`, the folder of `config.toml`. Each value the app does
+    /// not understand falls back to its default and adds a line to the
+    /// returned problems.
+    pub fn resolve(
+        config: &BackgroundsConfig,
+        base: Option<&Path>,
+        pick: &Pick,
+        dark: bool,
+    ) -> (Self, Vec<String>) {
         let mut out = Self::default();
         let mut problems = Vec::new();
         for slot in Slot::ALL {
-            let Some(c) = config.get(slot) else { continue };
-            *out.get_mut(slot) = resolve_slot(slot.key(), c, base, &mut problems);
+            let Some(c) = config.pick(slot, pick) else {
+                continue;
+            };
+            *out.get_mut(slot) = resolve_slot(slot.key(), c, base, dark, &mut problems);
         }
         (out, problems)
     }
@@ -249,6 +316,57 @@ impl Backdrops {
     }
 }
 
+/// The images in use, as a global: one set per mode, so a switch
+/// between light and dark needs no new resolve (LLM-571).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Shown {
+    pub light: Backdrops,
+    pub dark: Backdrops,
+}
+
+impl gpui_kit::Global for Shown {}
+
+impl Shown {
+    /// Both modes. Problems are named once, though both modes read them.
+    pub fn resolve(
+        config: &BackgroundsConfig,
+        base: Option<&Path>,
+        pick: &Pick,
+    ) -> (Self, Vec<String>) {
+        let (light, mut problems) = Backdrops::resolve(config, base, pick, false);
+        let (dark, more) = Backdrops::resolve(config, base, pick, true);
+        for p in more {
+            if !problems.contains(&p) {
+                problems.push(p);
+            }
+        }
+        (Self { light, dark }, problems)
+    }
+
+    pub fn mode(&self, dark: bool) -> &Backdrops {
+        if dark { &self.dark } else { &self.light }
+    }
+
+    fn each_mut(&mut self) -> [&mut Backdrops; 2] {
+        [&mut self.light, &mut self.dark]
+    }
+
+    fn each(&self) -> [&Backdrops; 2] {
+        [&self.light, &self.dark]
+    }
+
+    /// The missing files of both modes, each once.
+    pub fn missing(&self) -> Vec<(Slot, PathBuf)> {
+        let mut out = self.light.missing();
+        for m in self.dark.missing() {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+        }
+        out
+    }
+}
+
 /// The default `tint_opacity`.
 pub const DEFAULT_TINT_OPACITY: f32 = 0.3;
 
@@ -257,9 +375,15 @@ fn resolve_slot(
     name: &str,
     c: &BackgroundConfig,
     base: Option<&Path>,
+    dark: bool,
     problems: &mut Vec<String>,
 ) -> Option<Backdrop> {
-    let image = c.image.trim();
+    let (image, opacity) = if dark {
+        (&c.image_dark, c.opacity_dark)
+    } else {
+        (&c.image_light, c.opacity_light)
+    };
+    let image = image.as_deref().unwrap_or(&c.image).trim();
     if image.is_empty() {
         return None;
     }
@@ -274,7 +398,7 @@ fn resolve_slot(
         }
         None => default,
     };
-    let opacity = share("opacity", c.opacity, DEFAULT_OPACITY);
+    let opacity = share("opacity", opacity.or(c.opacity), DEFAULT_OPACITY);
     let tint_opacity = share("tint_opacity", c.tint_opacity, DEFAULT_TINT_OPACITY);
     let mut problem = |what: &str, value: &str| {
         problems.push(format!("background.{name}: unknown {what} \"{value}\""));
@@ -548,8 +672,8 @@ impl gpui_kit::Global for Loads {}
 
 /// Sets the images in use and redraws every window, since the bars and
 /// panels are cached views.
-pub fn set(backdrops: Backdrops, cx: &mut App) {
-    let before = cx.try_global::<Backdrops>().cloned().unwrap_or_default();
+pub fn set(backdrops: Shown, cx: &mut App) {
+    let before = cx.try_global::<Shown>().cloned().unwrap_or_default();
     if before == backdrops {
         return;
     }
@@ -558,9 +682,11 @@ pub fn set(backdrops: Backdrops, cx: &mut App) {
         .keys
         .keys()
         .filter(|key| {
-            !Slot::ALL
-                .iter()
-                .any(|s| backdrops.get(*s).is_some_and(|b| b.loads(key)))
+            !backdrops.each().iter().any(|mode| {
+                Slot::ALL
+                    .iter()
+                    .any(|s| mode.get(*s).is_some_and(|b| b.loads(key)))
+            })
         })
         .cloned()
         .collect();
@@ -579,12 +705,14 @@ pub fn set(backdrops: Backdrops, cx: &mut App) {
 /// Looks at each image file again, and loads the ones that changed on
 /// disk (LLM-568). Returns the files that are missing now.
 pub fn check_files(cx: &mut App) -> Vec<(Slot, PathBuf)> {
-    let Some(mut all) = cx.try_global::<Backdrops>().cloned() else {
+    let Some(mut all) = cx.try_global::<Shown>().cloned() else {
         return Vec::new();
     };
-    for slot in Slot::ALL {
-        if let Some(b) = all.get_mut(slot) {
-            b.stamp = stamp_of(&b.image);
+    for mode in all.each_mut() {
+        for slot in Slot::ALL {
+            if let Some(b) = mode.get_mut(slot) {
+                b.stamp = stamp_of(&b.image);
+            }
         }
     }
     let missing = all.missing();
@@ -592,15 +720,23 @@ pub fn check_files(cx: &mut App) -> Vec<(Slot, PathBuf)> {
     missing
 }
 
+/// The images of the mode the theme is in now.
+pub fn shown(cx: &App) -> Backdrops {
+    use gpui_kit::component::ActiveTheme as _;
+    cx.try_global::<Shown>()
+        .map(|s| s.mode(cx.theme().is_dark()).clone())
+        .unwrap_or_default()
+}
+
 fn current(slot: Slot, cx: &App) -> Option<Backdrop> {
-    cx.try_global::<Backdrops>()
-        .and_then(|b| b.get(slot).cloned())
+    use gpui_kit::component::ActiveTheme as _;
+    cx.try_global::<Shown>()
+        .and_then(|s| s.mode(cx.theme().is_dark()).get(slot).cloned())
 }
 
 /// Whether any of `slots` shows an image.
 pub fn any(slots: &[Slot], cx: &App) -> bool {
-    cx.try_global::<Backdrops>()
-        .is_some_and(|b| slots.iter().any(|s| b.get(*s).is_some()))
+    slots.iter().any(|s| current(*s, cx).is_some())
 }
 
 /// The fill for a surface in the page color that sits over the images of

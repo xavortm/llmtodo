@@ -173,7 +173,8 @@ fn the_config_reads_from_toml() {
         repeat = "sideways"
     "#;
     let config: BackgroundsConfig = toml::from_str(text).unwrap();
-    let (b, problems) = Backdrops::resolve(&config, Some(Path::new("/cfg")));
+    let (b, problems) =
+        Backdrops::resolve(&config, Some(Path::new("/cfg")), &Pick::default(), false);
     let window = b.window.unwrap();
     assert_eq!(window.image, Path::new("/cfg/wall.jpg"));
     assert_eq!(window.opacity, 0.4);
@@ -194,14 +195,21 @@ fn the_config_reads_from_toml() {
 #[test]
 fn an_empty_image_turns_the_slot_off() {
     let config: BackgroundsConfig = toml::from_str("[list]\nimage = \"\"\nopacity = 1").unwrap();
-    assert_eq!(Backdrops::resolve(&config, None).0, Backdrops::default());
+    assert_eq!(
+        Backdrops::resolve(&config, None, &Pick::default(), false).0,
+        Backdrops::default()
+    );
 }
 
 #[test]
 fn opacity_is_clamped() {
     let config: BackgroundsConfig = toml::from_str("[list]\nimage = \"a\"\nopacity = 3").unwrap();
     assert_eq!(
-        Backdrops::resolve(&config, None).0.list.unwrap().opacity,
+        Backdrops::resolve(&config, None, &Pick::default(), false)
+            .0
+            .list
+            .unwrap()
+            .opacity,
         1.
     );
 }
@@ -298,7 +306,7 @@ fn filters_read_from_toml() {
         blur = -3
     "##;
     let config: BackgroundsConfig = toml::from_str(text).unwrap();
-    let (b, problems) = Backdrops::resolve(&config, None);
+    let (b, problems) = Backdrops::resolve(&config, None, &Pick::default(), false);
     let list = b.list.unwrap();
     assert_eq!(list.effects.blur, 12.);
     assert_eq!(list.effects.brightness, 0.6);
@@ -354,7 +362,7 @@ fn a_missing_file_is_named_and_a_changed_one_gets_a_new_stamp() {
     std::fs::write(dir.path().join("a.png"), png(4, 4)).unwrap();
     let config: BackgroundsConfig =
         toml::from_str("[window]\nimage = \"a.png\"\n[list]\nimage = \"gone.png\"").unwrap();
-    let (b, _) = Backdrops::resolve(&config, Some(dir.path()));
+    let (b, _) = Backdrops::resolve(&config, Some(dir.path()), &Pick::default(), false);
     let first = b.window.clone().unwrap().stamp;
     assert!(first.is_some());
     assert_eq!(b.missing(), vec![(Slot::List, dir.path().join("gone.png"))]);
@@ -366,4 +374,73 @@ fn a_missing_file_is_named_and_a_changed_one_gets_a_new_stamp() {
     file.set_modified(first.unwrap() + std::time::Duration::from_secs(5))
         .unwrap();
     assert_ne!(stamp_of(&dir.path().join("a.png")), first);
+}
+
+// LLM-571: an image per mode.
+
+#[test]
+fn each_mode_takes_its_own_image_and_opacity() {
+    let text = r#"
+        [window]
+        image = "both.png"
+        image_dark = "night.png"
+        opacity = 0.2
+        opacity_light = 0.5
+    "#;
+    let config: BackgroundsConfig = toml::from_str(text).unwrap();
+    let (shown, _) = Shown::resolve(&config, Some(Path::new("/c")), &Pick::default());
+    let dark = shown.dark.window.unwrap();
+    assert_eq!(dark.image, Path::new("/c/night.png"));
+    assert_eq!(dark.opacity, 0.2);
+    let light = shown.light.window.unwrap();
+    assert_eq!(light.image, Path::new("/c/both.png"));
+    assert_eq!(light.opacity, 0.5);
+}
+
+#[test]
+fn a_mode_image_alone_shows_only_in_that_mode() {
+    let config: BackgroundsConfig = toml::from_str("[list]\nimage_dark = \"n.png\"").unwrap();
+    let (shown, problems) = Shown::resolve(&config, None, &Pick::default());
+    assert!(shown.dark.list.is_some());
+    assert!(shown.light.list.is_none());
+    assert!(problems.is_empty());
+}
+
+// LLM-574: per project and team.
+
+#[test]
+fn the_most_specific_table_wins_per_slot() {
+    let text = r#"
+        [window]
+        image = "global.png"
+        [list]
+        image = "global-list.png"
+
+        [team.WORK.window]
+        image = "work.png"
+
+        [project.site.list]
+        image = "site-list.png"
+    "#;
+    let config: BackgroundsConfig = toml::from_str(text).unwrap();
+    let get = |pick: Pick| Backdrops::resolve(&config, None, &pick, false).0;
+    let name = |b: Option<Backdrop>| b.unwrap().image.to_string_lossy().into_owned();
+
+    let all = get(Pick::default());
+    assert_eq!(name(all.window), "global.png");
+
+    let team = get(Pick {
+        project: None,
+        teams: vec!["work".into()],
+    });
+    assert_eq!(name(team.window), "work.png");
+    assert_eq!(name(team.list), "global-list.png");
+
+    // The project sets its list; its team still sets the window.
+    let project = get(Pick {
+        project: Some("site".into()),
+        teams: vec!["WORK".into()],
+    });
+    assert_eq!(name(project.list), "site-list.png");
+    assert_eq!(name(project.window), "work.png");
 }

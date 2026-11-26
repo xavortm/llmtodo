@@ -1292,6 +1292,8 @@ impl Workspace {
             self.announce_claim(open.id, open.claim.as_ref(), kept, cx);
         }
         self.text_asked = None;
+        // A project's teams come with the catalog (LLM-574).
+        self.refresh_background_scope(cx);
         self.after_load(selected, detail, cx);
     }
 
@@ -1761,7 +1763,8 @@ impl Workspace {
         use crate::shell::backdrop;
         self.background = config.clone();
         let base = self.settings.config_path().and_then(|p| p.parent());
-        let (backdrops, problems) = backdrop::Backdrops::resolve(config, base);
+        let pick = self.background_pick(cx);
+        let (backdrops, problems) = backdrop::Shown::resolve(config, base, &pick);
         let missing = backdrops.missing();
         backdrop::set(backdrops, cx);
         let mut lines = Vec::new();
@@ -1772,6 +1775,39 @@ impl Workspace {
         if !lines.is_empty() {
             self.message = lines.join("; ").into();
         }
+    }
+
+    /// LLM-574: the project and teams whose background tables apply, from
+    /// the list's scope.
+    fn background_pick(&self, cx: &App) -> crate::shell::backdrop::Pick {
+        use crate::shell::backdrop::Pick;
+        match &self.list.read(cx).scope {
+            Scope::Team(key) => Pick {
+                project: None,
+                teams: vec![key.to_string()],
+            },
+            Scope::Project(slug) => Pick {
+                project: Some(slug.to_string()),
+                teams: self
+                    .store
+                    .read(cx)
+                    .catalog
+                    .project_teams
+                    .get(slug)
+                    .map(|t| t.iter().map(|k| k.to_string()).collect())
+                    .unwrap_or_default(),
+            },
+            _ => Pick::default(),
+        }
+    }
+
+    /// LLM-574: shows the backgrounds of the current scope, quietly.
+    fn refresh_background_scope(&mut self, cx: &mut Context<Self>) {
+        use crate::shell::backdrop;
+        let base = self.settings.config_path().and_then(|p| p.parent());
+        let pick = self.background_pick(cx);
+        let (backdrops, _) = backdrop::Shown::resolve(&self.background, base, &pick);
+        backdrop::set(backdrops, cx);
     }
 
     /// LLM-568: loads each background image whose file changed on disk.
@@ -2494,6 +2530,7 @@ impl Workspace {
             list.scope = scope;
             list.reload(selected, cx);
         });
+        self.refresh_background_scope(cx);
         self.message = format!("Showing {name}").into();
         self.persist(cx);
     }
