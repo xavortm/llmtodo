@@ -25,21 +25,58 @@ actions!(day_tasks, [DayDown, DayUp, DayOpen, DayClose]);
 
 pub const CONTEXT: &str = "DayTasks";
 
-/// The strip's height, bars, week labels and padding together.
-pub const HEIGHT: f32 = 88.;
-const PAD_TOP: f32 = 8.;
-const PAD_BOTTOM: f32 = 5.;
-/// The row under the bars that holds each week's date.
-const LABEL_ROW: f32 = 14.;
-/// One day's slot, and the bar inside it. A 7 px bar leaves 5 px inside
-/// its outline, which holds two dots with even gaps at 1x, 1.5x and 2x.
-const SLOT: f32 = 10.;
-const BAR: f32 = 7.;
 /// Created bars are fainter than completed ones, so finished work reads
 /// first.
 const CREATED_ALPHA: f32 = 0.55;
-/// The bar's offset in its slot, in whole px so it stays sharp.
-const BAR_INSET: f32 = 1.;
+
+/// The strip's sizes at one zoom level. They grow with the app's zoom, as
+/// rems do, but each one rounds to whole px, so bars stay sharp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metrics {
+    pub zoom: f32,
+    /// One day's slot: 10 px at 100%.
+    pub slot: f32,
+    /// The bar inside it: 7 px at 100%, which leaves 5 px inside the
+    /// outline for two dots with even gaps at 1x, 1.5x and 2x.
+    pub bar: f32,
+    /// The bar's offset in its slot.
+    pub inset: f32,
+    pub pad_top: f32,
+    pub pad_bottom: f32,
+    /// The row under the bars that holds each week's date.
+    pub label_row: f32,
+    pub label_font: f32,
+    /// The room above the line, and the same below it.
+    pub half: f32,
+    /// The whole strip.
+    pub height: f32,
+}
+
+impl Metrics {
+    pub fn at(zoom: f32) -> Self {
+        let r = |v: f32| (v * zoom).round();
+        let slot = r(10.);
+        let bar = r(7.).min(slot - 2.);
+        let (pad_top, pad_bottom, label_row, half) = (r(8.), r(5.), r(14.), r(30.));
+        Self {
+            zoom,
+            slot,
+            bar,
+            inset: ((slot - bar) / 2.).floor(),
+            pad_top,
+            pad_bottom,
+            label_row,
+            label_font: 10. * zoom,
+            half,
+            height: pad_top + half * 2. + 1. + label_row + pad_bottom,
+        }
+    }
+
+    /// The sizes at the app's zoom now.
+    pub fn now(cx: &App) -> Self {
+        Self::at(crate::shell::theme::zoom(cx))
+    }
+}
 /// The strip shows at most this many days, the newest kept.
 const MAX_DAYS: usize = 730;
 
@@ -203,11 +240,13 @@ impl DayChart {
 
 /// How tall a bar of `n` tasks is against `max`, in `half` px of room,
 /// in whole px so its ends sit on the pixel grid.
-fn bar_height(n: usize, max: usize, half: f32) -> f32 {
+fn bar_height(n: usize, max: usize, m: Metrics) -> f32 {
     if n == 0 {
         0.
     } else {
-        (n as f32 / max.max(1) as f32 * half).round().max(3.)
+        (n as f32 / max.max(1) as f32 * m.half)
+            .round()
+            .max((3. * m.zoom).round())
     }
 }
 
@@ -230,7 +269,8 @@ pub fn dot_run(room: i32, dot: i32) -> (i32, i32) {
 /// device pixels, so the outline and every dot land on whole pixels at any
 /// scale. The rows count up from the bottom, so the dots of bars side by
 /// side line up.
-fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
+fn dotted_bar(height: f32, color: Hsla, m: Metrics) -> impl IntoElement {
+    let zoom = m.zoom;
     gpui_kit::canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
@@ -239,7 +279,8 @@ fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
             let to_px = |v: i32| px(v as f32 / scale);
             let (left, top) = (to_dev(bounds.left()), to_dev(bounds.top()));
             let (w, h) = (to_dev(bounds.size.width), to_dev(bounds.size.height));
-            let line = scale.round().max(1.) as i32;
+            // 1 px at 100%, thicker as the app zooms in.
+            let line = (scale * zoom).round().max(1.) as i32;
             let rect = |x: i32, y: i32, w: i32, h: i32| {
                 gpui_kit::Bounds::new(
                     point(to_px(left + x), to_px(top + y)),
@@ -273,13 +314,13 @@ fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
         },
     )
     .flex_none()
-    .w(px(BAR))
+    .w(px(m.bar))
     .h(px(height))
 }
 
 /// Completed tasks: a solid bar.
-fn solid_bar(height: f32, color: Hsla) -> impl IntoElement {
-    div().flex_none().w(px(BAR)).h(px(height)).bg(color)
+fn solid_bar(height: f32, color: Hsla, m: Metrics) -> impl IntoElement {
+    div().flex_none().w(px(m.bar)).h(px(height)).bg(color)
 }
 
 /// The icon for created or completed tasks, in the readout and the day
@@ -295,11 +336,12 @@ fn kind_icon(created: bool) -> gpui_kit::component::Icon {
 }
 
 /// The legend's sample of a bar, beside a count.
-fn swatch(dotted: bool, color: Hsla) -> gpui_kit::AnyElement {
+fn swatch(dotted: bool, color: Hsla, m: Metrics) -> gpui_kit::AnyElement {
+    let h = (11. * m.zoom).round();
     if dotted {
-        dotted_bar(11., color.opacity(CREATED_ALPHA)).into_any_element()
+        dotted_bar(h, color.opacity(CREATED_ALPHA), m).into_any_element()
     } else {
-        solid_bar(11., color).into_any_element()
+        solid_bar(h, color, m).into_any_element()
     }
 }
 
@@ -345,7 +387,8 @@ impl Render for DayChart {
             .map(|d| d.created.len().max(d.completed.len()))
             .max()
             .unwrap_or(0);
-        let half = (HEIGHT - PAD_TOP - PAD_BOTTOM - LABEL_ROW - 1.) / 2.;
+        let m = Metrics::now(cx);
+        let half = m.half;
         let (label, made, done) = readout(&days, hovered);
         let slots = days.iter().enumerate().map(|(ix, day)| {
             let date = day.date;
@@ -360,7 +403,7 @@ impl Render for DayChart {
                 .test_support()
                 .relative()
                 .flex_none()
-                .w(px(SLOT))
+                .w(px(m.slot))
                 .h_full()
                 .when(dim, |this| this.opacity(0.4))
                 .on_hover(cx.listener(move |this, over: &bool, _, cx| {
@@ -390,24 +433,26 @@ impl Render for DayChart {
                 .child(
                     v_flex()
                         .w_full()
-                        .pt(px(PAD_TOP))
+                        .pt(px(m.pad_top))
                         .when(is_hovered, |this| this.bg(hover_bg))
-                        .child(v_flex().h(px(half)).pl(px(BAR_INSET)).justify_end().when(
+                        .child(v_flex().h(px(half)).pl(px(m.inset)).justify_end().when(
                             !day.created.is_empty(),
                             |this| {
                                 this.child(dotted_bar(
-                                    bar_height(day.created.len(), max, half),
+                                    bar_height(day.created.len(), max, m),
                                     created_color,
+                                    m,
                                 ))
                             },
                         ))
                         .child(div().w_full().h(px(1.)).bg(axis))
-                        .child(v_flex().h(px(half)).pl(px(BAR_INSET)).when(
+                        .child(v_flex().h(px(half)).pl(px(m.inset)).when(
                             !day.completed.is_empty(),
                             |this| {
                                 this.child(solid_bar(
-                                    bar_height(day.completed.len(), max, half),
+                                    bar_height(day.completed.len(), max, m),
                                     color,
+                                    m,
                                 ))
                             },
                         )),
@@ -417,16 +462,16 @@ impl Render for DayChart {
                         div()
                             .absolute()
                             .left_0()
-                            .bottom(px(PAD_BOTTOM))
-                            .h(px(LABEL_ROW))
+                            .bottom(px(m.pad_bottom))
+                            .h(px(m.label_row))
                             .flex()
                             .items_end()
                             .gap_1()
                             .child(div().w(px(1.)).h_full().bg(axis))
                             .child(
                                 div()
-                                    .text_size(px(10.))
-                                    .line_height(px(10.))
+                                    .text_size(px(m.label_font))
+                                    .line_height(px(m.label_font))
                                     .whitespace_nowrap()
                                     .text_color(muted)
                                     .child(date.strftime("%b %-d").to_string()),
@@ -436,9 +481,11 @@ impl Render for DayChart {
         });
         let count = |n: usize, word: &'static str, created: bool| {
             h_flex()
+                .id(word)
+                .test_support()
                 .gap_1p5()
                 .items_center()
-                .child(swatch(created, color))
+                .child(swatch(created, color, m))
                 .child(
                     div()
                         .font_family(theme.mono_font_family.clone())
@@ -507,9 +554,9 @@ impl Render for DayChart {
                             .flex_none()
                             .h_full()
                             .pl_1p5()
-                            .pt(px(PAD_TOP + half - 5.))
-                            .text_size(px(10.))
-                            .line_height(px(10.))
+                            .pt(px(m.pad_top + half - m.label_font / 2.))
+                            .text_size(px(m.label_font))
+                            .line_height(px(m.label_font))
                             .whitespace_nowrap()
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .text_color(theme.foreground)
@@ -645,6 +692,7 @@ impl Render for DayTasks {
         };
         let rows = self.rows(cx);
         self.selected = self.selected.min(rows.len().saturating_sub(1));
+        let m = Metrics::now(cx);
         let theme = cx.theme();
         let hover = theme.list_hover;
         let pressed = theme.foreground.opacity(0.12);
@@ -702,7 +750,7 @@ impl Render for DayTasks {
                         .when(selected, |this| this.bg(active_bg))
                         .when(!selected, |this| this.hover(move |s| s.bg(hover)))
                         .active(move |s| s.bg(pressed))
-                        .child(swatch(!row.completed, color))
+                        .child(swatch(!row.completed, color, m))
                         .child(
                             div()
                                 .flex_none()
@@ -744,8 +792,9 @@ impl Render for DayTasks {
                 // The list under it takes no hover or click.
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
-                .w(px(480.))
-                .max_h(px(420.))
+                // In rems, so it grows with zoom.
+                .w(gpui_kit::rems(30.))
+                .max_h(gpui_kit::rems(26.))
                 .overflow_y_scroll()
                 .p_1()
                 .gap_1()

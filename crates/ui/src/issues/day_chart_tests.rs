@@ -196,12 +196,74 @@ fn a_line_splits_created_from_completed(cx: &mut TestAppContext) {
             .collect();
         assert_eq!(
             rows,
-            [("LLM-101".to_string(), false), ("LLM-103".to_string(), true)]
+            [
+                ("LLM-101".to_string(), false),
+                ("LLM-103".to_string(), true)
+            ]
         );
         let line = window.find("day-tasks-divider").bounds();
         let created = window.find("day-task-LLM-101-0").bounds();
         let completed = window.find("day-task-LLM-103-1").bounds();
         assert!(created.bottom() <= line.top() && line.bottom() <= completed.top());
+    })
+    .unwrap();
+}
+
+/// At 100% the strip keeps its designed sizes: a 10 px slot and 88 px in
+/// all. Every zoom step rounds each size to whole px.
+#[test]
+fn the_strip_sizes_follow_the_zoom_in_whole_px() {
+    use crate::issues::day_chart::Metrics;
+    let m = Metrics::at(1.);
+    assert_eq!((m.slot, m.bar, m.inset, m.height), (10., 7., 1., 88.));
+    for &zoom in crate::shell::theme::ZOOM_STEPS {
+        let m = Metrics::at(zoom);
+        for v in [m.slot, m.bar, m.inset, m.half, m.height] {
+            assert_eq!(v, v.round(), "{v} at {zoom}");
+        }
+        assert!(m.bar < m.slot, "a gap between bars at {zoom}");
+    }
+    assert_eq!(Metrics::at(2.).height, 175.);
+}
+
+/// Zoomed in, the strip grows with its text, so the readout keeps all
+/// three lines inside it, and the day list grows too.
+#[gpui_kit::test]
+fn zoom_grows_the_strip_and_the_day_list(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let measure = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let strip = window.find("day-chart").bounds();
+            let last = window.find("completed").bounds();
+            assert!(
+                last.bottom() <= strip.bottom(),
+                "the readout's last line fits: {last:?} in {strip:?}"
+            );
+            strip.size.height
+        })
+        .unwrap()
+    };
+    cx.update_window(handle, |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.set_scope(Scope::Project("app".into()), cx)
+        });
+    })
+    .unwrap();
+    let small = measure(cx);
+    cx.update(|cx| crate::shell::theme::set_zoom(2., cx));
+    let big = measure(cx);
+    assert!(big > small * 1.9, "{small:?} grows to {big:?}");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.click("day-2026-11-10", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let list = window.find("day-tasks").bounds();
+        assert_eq!(list.size.width, window.rem_size() * 30.);
     })
     .unwrap();
 }
