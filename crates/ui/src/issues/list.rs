@@ -1489,7 +1489,9 @@ impl IssueList {
 
     /// Hides `column`, or shows it again. The title always shows.
     pub fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
-        if column == Column::Title {
+        // Simplify UI hides it anyway: a toggle would change the saved
+        // choice with nothing to see (LLM-586).
+        if column == Column::Title || crate::shell::simplify::hides_column(column, cx) {
             return;
         }
         match self.hidden_columns.iter().position(|c| *c == column) {
@@ -2532,13 +2534,17 @@ impl IssueList {
                     })
                     .unwrap_or((Vec::new(), GroupBy::None, false));
                 Column::ALL.into_iter().fold(menu, |menu, column| {
+                    // Simplify UI decides these columns (LLM-586), so the
+                    // owner's own choice waits until it is off.
+                    let simplified = crate::shell::simplify::hides_column(column, cx);
                     menu.menu_with_check_and_disabled(
                         column.label(),
-                        !hidden.contains(&column),
+                        !hidden.contains(&column) && !simplified,
                         Box::new(columns::ToggleColumn(column)),
                         // The order line shows only under "group by parent".
                         // The project column shows only in All issues.
                         column == Column::Title
+                            || simplified
                             || (column == Column::Order && group != GroupBy::Parent)
                             || (column == Column::Project && !all),
                     )

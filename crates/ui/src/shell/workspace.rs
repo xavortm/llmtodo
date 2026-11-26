@@ -2188,6 +2188,7 @@ impl Workspace {
         crate::shell::theme::set_zoom(now.zoom, cx);
         crate::shell::motion::set(now.animations, cx);
         crate::shell::simplify::set(now.simplify_ui, cx);
+        self.close_day_tasks_if_simplified(window, cx);
         self.apply_backgrounds(&now.background, cx);
         self.mascot_on = now.mascot;
         self.sync_mascot(cx);
@@ -3089,10 +3090,20 @@ impl Workspace {
     /// once: every view draws again with or without the extras.
     pub fn set_simplify_ui(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         crate::shell::simplify::set(on, cx);
+        self.close_day_tasks_if_simplified(window, cx);
         self.list_do(cx, |_, cx| cx.notify());
         self.task.update(cx, |_, cx| cx.notify());
         window.refresh();
         self.persist(cx);
+    }
+
+    /// Simplify UI hides the activity strip, so a day's task list opened
+    /// from it closes too.
+    fn close_day_tasks_if_simplified(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::shell::simplify::on(cx) {
+            self.day_tasks
+                .update(cx, |tasks, cx| tasks.close(window, cx));
+        }
     }
 
     /// The experimental Settings switch for the line through Done titles.
