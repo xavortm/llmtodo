@@ -29,13 +29,20 @@
 //! image. Each image draws over the panel's own color and under its
 //! content. The app reads these keys and never writes them.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use gpui_kit::{
-    AnyElement, App, Bounds, Hsla, ImgResourceLoader, IntoElement, ParentElement as _, Pixels,
-    Resource, Styled as _, Window, canvas, div, point, px, size,
+    AnyElement, App, Bounds, Hsla, IntoElement, ParentElement as _, Pixels, RenderImage,
+    Styled as _, Window, canvas, div, point, px, size,
 };
 use serde::{Deserialize, Serialize};
+
+pub mod load;
+
+use load::{BackdropLoader, Effects, Fit, ImageKey};
 
 /// Where an image sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +99,14 @@ pub struct BackgroundConfig {
     pub size: Option<SizeValue>,
     pub position: Option<String>,
     pub repeat: Option<String>,
+    /// LLM-572: a blur radius in px.
+    pub blur: Option<f32>,
+    pub grayscale: Option<bool>,
+    /// A factor: below 1 darkens.
+    pub brightness: Option<f32>,
+    /// A color such as `"#1e1e2e"`, washed over the image.
+    pub tint: Option<String>,
+    pub tint_opacity: Option<f32>,
 }
 
 /// `size` takes a word or a bare number.
@@ -155,8 +170,28 @@ impl Default for Layout {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Backdrop {
     pub image: PathBuf,
+    /// The file's modification time when the app last looked, `None`
+    /// for a file that is missing (LLM-568).
+    pub stamp: Option<SystemTime>,
     pub opacity: f32,
     pub layout: Layout,
+    /// Blur and brightness, baked in as the image loads (LLM-572).
+    pub effects: Effects,
+    pub grayscale: bool,
+    /// A color washed over the image, with its own opacity.
+    pub tint: Option<Hsla>,
+}
+
+impl Backdrop {
+    /// Whether `key` loads this image, at any size.
+    fn loads(&self, key: &ImageKey) -> bool {
+        key.path == self.image && key.stamp == self.stamp && key.effects == self.effects
+    }
+}
+
+/// The modification time of `path`, `None` when it is missing.
+pub fn stamp_of(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// The images in use, as a global. Empty slots are `None`.
@@ -197,52 +232,112 @@ impl Backdrops {
         let mut problems = Vec::new();
         for slot in Slot::ALL {
             let Some(c) = config.get(slot) else { continue };
-            let image = c.image.trim();
-            if image.is_empty() {
-                continue;
-            }
-            let mut problem = |what: &str, value: &str| {
-                problems.push(format!(
-                    "background.{}: unknown {what} \"{value}\"",
-                    slot.key()
-                ));
-            };
-            let opacity = match c.opacity {
-                Some(o) if o.is_finite() => o.clamp(0., 1.),
-                Some(o) => {
-                    problem("opacity", &o.to_string());
-                    DEFAULT_OPACITY
-                }
-                None => DEFAULT_OPACITY,
-            };
-            let mut layout = Layout::default();
-            if let Some(s) = &c.size {
-                match parse_size(s) {
-                    Some(s) => layout.size = s,
-                    None => problem("size", &size_text(s)),
-                }
-            }
-            if let Some(p) = &c.position {
-                match parse_position(p) {
-                    Some(p) => layout.position = p,
-                    None => problem("position", p),
-                }
-            }
-            if let Some(r) = &c.repeat {
-                match parse_repeat(r) {
-                    Some(r) => layout.repeat = r,
-                    None => problem("repeat", r),
-                }
-            }
-            *out.get_mut(slot) = Some(Backdrop {
-                image: resolve_path(image, base),
-                opacity,
-                layout,
-            });
+            *out.get_mut(slot) = resolve_slot(slot.key(), c, base, &mut problems);
         }
         (out, problems)
     }
+
+    /// The image files that are not there, by slot.
+    pub fn missing(&self) -> Vec<(Slot, PathBuf)> {
+        Slot::ALL
+            .into_iter()
+            .filter_map(|slot| {
+                let b = self.get(slot)?;
+                b.stamp.is_none().then(|| (slot, b.image.clone()))
+            })
+            .collect()
+    }
 }
+
+/// The default `tint_opacity`.
+pub const DEFAULT_TINT_OPACITY: f32 = 0.3;
+
+/// One slot's table, resolved. `name` names it in problems.
+fn resolve_slot(
+    name: &str,
+    c: &BackgroundConfig,
+    base: Option<&Path>,
+    problems: &mut Vec<String>,
+) -> Option<Backdrop> {
+    let image = c.image.trim();
+    if image.is_empty() {
+        return None;
+    }
+    let mut problem = |what: &str, value: &str| {
+        problems.push(format!("background.{name}: unknown {what} \"{value}\""));
+    };
+    let mut share = |what: &str, value: Option<f32>, default: f32| match value {
+        Some(o) if o.is_finite() => o.clamp(0., 1.),
+        Some(o) => {
+            problem(what, &o.to_string());
+            default
+        }
+        None => default,
+    };
+    let opacity = share("opacity", c.opacity, DEFAULT_OPACITY);
+    let tint_opacity = share("tint_opacity", c.tint_opacity, DEFAULT_TINT_OPACITY);
+    let mut problem = |what: &str, value: &str| {
+        problems.push(format!("background.{name}: unknown {what} \"{value}\""));
+    };
+    let mut layout = Layout::default();
+    if let Some(s) = &c.size {
+        match parse_size(s) {
+            Some(s) => layout.size = s,
+            None => problem("size", &size_text(s)),
+        }
+    }
+    if let Some(p) = &c.position {
+        match parse_position(p) {
+            Some(p) => layout.position = p,
+            None => problem("position", p),
+        }
+    }
+    if let Some(r) = &c.repeat {
+        match parse_repeat(r) {
+            Some(r) => layout.repeat = r,
+            None => problem("repeat", r),
+        }
+    }
+    let mut effects = Effects::default();
+    match c.blur {
+        Some(b) if b.is_finite() && b >= 0. => effects.blur = b.min(MAX_BLUR),
+        Some(b) => problem("blur", &b.to_string()),
+        None => {}
+    }
+    match c.brightness {
+        Some(b) if b.is_finite() && b >= 0. => effects.brightness = b.min(MAX_BRIGHTNESS),
+        Some(b) => problem("brightness", &b.to_string()),
+        None => {}
+    }
+    let tint = match c.tint.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(t) => match gpui_kit::Rgba::try_from(t) {
+            Ok(rgba) => {
+                let color: Hsla = rgba.into();
+                Some(color.opacity(tint_opacity))
+            }
+            Err(_) => {
+                problem("tint", t);
+                None
+            }
+        },
+    };
+    let image = resolve_path(image, base);
+    Some(Backdrop {
+        stamp: stamp_of(&image),
+        image,
+        opacity,
+        layout,
+        effects,
+        grayscale: c.grayscale.unwrap_or(false),
+        tint,
+    })
+}
+
+/// The largest `blur`, in px. More shows as a flat wash anyway.
+pub const MAX_BLUR: f32 = 200.;
+/// The largest `brightness`.
+pub const MAX_BRIGHTNESS: f32 = 4.;
 
 fn size_text(s: &SizeValue) -> String {
     match s {
@@ -440,6 +535,17 @@ pub fn tiles(area: Rect, natural: (f32, f32), layout: &Layout) -> Vec<Rect> {
 
 // Global and drawing.
 
+/// The images drawn so far, by what loaded them. `set` drops the ones
+/// the new images no longer use, so a replaced photo frees its memory.
+#[derive(Default)]
+struct Loads {
+    keys: HashMap<ImageKey, Option<Arc<RenderImage>>>,
+    /// Images to take out of the sprite atlas at the next paint.
+    retired: Vec<Arc<RenderImage>>,
+}
+
+impl gpui_kit::Global for Loads {}
+
 /// Sets the images in use and redraws every window, since the bars and
 /// panels are cached views.
 pub fn set(backdrops: Backdrops, cx: &mut App) {
@@ -447,20 +553,43 @@ pub fn set(backdrops: Backdrops, cx: &mut App) {
     if before == backdrops {
         return;
     }
+    let loads = cx.default_global::<Loads>();
+    let stale: Vec<ImageKey> = loads
+        .keys
+        .keys()
+        .filter(|key| {
+            !Slot::ALL
+                .iter()
+                .any(|s| backdrops.get(*s).is_some_and(|b| b.loads(key)))
+        })
+        .cloned()
+        .collect();
+    for key in &stale {
+        if let Some(Some(image)) = loads.keys.remove(key) {
+            loads.retired.push(image);
+        }
+    }
+    for key in &stale {
+        cx.remove_asset::<BackdropLoader>(key);
+    }
     cx.set_global(backdrops);
     cx.refresh_windows();
 }
 
-/// Forgets the decoded images, so a file changed on disk loads again.
-pub fn forget_images(cx: &mut App) {
-    let Some(all) = cx.try_global::<Backdrops>().cloned() else {
-        return;
+/// Looks at each image file again, and loads the ones that changed on
+/// disk (LLM-568). Returns the files that are missing now.
+pub fn check_files(cx: &mut App) -> Vec<(Slot, PathBuf)> {
+    let Some(mut all) = cx.try_global::<Backdrops>().cloned() else {
+        return Vec::new();
     };
     for slot in Slot::ALL {
-        if let Some(b) = all.get(slot) {
-            cx.remove_asset::<ImgResourceLoader>(&Resource::Path(b.image.clone().into()));
+        if let Some(b) = all.get_mut(slot) {
+            b.stamp = stamp_of(&b.image);
         }
     }
+    let missing = all.missing();
+    set(all, cx);
+    missing
 }
 
 fn current(slot: Slot, cx: &App) -> Option<Backdrop> {
@@ -491,7 +620,7 @@ pub fn layer(slots: &[Slot], cx: &App) -> Option<AnyElement> {
     let images: Vec<(Slot, Backdrop)> = slots
         .iter()
         .filter_map(|s| current(*s, cx).map(|b| (*s, b)))
-        .filter(|(_, b)| b.opacity > 0.)
+        .filter(|(_, b)| b.opacity > 0. && b.stamp.is_some())
         .collect();
     if images.is_empty() {
         return None;
@@ -521,19 +650,50 @@ pub fn layer(slots: &[Slot], cx: &App) -> Option<AnyElement> {
     )
 }
 
+/// The largest screen attached, in logical px. Images shrink to it.
+fn largest_screen(window: &Window, cx: &App) -> (f32, f32) {
+    let mut w = f32::from(window.viewport_size().width);
+    let mut h = f32::from(window.viewport_size().height);
+    for display in cx.displays() {
+        let size = display.bounds().size;
+        w = w.max(f32::from(size.width));
+        h = h.max(f32::from(size.height));
+    }
+    (w.ceil(), h.ceil())
+}
+
+/// The key that loads `b` in this window.
+fn key_for(b: &Backdrop, window: &Window, cx: &App) -> ImageKey {
+    ImageKey {
+        path: b.image.clone(),
+        stamp: b.stamp,
+        fit: Fit {
+            size: b.layout.size,
+            screen: largest_screen(window, cx),
+            scale: window.scale_factor(),
+        },
+        effects: b.effects,
+    }
+}
+
 fn paint(slot: Slot, b: &Backdrop, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-    let resource = Resource::Path(b.image.clone().into());
-    let data = match window.use_asset::<ImgResourceLoader>(&resource, cx) {
-        Some(Ok(data)) => data,
-        // Loading, or a file that is missing or not an image. The asset
-        // logger has written why to the log.
-        _ => return,
+    let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
+    for image in retired {
+        let _ = window.drop_image(image);
+    }
+    let key = key_for(b, window, cx);
+    let loaded = match window.use_asset::<BackdropLoader>(&key, cx) {
+        Some(Ok(loaded)) => loaded,
+        // Loading, or a file that is not an image. The loader has
+        // written why to the log.
+        _ => {
+            cx.default_global::<Loads>().keys.entry(key).or_insert(None);
+            return;
+        }
     };
-    let natural = data.size(0);
-    let natural = (
-        u32::from(natural.width) as f32,
-        u32::from(natural.height) as f32,
-    );
+    cx.default_global::<Loads>()
+        .keys
+        .insert(key, Some(loaded.image.clone()));
     // The window image lines up with the window, so it runs on across
     // panels. A panel image lines up with its panel.
     let area = if slot == Slot::Window {
@@ -545,20 +705,10 @@ fn paint(slot: Slot, b: &Backdrop, bounds: Bounds<Pixels>, window: &mut Window, 
             h: f32::from(view.height),
         }
     } else {
-        Rect {
-            x: f32::from(bounds.origin.x),
-            y: f32::from(bounds.origin.y),
-            w: f32::from(bounds.size.width),
-            h: f32::from(bounds.size.height),
-        }
+        rect_of(bounds)
     };
-    let clip = Rect {
-        x: f32::from(bounds.origin.x),
-        y: f32::from(bounds.origin.y),
-        w: f32::from(bounds.size.width),
-        h: f32::from(bounds.size.height),
-    };
-    for t in tiles(area, natural, &b.layout) {
+    let clip = rect_of(bounds);
+    for t in tiles(area, loaded.natural, &b.layout) {
         if t.x >= clip.x + clip.w
             || t.y >= clip.y + clip.h
             || t.x + t.w <= clip.x
@@ -571,9 +721,24 @@ fn paint(slot: Slot, b: &Backdrop, bounds: Bounds<Pixels>, window: &mut Window, 
             bounds,
             image_bounds,
             Default::default(),
-            data.clone(),
+            loaded.image.clone(),
             0,
-            false,
+            b.grayscale,
         );
+        // LLM-572: the tint washes over the image only, not the panel.
+        if let Some(tint) = b.tint {
+            window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+                window.paint_quad(gpui_kit::fill(image_bounds, tint))
+            });
+        }
+    }
+}
+
+fn rect_of(bounds: Bounds<Pixels>) -> Rect {
+    Rect {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        w: f32::from(bounds.size.width),
+        h: f32::from(bounds.size.height),
     }
 }

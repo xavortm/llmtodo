@@ -4560,6 +4560,7 @@ dependencies = [
  "gpui-kit",
  "gpui-pre-reqwest-client",
  "gpui-pre-shared-string",
+ "image",
  "jiff",
  "llmtodo-api-types",
  "llmtodo-client",

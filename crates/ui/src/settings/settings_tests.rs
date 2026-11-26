@@ -1096,3 +1096,43 @@ fn background_tables_load_apply_and_are_never_written(cx: &mut TestAppContext) {
         "{message}"
     );
 }
+
+/// LLM-568: a background file that changes on disk loads again on focus,
+/// and a missing one is named once in the status bar.
+#[gpui_kit::test]
+fn a_changed_background_file_reloads_and_a_missing_one_is_named_once(cx: &mut TestAppContext) {
+    use crate::shell::backdrop::Backdrops;
+    let (dir, store) = saved_store();
+    let wall = dir.path().join("wall.png");
+    std::fs::write(&wall, b"one").unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[app.background.window]\nimage = \"wall.png\"\n[app.background.list]\nimage = \"gone.png\"\n",
+    )
+    .unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let shown = |cx: &TestAppContext| cx.read(|cx| cx.try_global::<Backdrops>().cloned().unwrap());
+    let message = |cx: &TestAppContext| cx.read(|cx| view.read(cx).message().to_string());
+    let before = shown(cx).window.unwrap().stamp;
+    assert!(before.is_some());
+    assert!(message(cx).contains("no file at"), "{}", message(cx));
+
+    // The file changes; config.toml does not.
+    let file = std::fs::File::options().write(true).open(&wall).unwrap();
+    file.set_modified(before.unwrap() + std::time::Duration::from_secs(9))
+        .unwrap();
+    view.update(cx, |w, _| w.set_message("other".into()));
+    refocus(handle, &view, cx);
+    assert_ne!(shown(cx).window.unwrap().stamp, before);
+    // Still missing: not named again.
+    assert_eq!(message(cx), "other");
+
+    std::fs::remove_file(&wall).unwrap();
+    refocus(handle, &view, cx);
+    assert!(shown(cx).window.unwrap().stamp.is_none());
+    assert!(
+        message(cx).contains("background.window: no file"),
+        "{}",
+        message(cx)
+    );
+}

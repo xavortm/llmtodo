@@ -356,6 +356,8 @@ pub struct Workspace {
     config_note: Option<SharedString>,
     /// LLM-566: the background images as `config.toml` holds them.
     background: crate::shell::backdrop::BackgroundsConfig,
+    /// LLM-568: the background files found missing, so each is named once.
+    background_missing: Vec<(crate::shell::backdrop::Slot, std::path::PathBuf)>,
     /// The settings as last saved, to skip writes that change nothing.
     saved: UiSettings,
     /// A save that waits until the window stops moving.
@@ -746,6 +748,7 @@ impl Workspace {
             settings: store,
             config_note: None,
             background: Default::default(),
+            background_missing: Vec::new(),
             saved: settings.clone(),
             save_soon: None,
             view_refresh: None,
@@ -1759,10 +1762,41 @@ impl Workspace {
         self.background = config.clone();
         let base = self.settings.config_path().and_then(|p| p.parent());
         let (backdrops, problems) = backdrop::Backdrops::resolve(config, base);
+        let missing = backdrops.missing();
         backdrop::set(backdrops, cx);
+        let mut lines = Vec::new();
         if !problems.is_empty() {
-            self.message = format!("config.toml: {}", problems.join("; ")).into();
+            lines.push(format!("config.toml: {}", problems.join("; ")));
         }
+        lines.extend(self.note_missing_backgrounds(missing));
+        if !lines.is_empty() {
+            self.message = lines.join("; ").into();
+        }
+    }
+
+    /// LLM-568: loads each background image whose file changed on disk.
+    fn check_background_files(&mut self, cx: &mut Context<Self>) {
+        let missing = crate::shell::backdrop::check_files(cx);
+        let lines = self.note_missing_backgrounds(missing);
+        if !lines.is_empty() {
+            self.message = lines.join("; ").into();
+            cx.notify();
+        }
+    }
+
+    /// The status bar lines for background files newly missing, so each
+    /// is named once. The same files missing again say nothing.
+    fn note_missing_backgrounds(
+        &mut self,
+        missing: Vec<(crate::shell::backdrop::Slot, std::path::PathBuf)>,
+    ) -> Vec<String> {
+        let new: Vec<String> = missing
+            .iter()
+            .filter(|m| !self.background_missing.contains(m))
+            .map(|(slot, path)| format!("background.{}: no file at {}", slot.key(), path.display()))
+            .collect();
+        self.background_missing = missing;
+        new
     }
 
     /// The window moved or changed size. A drag does this every frame, so
@@ -1813,6 +1847,8 @@ impl Workspace {
     pub fn reload_config_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prefs) = self.settings.check_file() else {
             self.show_config_problem(cx);
+            // A background image may have changed on its own (LLM-568).
+            self.check_background_files(cx);
             return;
         };
         let now = prefs.apply_to(&self.current_settings(cx));
@@ -1822,8 +1858,6 @@ impl Workspace {
         crate::shell::theme::set_color_theme(color, cx);
         crate::shell::theme::set_zoom(now.zoom, cx);
         crate::shell::motion::set(now.animations, cx);
-        // An image file may have changed too, so it loads again.
-        crate::shell::backdrop::forget_images(cx);
         self.apply_backgrounds(&now.background, cx);
         self.mascot_on = now.mascot;
         self.sync_mascot(cx);

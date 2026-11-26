@@ -37,6 +37,9 @@ gpui-shared-string = { package = "gpui-pre-shared-string", version = "=0.3.12" }
 # The edit type of GPUI Kit's `SyntaxHighlighter::update`, for incremental
 # parsing in `fold_highlighter.rs`. Keep it on GPUI Kit's version.
 tree-sitter = "=0.26.13"
+# Background images (LLM-573): decode, shrink, blur and step through
+# frames ourselves. The same version and formats GPUI already compiles.
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp", "bmp", "tiff", "qoi", "rayon"] }
 
 [dev-dependencies]
 tempfile = "3"
