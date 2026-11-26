@@ -47,7 +47,7 @@ const ENTER: Duration = Duration::from_millis(200);
 /// A tooltip appearing. GPUI already waits before it shows one.
 const FADE: Duration = Duration::from_millis(150);
 /// A panel sliding in: the task view or the sidebar.
-const SLIDE: Duration = Duration::from_millis(220);
+pub(crate) const SLIDE: Duration = Duration::from_millis(220);
 /// The shared tab hover background fading in. Short enough to feel
 /// instant, long enough to show as a fade. Row fills show at once.
 const FILL_IN: Duration = Duration::from_millis(90);
@@ -69,7 +69,7 @@ const ENTER_TRAVEL: f32 = 10.;
 
 /// Ease-out cubic: quick at first, then a soft settle. A steeper curve ends
 /// its visible change in the first two or three frames.
-fn ease_out(t: f32) -> f32 {
+pub(crate) fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0., 1.);
     1. - (1. - t).powi(3)
 }

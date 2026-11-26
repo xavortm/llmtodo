@@ -741,3 +741,188 @@ fn wants_gathers_each_form_once() {
         }
     );
 }
+
+// LLM-584: a panel image glides when a panel toggles.
+
+fn rect(x: f32, w: f32) -> Rect {
+    Rect {
+        x,
+        y: 0.,
+        w,
+        h: 100.,
+    }
+}
+
+#[test]
+fn a_new_size_glides_with_ease_out_and_lands_on_time() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 800.), t0);
+    g.retarget(rect(240., 560.), true, t0);
+    assert_eq!(g.at(t0), rect(0., 800.));
+    assert!(g.running(t0));
+    // Ease-out: past the halfway mark at half the time.
+    let mid = g.at(t0 + GLIDE / 2);
+    assert!(mid.w < 680. && mid.w > 560., "{mid:?}");
+    assert_eq!(g.at(t0 + GLIDE), rect(240., 560.));
+    assert!(!g.running(t0 + GLIDE));
+}
+
+#[test]
+fn a_second_toggle_starts_from_where_the_image_is() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 800.), t0);
+    g.retarget(rect(0., 500.), true, t0);
+    let t1 = t0 + GLIDE / 4;
+    let here = g.at(t1);
+    g.retarget(rect(0., 800.), true, t1);
+    assert_eq!(g.at(t1), here);
+    assert_eq!(g.at(t1 + GLIDE), rect(0., 800.));
+}
+
+#[test]
+fn a_panel_that_only_moves_takes_its_image_along() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 240.), t0);
+    g.retarget(rect(-40., 240.), true, t0);
+    assert_eq!(g.at(t0), rect(-40., 240.));
+    assert!(!g.running(t0));
+    // Mid-glide, a move shifts both ends.
+    g.retarget(rect(-40., 400.), true, t0);
+    g.retarget(rect(0., 400.), true, t0);
+    assert_eq!(g.at(t0), rect(0., 240.));
+    assert_eq!(g.at(t0 + GLIDE), rect(0., 400.));
+}
+
+#[test]
+fn a_change_with_no_toggle_lands_at_once() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 800.), t0);
+    g.retarget(rect(0., 900.), false, t0);
+    assert_eq!(g.at(t0), rect(0., 900.));
+    assert!(!g.running(t0));
+}
+
+#[test]
+fn only_the_edge_inside_the_panel_is_soft() {
+    // The panel grew to the right; the image has not caught up yet.
+    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.));
+    assert_eq!(inner, rect(0., 600. - GLIDE_EDGE));
+    assert_eq!(strips.len(), GLIDE_STRIPS);
+    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
+    // The faintest strip sits at the image's edge.
+    assert_eq!(strips[0], vec![rect(600. - w, w)]);
+    assert_eq!(strips[GLIDE_STRIPS - 1], vec![rect(600. - GLIDE_EDGE, w)]);
+    assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
+    assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
+    // Wider than the panel: no soft edge, the panel clips it.
+    let (inner, strips) = soft_edges(rect(-100., 1000.), rect(0., 800.));
+    assert_eq!(inner, rect(0., 800.));
+    assert!(strips.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn a_panel_growing_left_softens_the_left_edge() {
+    let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.));
+    assert_eq!(inner, rect(200. + GLIDE_EDGE, 600. - GLIDE_EDGE));
+    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
+    assert_eq!(strips[0], vec![rect(200., w)]);
+}
+
+#[gpui_kit::test]
+fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+    cx.update(crate::init);
+    let (handle, _view) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1400.), px(900.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| cx.new(|cx| crate::shell::workspace::Workspace::new(window, cx)),
+        )
+        .unwrap()
+    });
+    let list = Backdrop {
+        image: "list.png".into(),
+        ..backdrop("list.png")
+    };
+    cx.update(|cx| {
+        crate::shell::motion::set(true, cx);
+        let mode = Backdrops {
+            list: Some(list),
+            ..Default::default()
+        };
+        set(
+            Shown {
+                light: mode.clone(),
+                dark: mode,
+            },
+            cx,
+        );
+    });
+    let draw = |cx: &mut gpui_kit::TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap()
+    };
+    let settle = |cx: &mut gpui_kit::TestAppContext| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        draw(cx);
+    };
+    draw(cx);
+    settle(cx);
+    let glide = |cx: &mut gpui_kit::TestAppContext| cx.read(|cx| glide_of(Slot::List, cx).unwrap());
+    let before = glide(cx).to;
+
+    cx.update_window(handle, |_, window, cx| window.press("cmd-b", cx))
+        .unwrap();
+    let (mut frames, mut between, mut late) = (0, false, false);
+    for step in 0..100 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        let drew = cx
+            .update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        if drew > 0 {
+            frames += 1;
+            draw(cx);
+        }
+        cx.run_until_parked();
+        let g = glide(cx);
+        let now = cx.read(|cx| cx.background_executor().now());
+        let w = g.at(now).w;
+        between |= w > g.to.w.min(before.w) + 1. && w < g.to.w.max(before.w) - 1.;
+        // The sidebar slides for 220 ms; the image eases on past that.
+        if step == 35 {
+            late = g.running(now);
+        }
+    }
+    let after = glide(cx);
+    assert_ne!(after.to.w, before.w, "the list changed width");
+    assert!(between, "the image passed through the sizes in between");
+    assert!(frames > 0, "the glide asks for frames");
+    assert!(late, "the image still glides after the sidebar's slide");
+    // It rests: no more frames once it lands.
+    settle(cx);
+    for _ in 0..3 {
+        let drew = cx
+            .update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        assert_eq!(drew, 0, "the glide ended");
+    }
+
+    // With animations off, a toggle lands at once.
+    cx.update(|cx| crate::shell::motion::set(false, cx));
+    cx.update_window(handle, |_, window, cx| window.press("cmd-b", cx))
+        .unwrap();
+    draw(cx);
+    let g = glide(cx);
+    assert!(!g.running(cx.read(|cx| cx.background_executor().now())));
+    assert_eq!(g.to.w, before.w);
+}

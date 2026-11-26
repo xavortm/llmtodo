@@ -497,6 +497,13 @@ impl Render for Workspace {
             window,
             cx,
         );
+        // LLM-584: a panel toggle lets the panel images glide.
+        crate::shell::backdrop::panels(
+            self.sidebar_shown(),
+            self.detail(cx).is_some(),
+            self.filter_panel.read(cx).is_open(),
+            cx,
+        );
         self.sync_bars(window, cx);
         let status_height = self.status_bar_height(window, cx);
         let theme = cx.theme();
