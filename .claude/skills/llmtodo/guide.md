@@ -161,7 +161,7 @@ The owner answers in the app with Approve or Request changes. Each answer is one
 
 - **Approve, no open PR.** The server moves the ticket to Done at once. Nothing is left to do.
 - **Approve, with an open PR.** The ticket stays in its review status and waits on an agent, so the frontier offers it. Merge the PR, update anything else that is left, then run `llmtodo issue update ABC-12 --status Done`.
-- **Request changes.** The feedback says what to change. The ticket moves to Todo and waits on an agent, and any claim ends. Claim it, make the changes, write the review section again, and move it back to the review status.
+- **Request changes.** The feedback says what to change, from the reviewer agent or the owner. The ticket moves back to the first work status, such as In Progress, and waits on an agent, and any claim ends. Claim it, make the changes, write the review section again, and move it back to the review status.
 
 ```sh
 llmtodo issue review wait                    # blocks until the next answer, then prints it as JSON

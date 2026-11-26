@@ -721,7 +721,7 @@ async fn review_set_answer_and_wait() {
             "Make it bigger.",
         ],
     );
-    assert_eq!(a["status"], "Todo");
+    assert_eq!(a["status"], "In Progress");
     let out = waiter.join().unwrap();
     assert!(
         out.status.success(),
@@ -733,7 +733,7 @@ async fn review_set_answer_and_wait() {
     assert_eq!(heard["verdict"], "changes_requested");
     assert_eq!(heard["feedback"], "Make it bigger.");
     assert_eq!(heard["round"], 1);
-    assert_eq!(heard["status"], "Todo");
+    assert_eq!(heard["status"], "In Progress");
     assert_eq!(heard["waiting_on"], "agent");
     t.stop().await;
 }
@@ -877,7 +877,7 @@ async fn reviewer_queue_pass_and_changes() {
         String::from_utf8_lossy(&out.stderr)
     );
     let a: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(a["status"], "Todo");
+    assert_eq!(a["status"], "In Progress");
     assert_eq!(a["answer"]["feedback"], "The text is too small.");
 
     let q = t.json("s1", &["--json", "issue", "review", "queue"]);
