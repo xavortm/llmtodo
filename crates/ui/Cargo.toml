@@ -54,11 +54,12 @@ llmtodo-server = { path = "../server" }
 gpui-kit = { git = "https://github.com/longbridge/gpui-component", rev = "1029e2c5d34d75fa82ab5f0f067771951a88d993", features = ["tree-sitter-markdown", "tree-sitter-markdown-inline", "test-support"] }
 
 # Sets the Dock icon when the app runs outside a .app bundle, as with
-# `cargo run`. Same versions GPUI's macOS backend already uses.
+# `cargo run`, and draws a preview build's icon (LLM-592). Same versions
+# GPUI's macOS backend already uses.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSString", "NSError"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSAttributedString", "NSBezierPath", "NSColor", "NSDockTile", "NSFont", "NSImage", "NSResponder", "NSStringDrawing"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAttributedString", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSError"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"] }
 # LLM-579: a shader frame goes to GPUI's `surface()` as an IOSurface-backed
 # YCbCr pixel buffer, with no copy through the CPU. The versions GPUI's

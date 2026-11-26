@@ -6,7 +6,7 @@ use gpui_kit::assets::AllAssets;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
-use llmtodo_ui::model::{backend, drafts, trackers, update};
+use llmtodo_ui::model::{backend, drafts, preview, trackers, update};
 use llmtodo_ui::settings;
 use llmtodo_ui::shell::workspace::{self, Workspace};
 use llmtodo_ui::shell::{app_icon, app_menus, theme};
@@ -23,7 +23,13 @@ fn main() {
             Ok(client) => cx.set_http_client(std::sync::Arc::new(client)),
             Err(err) => eprintln!("llmtodo: no HTTP client for images: {err}"),
         }
-        app_icon::set_dock_icon();
+        // A preview build of a ticket gets a gray icon with its key, and no
+        // Restart to update: it is not the installed app (LLM-592).
+        let preview = preview::ticket_from_env();
+        match &preview {
+            Some(key) => app_icon::set_preview_dock_icon(key),
+            None => app_icon::set_dock_icon(),
+        }
         let store = settings::SettingsStore::default_location();
         let saved = store.load();
         // The theme is built once, in its final mode. Auto reads macOS's
@@ -48,7 +54,7 @@ fn main() {
         let target = backend::Target::from_env();
         let trackers = trackers::from_env(&target.data_dir);
         let drafts = drafts::DraftStore::open(&target.data_dir);
-        let update = update::UpdateWatch::from_env(&target.data_dir);
+        let update = update::UpdateWatch::from_env(&target.data_dir).filter(|_| preview.is_none());
         let update_dir = target.data_dir.clone();
         let update_cli = target.spawn.clone();
         let shared_dir = target
