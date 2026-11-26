@@ -115,6 +115,8 @@ fn a_project_shows_the_strip_and_a_day_click_lists_its_tasks(cx: &mut TestAppCon
             .map(|r| r.key.to_string())
             .collect();
         assert_eq!(keys, ["LLM-101"]);
+        // Only created tasks that day, so no line between two sets.
+        assert!(window.try_find("day-tasks-divider").is_none());
 
         window.press("enter", cx);
     })
@@ -158,4 +160,48 @@ fn dots_split_the_room_evenly_at_each_scale() {
     let (gap, rows) = dot_run(31, 1);
     assert_eq!((gap, rows), (1, 15));
     assert_eq!(31 - (gap + (rows - 1) * 2 + 1), gap);
+}
+
+/// A day with both kinds lists created tasks, a line, then completed ones.
+#[gpui_kit::test]
+fn a_line_splits_created_from_completed(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        // LLM-103, in App and added on Nov 8, closes on Nov 10, the day
+        // LLM-101 was added.
+        view.update(cx, |this, cx| {
+            this.store().update(cx, |store, cx| {
+                let done = issue(103, "app", (11, 8), Some("10"));
+                store.modify(IssueId::from_u128(103), |i| {
+                    i.status = done.status.clone();
+                    i.closed_at = done.closed_at;
+                });
+                cx.notify();
+            });
+            this.set_scope(Scope::Project("app".into()), cx)
+        });
+        window.render_frame(cx);
+        window.click("day-2026-11-10", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let rows: Vec<(String, bool)> = view
+            .read(cx)
+            .day_tasks()
+            .read(cx)
+            .rows(cx)
+            .into_iter()
+            .map(|r| (r.key.to_string(), r.completed))
+            .collect();
+        assert_eq!(
+            rows,
+            [("LLM-101".to_string(), false), ("LLM-103".to_string(), true)]
+        );
+        let line = window.find("day-tasks-divider").bounds();
+        let created = window.find("day-task-LLM-101-0").bounds();
+        let completed = window.find("day-task-LLM-103-1").bounds();
+        assert!(created.bottom() <= line.top() && line.bottom() <= completed.top());
+    })
+    .unwrap();
 }

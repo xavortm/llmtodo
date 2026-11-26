@@ -667,16 +667,30 @@ impl Render for DayTasks {
                 .child("No task was created or completed that day.")
                 .into_any_element()
         } else {
+            // A line between the created tasks and the completed ones,
+            // when the day has both.
+            let split = rows.iter().position(|r| r.completed).filter(|&ix| ix > 0);
+            let line = theme.border;
             v_flex()
                 .gap_px()
-                .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                .children(rows.into_iter().enumerate().flat_map(|(ix, row)| {
                     let selected = ix == self.selected;
+                    let divider = (split == Some(ix)).then(|| {
+                        div()
+                            .id("day-tasks-divider")
+                            .test_support()
+                            .mx_2()
+                            .my_1()
+                            .h(px(1.))
+                            .bg(line)
+                            .into_any_element()
+                    });
                     let word = if row.completed {
                         "Completed"
                     } else {
                         "Created"
                     };
-                    h_flex()
+                    let item = h_flex()
                         .id(SharedString::from(format!("day-task-{}-{ix}", row.key)))
                         .test_support()
                         .px_2()
@@ -707,7 +721,10 @@ impl Render for DayTasks {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_row(ix, window, cx);
-                        }))
+                        }));
+                    divider
+                        .into_iter()
+                        .chain(std::iter::once(item.into_any_element()))
                 }))
                 .into_any_element()
         };
