@@ -615,6 +615,8 @@ pub struct DayTasks {
 }
 
 /// How long a hover list waits after the pointer leaves before it closes.
+/// The gap the day tasks card keeps from each window edge.
+const WINDOW_MARGIN: gpui_kit::Pixels = px(8.);
 const HOVER_CLOSE_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl EventEmitter<DayTasksEvent> for DayTasks {}
@@ -880,11 +882,12 @@ impl Render for DayTasks {
                 h_flex()
                     .px_2()
                     .pt_1()
+                    .gap_2()
                     .justify_between()
                     .text_xs()
                     .text_color(muted)
-                    .child(title)
-                    .child("Enter opens · Esc closes"),
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .child(div().flex_none().child("Enter opens · Esc closes")),
             )
             .child(body);
         // In rems, so it grows with zoom.
@@ -955,6 +958,9 @@ impl Render for DayTasks {
                 }))
                 .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
                 .w(gpui_kit::rems(30.))
+                // Never wider than the window less its 8 px margins, so
+                // the snap below keeps both edges inside.
+                .max_w(window.viewport_size().width - WINDOW_MARGIN * 2.)
                 .relative()
                 .overflow_hidden()
                 .bg(theme.popover)
@@ -981,7 +987,7 @@ impl Render for DayTasks {
             gpui_kit::anchored()
                 .position(at)
                 .anchor(gpui_kit::Anchor::BottomCenter)
-                .snap_to_window_with_margin(px(8.))
+                .snap_to_window_with_margin(WINDOW_MARGIN)
                 .child(crate::shell::motion::rise(panel, "day-tasks-enter", cx)),
         )
         .with_priority(1)

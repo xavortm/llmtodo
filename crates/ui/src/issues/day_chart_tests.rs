@@ -441,3 +441,50 @@ fn the_strip_can_be_hidden_and_shown(cx: &mut TestAppContext) {
     .unwrap();
     assert!(!strip(cx), "the View menu hides it");
 }
+
+/// In a window narrower than the card, the card shrinks to the window
+/// less 8 px on each side, instead of running off the right edge (LLM-565).
+#[gpui_kit::test]
+fn the_card_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
+    use gpui_kit::{Bounds, WindowBounds, point, px, size};
+    cx.update(crate::init);
+    let width = px(470.);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(0.), px(0.)),
+            size(width, px(700.)),
+        ))),
+        ..Default::default()
+    };
+    let (handle, view) = cx.update(|cx| {
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| Workspace::new(window, cx))
+        })
+        .unwrap()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_scope(Scope::Project("app".into()), cx)
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // The card is 30 rem, wider than this window.
+        window.click("day-2026-11-10", cx);
+    })
+    .unwrap();
+    // The click's event reaches the workspace when the update ends.
+    let card = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert_eq!(window.viewport_size().width, width);
+            window.find("day-tasks").bounds()
+        })
+        .unwrap();
+    assert!(card.left() >= px(8.), "left edge {:?}", card.left());
+    assert!(
+        card.right() <= width - px(8.),
+        "right edge {:?} in a {width:?} window",
+        card.right()
+    );
+}
