@@ -119,6 +119,8 @@ pub enum ViewEvent {
         key: &'static str,
         value: Option<crate::settings::BackgroundValue>,
     },
+    /// LLM-580: closes Settings and opens the floating Backgrounds panel.
+    EditBackgroundsLive,
     /// LLM-567: asks for an image file for a slot.
     ChooseBackground(crate::shell::backdrop::Slot),
 }

@@ -316,6 +316,14 @@ pub struct Workspace {
     /// project's list, and the list of a picked day's tasks.
     day_chart: Entity<DayChart>,
     day_tasks: Entity<DayTasks>,
+    /// LLM-580: the floating Backgrounds panel, its place and its drag.
+    bg_panel: Entity<crate::settings::backgrounds::BackgroundEditor>,
+    bg_panel_open: bool,
+    /// The panel's top left once dragged; before, it sits bottom right.
+    bg_panel_at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+    /// Where the panel last drew, and where in it the pointer grabbed.
+    bg_panel_bounds: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    bg_panel_grab: gpui_kit::Point<gpui_kit::Pixels>,
     /// The view each tracker showed when the owner switched away from it,
     /// by tracker index. A switch back opens it again, so a project the
     /// other tracker lacks is not lost to All issues.
@@ -530,12 +538,29 @@ impl Workspace {
                 window,
                 cx,
             );
-            view.set_config_dir(config_dir);
+            view.set_config_dir(config_dir, cx);
             view
         });
         let claims = cx.new(|cx| ClaimsList::new(issues.clone(), focus.clone(), cx));
         let day_chart = cx.new(|cx| DayChart::new(issues.clone(), list.clone(), cx));
         let day_tasks = cx.new(|cx| DayTasks::new(issues.clone(), focus.clone(), cx));
+        let bg_panel = {
+            let (events, values) = (events.clone(), settings_values.clone());
+            let dir = store
+                .config_path()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            cx.new(|cx| {
+                crate::settings::backgrounds::BackgroundEditor::new(
+                    crate::settings::backgrounds::Mode::Panel,
+                    events,
+                    values,
+                    dir,
+                    window,
+                    cx,
+                )
+            })
+        };
 
         let filter = list.read(cx).filter.clone();
         let mut subscriptions = vec![
@@ -736,6 +761,11 @@ impl Workspace {
             claims,
             day_chart,
             day_tasks,
+            bg_panel,
+            bg_panel_open: false,
+            bg_panel_at: None,
+            bg_panel_bounds: Default::default(),
+            bg_panel_grab: Default::default(),
             tracker_scopes: Default::default(),
             activity_strip: true,
             backgrounds_on: true,
@@ -1788,6 +1818,37 @@ impl Workspace {
         if !lines.is_empty() {
             self.message = lines.join("; ").into();
         }
+    }
+
+    /// LLM-580: opens the floating Backgrounds panel over the app. From
+    /// Settings, it goes back to the view under Settings first, so the
+    /// images show while they change.
+    pub fn open_background_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_shown(cx) {
+            self.leave_settings(window, cx);
+        }
+        self.bg_panel_open = true;
+        let focus = self.bg_panel.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        self.message = "Editing backgrounds: changes save and show at once".into();
+        cx.notify();
+    }
+
+    pub fn close_background_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.bg_panel_open {
+            return;
+        }
+        self.bg_panel_open = false;
+        self.focus_list(window, cx);
+        cx.notify();
+    }
+
+    pub fn background_panel_open(&self) -> bool {
+        self.bg_panel_open
+    }
+
+    pub fn background_panel(&self) -> &Entity<crate::settings::backgrounds::BackgroundEditor> {
+        &self.bg_panel
     }
 
     /// LLM-578: `:shader copy <name>` writes a built-in shader next to

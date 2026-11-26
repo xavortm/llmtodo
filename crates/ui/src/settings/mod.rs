@@ -34,6 +34,7 @@
 //! Unknown or missing fields fall back to defaults, so old files keep
 //! loading.
 
+pub mod backgrounds;
 pub mod view;
 
 #[cfg(test)]
@@ -119,6 +120,7 @@ pub struct UiSettings {
 pub enum BackgroundValue {
     Text(String),
     Number(f32),
+    Bool(bool),
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -535,6 +537,7 @@ impl SettingsStore {
                     let value = match value {
                         BackgroundValue::Text(t) => toml_edit::Value::from(t),
                         // f32 to f64 adds noise: 0.35 would read 0.3499999940395355.
+                        BackgroundValue::Bool(b) => toml_edit::Value::from(b),
                         BackgroundValue::Number(n) => {
                             toml_edit::Value::from((f64::from(n) * 1e4).round() / 1e4)
                         }

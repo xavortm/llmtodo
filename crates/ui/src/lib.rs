@@ -30,5 +30,6 @@ pub fn init_without_theme(cx: &mut gpui_kit::App) {
     gpui_kit::init(cx);
     theme::load_fonts(cx);
     workspace::bind_keys(cx);
+    settings::backgrounds::bind_keys(cx);
     app_menus::init(cx);
 }

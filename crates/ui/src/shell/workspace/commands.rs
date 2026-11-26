@@ -243,6 +243,10 @@ impl Workspace {
                 Some(String::new())
             }
             ("shader", _) => Some(self.command_shader(arg)),
+            ("background", _) if arg == "edit" => {
+                self.open_background_panel(window, cx);
+                None
+            }
             ("background", _) => {
                 self.toggle_backgrounds(&ToggleBackgrounds, window, cx);
                 None

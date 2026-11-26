@@ -89,6 +89,7 @@ impl Workspace {
                 self.set_background(slot, key, value, cx)
             }
             ViewEvent::ChooseBackground(slot) => self.choose_background(slot, cx),
+            ViewEvent::EditBackgroundsLive => self.open_background_panel(window, cx),
         }
     }
 

@@ -652,7 +652,114 @@ impl Render for Workspace {
             .when(self.day_tasks.read(cx).is_open(), |this| {
                 this.child(self.day_tasks.clone())
             })
+            .when(self.bg_panel_open, |this| {
+                this.child(self.render_background_panel(window, cx))
+            })
+            .on_drag_move(cx.listener(Self::drag_background_panel))
+            .on_action(cx.listener(
+                |this, _: &crate::settings::backgrounds::CloseBackgroundPanel, window, cx| {
+                    this.close_background_panel(window, cx)
+                },
+            ))
             .children(self.render_flash())
+    }
+}
+
+/// What the Backgrounds panel's header carries while it is dragged.
+#[derive(Clone)]
+pub struct BackgroundPanelDrag;
+
+impl Render for BackgroundPanelDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui_kit::Empty
+    }
+}
+
+/// The gap between the panel and the window's edge.
+const PANEL_MARGIN: f32 = 16.;
+
+impl Workspace {
+    /// LLM-580: the floating Backgrounds panel. It starts bottom right and
+    /// moves by its header. It stays solid, so its text is readable over
+    /// any image.
+    fn render_background_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let bounds = self.bg_panel_bounds.clone();
+        let margin = gpui_kit::px(PANEL_MARGIN);
+        let header = h_flex()
+            .id("bg-panel-header")
+            .test_support()
+            .justify_between()
+            .items_center()
+            .pb_2()
+            .cursor_grab()
+            .child(div().text_sm().child("Backgrounds"))
+            .child(
+                Button::new("bg-panel-close")
+                    .icon(gpui_kit::assets::IconName::Close)
+                    .ghost()
+                    .xsmall()
+                    .tab_stop(false)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.close_background_panel(window, cx)),
+                    ),
+            )
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, _| {
+                    this.bg_panel_grab = e.position - this.bg_panel_bounds.get().origin;
+                }),
+            )
+            .on_drag(BackgroundPanelDrag, |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            });
+        div()
+            .id("bg-panel")
+            .test_support()
+            .absolute()
+            .map(|this| match self.bg_panel_at {
+                Some(at) => this.left(at.x).top(at.y),
+                None => this.right(margin).bottom(margin + gpui_kit::px(24.)),
+            })
+            .w(gpui_kit::rems(27.))
+            .max_h(window.viewport_size().height - margin * 2.)
+            .overflow_y_scroll()
+            .p_3()
+            .rounded(theme.radius_lg)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .shadow_lg()
+            .occlude()
+            .child(
+                gpui_kit::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(header)
+            .child(self.bg_panel.clone())
+            .into_any_element()
+    }
+
+    fn drag_background_panel(
+        &mut self,
+        e: &gpui_kit::DragMoveEvent<BackgroundPanelDrag>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let size = self.bg_panel_bounds.get().size;
+        let view = window.viewport_size();
+        let mut at = e.event.position - self.bg_panel_grab;
+        // Keep the header on screen.
+        at.x = at.x.max(gpui_kit::px(0.)).min(view.width - size.width);
+        at.y =
+            at.y.max(gpui_kit::px(0.))
+                .min(view.height - gpui_kit::px(40.));
+        if self.bg_panel_at != Some(at) {
+            self.bg_panel_at = Some(at);
+            cx.notify();
+        }
     }
 }
 

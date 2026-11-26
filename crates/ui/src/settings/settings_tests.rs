@@ -1249,7 +1249,8 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     end(cx);
     // Opacity: typed, then Enter.
     let settings = cx.read(|cx| view.read(cx).settings_view().clone());
-    let field = cx.read(|cx| settings.read(cx).bg_opacity(Slot::List));
+    let editor = cx.read(|cx| settings.read(cx).backgrounds().clone());
+    let field = cx.read(|cx| editor.read(cx).number(Slot::List, "opacity"));
     cx.update_window(handle, |_, window, cx| {
         field.update(cx, |f, cx| {
             f.set_value("50", window, cx);
@@ -1267,7 +1268,7 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
         ("size", "auto"),
         ("position", "left top"),
     ] {
-        let select = cx.read(|cx| settings.read(cx).bg_select(Slot::List, key));
+        let select = cx.read(|cx| editor.read(cx).select(Slot::List, key));
         cx.update_window(handle, |_, _, cx| {
             select.update(cx, |_, cx| {
                 cx.emit(gpui_kit::component::select::SelectEvent::Confirm(Some(
@@ -1280,7 +1281,7 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     }
     end(cx);
     // The dropdown shows the saved choice: `left top` is "Top left".
-    let position = cx.read(|cx| settings.read(cx).bg_select(Slot::List, "position"));
+    let position = cx.read(|cx| editor.read(cx).select(Slot::List, "position"));
     assert_eq!(
         cx.read(|cx| position.read(cx).selected_value().copied()),
         Some("top left")
@@ -1318,7 +1319,7 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(&config, text.replace("size = \"auto\"", "size = \"40%\"")).unwrap();
     refocus(handle, &view, cx);
-    let size = cx.read(|cx| settings.read(cx).bg_select(Slot::List, "size"));
+    let size = cx.read(|cx| editor.read(cx).select(Slot::List, "size"));
     assert_eq!(cx.read(|cx| size.read(cx).selected_value().copied()), None);
 
     end(cx);
@@ -1382,4 +1383,89 @@ fn shader_backgrounds_compile_report_errors_and_copy_out(cx: &mut TestAppContext
     );
     let message = cx.read(|cx| view.read(cx).message().to_string());
     assert!(message.contains("shaders/aurora.wgsl"), "{message}");
+}
+
+/// LLM-580: Edit live… leaves Settings and opens the floating panel; it
+/// edits one slot at a time with the extra controls, and Esc closes it.
+#[gpui_kit::test]
+fn the_background_panel_edits_live_over_the_app(cx: &mut TestAppContext) {
+    use crate::settings::BackgroundValue;
+    use crate::shell::backdrop::Slot;
+    use crate::shell::view_events::ViewEvent;
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[app.background.task]\nimage = \"/p/a.png\"\n").unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let shown = |cx: &TestAppContext| cx.read(crate::shell::backdrop::shown);
+    let open = |cx: &TestAppContext| cx.read(|cx| view.read(cx).background_panel_open());
+
+    run(handle, &view, "settings", cx);
+    let settings = cx.read(|cx| view.read(cx).settings_view().clone());
+    cx.update_window(handle, |_, window, cx| {
+        settings.read(cx).scroll_to_end();
+        window.refresh();
+        window.render_frame(cx);
+    })
+    .unwrap();
+    click(handle, "settings-bg-edit-live", cx);
+    assert!(open(cx));
+    assert!(
+        !cx.read(|cx| view.read(cx).settings_shown(cx)),
+        "Settings closed"
+    );
+
+    // The slot picker, then a panel-only control.
+    click(handle, "bg-panel-slot-task", cx);
+    let panel = cx.read(|cx| view.read(cx).background_panel().clone());
+    assert_eq!(cx.read(|cx| panel.read(cx).slot()), Slot::Task);
+    let blur = cx.read(|cx| panel.read(cx).number(Slot::Task, "blur"));
+    cx.update_window(handle, |_, _, cx| {
+        blur.update(cx, |_, cx| {
+            cx.emit(gpui_kit::component::input::NumberInputEvent::Step(
+                gpui_kit::component::input::StepAction::Increment,
+            ))
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx).task.unwrap().effects.blur, 2.);
+    click(handle, "settings-bg-task-grayscale", cx);
+    assert!(shown(cx).task.unwrap().grayscale);
+    let tint = cx.read(|cx| panel.read(cx).select(Slot::Task, "tint"));
+    cx.update_window(handle, |_, _, cx| {
+        tint.update(cx, |_, cx| {
+            cx.emit(gpui_kit::component::select::SelectEvent::Confirm(Some(
+                "#000000",
+            )))
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(shown(cx).task.unwrap().tint.is_some());
+    // The scroll choice shows for the task panel.
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |w, cx| {
+            w.on_view_event(
+                ViewEvent::SetBackground {
+                    slot: Slot::Task,
+                    key: "attachment",
+                    value: Some(BackgroundValue::Text("scroll".into())),
+                },
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    assert!(shown(cx).task.unwrap().scroll);
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("grayscale = true"), "{text}");
+    assert!(text.contains("tint = \"#000000\""), "{text}");
+
+    press(handle, &["escape"], cx);
+    assert!(!open(cx));
+    run(handle, &view, "background edit", cx);
+    assert!(open(cx));
+    click(handle, "bg-panel-close", cx);
+    assert!(!open(cx));
 }

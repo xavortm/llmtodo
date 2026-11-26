@@ -359,6 +359,7 @@ pub(super) const COMMANDS: &[&str] = &[
     "claims",
     "activity",
     "background",
+    "background edit",
     "shader copy aurora",
     "shader copy grain",
     "shader copy waves",
