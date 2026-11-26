@@ -512,7 +512,14 @@ impl Render for DayChart {
             .size_full()
             .border_t_1()
             .border_color(theme.border)
-            .bg(theme.background)
+            .bg(crate::shell::backdrop::surface(
+                theme.background,
+                &[
+                    crate::shell::backdrop::Slot::Window,
+                    crate::shell::backdrop::Slot::List,
+                ],
+                cx,
+            ))
             .child(
                 gpui_kit::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
                     .absolute()

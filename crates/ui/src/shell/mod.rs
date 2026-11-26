@@ -3,6 +3,7 @@
 
 pub mod app_icon;
 pub mod app_menus;
+pub mod backdrop;
 pub mod icons;
 pub mod issue_menu;
 pub mod layout;
@@ -21,6 +22,8 @@ pub mod workspace;
 
 #[cfg(test)]
 mod app_menus_tests;
+#[cfg(test)]
+mod backdrop_tests;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]

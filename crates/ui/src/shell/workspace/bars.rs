@@ -393,7 +393,11 @@ impl Render for TitleBarView {
         // (LLM-212).
         crate::shell::unzoomed::unzoomed(
             TitleBar::new()
-                .bg(theme.background)
+                .bg(crate::shell::backdrop::surface(
+                    theme.background,
+                    &[crate::shell::backdrop::Slot::Window],
+                    cx,
+                ))
                 .border_b_1()
                 .border_color(theme.border)
                 .child(

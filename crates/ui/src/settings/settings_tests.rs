@@ -1059,3 +1059,40 @@ fn a_hand_edit_applies_when_the_window_gets_focus(cx: &mut TestAppContext) {
     let note = config_note(&view, cx).expect("a parse error");
     assert!(note.contains("line 3"), "{note}");
 }
+
+/// LLM-566: `[app.background.<slot>]` loads, a hand edit applies, and a
+/// save of another key keeps the tables as they are.
+#[gpui_kit::test]
+fn background_tables_load_apply_and_are_never_written(cx: &mut TestAppContext) {
+    use crate::shell::backdrop::{Backdrops, BgSize};
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    let text = "[app.background.window]\nimage = \"wall.png\"\nopacity = 0.3\n";
+    std::fs::write(&config, text).unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let shown = |cx: &TestAppContext| cx.read(|cx| cx.try_global::<Backdrops>().cloned());
+    let window = shown(cx).and_then(|b| b.window).expect("window image");
+    assert_eq!(window.image, dir.path().join("wall.png"));
+    assert_eq!(window.opacity, 0.3);
+
+    run(handle, &view, "settings", cx);
+    click(handle, "settings-row-mascot", cx);
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(after.contains(text), "{after}");
+    assert!(after.contains("mascot = false"), "{after}");
+
+    std::fs::write(
+        &config,
+        "[app.background.task]\nimage = \"/t.png\"\nsize = \"auto\"\nposition = \"nowhere\"\n",
+    )
+    .unwrap();
+    refocus(handle, &view, cx);
+    let b = shown(cx).unwrap();
+    assert!(b.window.is_none());
+    assert_eq!(b.task.unwrap().layout.size, BgSize::Scale(1.));
+    let message = cx.read(|cx| view.read(cx).message().to_string());
+    assert!(
+        message.contains("unknown position \"nowhere\""),
+        "{message}"
+    );
+}

@@ -2,6 +2,7 @@
 //! title bar and the status bar are their own views, in `bars.rs`.
 
 use super::*;
+use crate::shell::backdrop::Slot;
 
 /// The sidebar's width, in rem: `w_56`.
 const SIDEBAR_REM: f32 = 14.;
@@ -131,9 +132,13 @@ impl Workspace {
         // each filter change at once. With animations on, its column grows
         // and shrinks as the sidebar's does, both ways, and the panel fades
         // with it (LLM-467).
+        // LLM-566: the list image sits behind the list, the activity strip
+        // and the filter panel.
         let list = h_flex()
             .size_full()
+            .relative()
             .overflow_hidden()
+            .children(crate::shell::backdrop::layer(&[Slot::List], cx))
             .child(
                 // The rows' hover fills draw under the list, as a view of
                 // their own (LLM-345).
@@ -183,7 +188,11 @@ impl Workspace {
                                 .left_0()
                                 .w(gpui_kit::rems(panel_rem))
                                 .opacity(filters_open)
-                                .bg(cx.theme().background)
+                                .bg(crate::shell::backdrop::surface(
+                                    cx.theme().background,
+                                    &[Slot::Window, Slot::List],
+                                    cx,
+                                ))
                                 .child(fills)
                                 .child(cached(&self.filter_panel)),
                         ),
@@ -207,7 +216,12 @@ impl Workspace {
                         // task view, as a view of its own (LLM-220).
                         let tab_hover = self.task.read(cx).tab_hover.clone();
                         this.child(crate::shell::motion::slide_in(
-                            div().size_full().child(cached(&self.task)).child(tab_hover),
+                            div()
+                                .size_full()
+                                .relative()
+                                .children(crate::shell::backdrop::layer(&[Slot::Task], cx))
+                                .child(cached(&self.task))
+                                .child(tab_hover),
                             "task-slide",
                             1.5,
                             true,
@@ -270,6 +284,12 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
+            // The sidebar keeps its own color, so the window image draws
+            // again over it, lined up with the window (LLM-566).
+            .children(crate::shell::backdrop::layer(
+                &[Slot::Window, Slot::Sidebar],
+                cx,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -552,6 +572,8 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            // LLM-566: the window image, under every panel.
+            .children(crate::shell::backdrop::layer(&[Slot::Window], cx))
             // Each bar is its own cached view, so a cat frame or a cursor
             // blink draws neither (LLM-348).
             .child(

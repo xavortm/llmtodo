@@ -354,6 +354,8 @@ pub struct Workspace {
     settings: SettingsStore,
     /// The note Settings shows about `config.toml`, as last sent.
     config_note: Option<SharedString>,
+    /// LLM-566: the background images as `config.toml` holds them.
+    background: crate::shell::backdrop::BackgroundsConfig,
     /// The settings as last saved, to skip writes that change nothing.
     saved: UiSettings,
     /// A save that waits until the window stops moving.
@@ -743,6 +745,7 @@ impl Workspace {
             window_frame: None,
             settings: store,
             config_note: None,
+            background: Default::default(),
             saved: settings.clone(),
             save_soon: None,
             view_refresh: None,
@@ -1626,6 +1629,7 @@ impl Workspace {
         self.activity_strip = settings.activity_strip;
         self.mascot_on = settings.mascot;
         crate::shell::motion::set(settings.animations, cx);
+        self.apply_backgrounds(&settings.background, cx);
         self.sync_mascot(cx);
         self.hide_closed = settings.hide_closed;
         self.hide_closed_days = settings.hide_closed_days.min(MAX_HIDE_DAYS);
@@ -1740,6 +1744,24 @@ impl Workspace {
             mascot: self.mascot_on,
             strike_done: list.strike_done,
             animations: crate::shell::motion::enabled(cx),
+            background: self.background.clone(),
+        }
+    }
+
+    /// LLM-566: shows the background images `config` names. A value the
+    /// app does not understand goes to the status bar.
+    fn apply_backgrounds(
+        &mut self,
+        config: &crate::shell::backdrop::BackgroundsConfig,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::shell::backdrop;
+        self.background = config.clone();
+        let base = self.settings.config_path().and_then(|p| p.parent());
+        let (backdrops, problems) = backdrop::Backdrops::resolve(config, base);
+        backdrop::set(backdrops, cx);
+        if !problems.is_empty() {
+            self.message = format!("config.toml: {}", problems.join("; ")).into();
         }
     }
 
@@ -1800,6 +1822,9 @@ impl Workspace {
         crate::shell::theme::set_color_theme(color, cx);
         crate::shell::theme::set_zoom(now.zoom, cx);
         crate::shell::motion::set(now.animations, cx);
+        // An image file may have changed too, so it loads again.
+        crate::shell::backdrop::forget_images(cx);
+        self.apply_backgrounds(&now.background, cx);
         self.mascot_on = now.mascot;
         self.sync_mascot(cx);
         self.open_last_view = now.open_last_view;

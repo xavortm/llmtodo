@@ -873,7 +873,11 @@ impl Render for SettingsView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .bg(theme.background)
+            .bg(crate::shell::backdrop::surface(
+                theme.background,
+                &[crate::shell::backdrop::Slot::Window],
+                cx,
+            ))
             .child(
                 h_flex().w_full().justify_center().child(
                     v_flex()

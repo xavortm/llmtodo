@@ -103,6 +103,10 @@ pub struct UiSettings {
     /// Short animations for actions: panels, overlays, hover and press
     /// (LLM-195). Off, the app changes state at once.
     pub animations: bool,
+    /// LLM-566: background images, `[app.background.<slot>]` in
+    /// `config.toml`. The app reads them and never writes them.
+    #[serde(skip)]
+    pub background: crate::shell::backdrop::BackgroundsConfig,
 }
 
 /// The largest value the "Hide after" field takes, ten years.
@@ -136,6 +140,7 @@ impl Default for UiSettings {
             mascot: true,
             strike_done: true,
             animations: false,
+            background: Default::default(),
         }
     }
 }
@@ -156,6 +161,9 @@ struct Preferences {
     hide_closed_days: u32,
     open_last_view: bool,
     zoom: f32,
+    /// Read only: a save never writes it, see `changed_since`.
+    #[serde(skip_serializing)]
+    background: crate::shell::backdrop::BackgroundsConfig,
 }
 
 /// The state part of [`UiSettings`], `ui-state.json`.
@@ -204,6 +212,7 @@ impl Preferences {
             hide_closed_days: s.hide_closed_days,
             open_last_view: s.open_last_view,
             zoom: s.zoom,
+            background: s.background.clone(),
         }
     }
 
@@ -219,6 +228,7 @@ impl Preferences {
         s.hide_closed_days = self.hide_closed_days;
         s.open_last_view = self.open_last_view;
         s.zoom = self.zoom;
+        s.background = self.background;
     }
 
     /// The keys, as TOML values, in field order.
