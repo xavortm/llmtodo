@@ -545,11 +545,20 @@ impl Workspace {
                 this.open_task(*id, window, cx);
             }),
             cx.subscribe_in(&day_chart, window, |this, chart, event, window, cx| {
-                let DayChartEvent::Pick(date, at) = event;
-                if let Some(slug) = chart.read(cx).slug(cx) {
-                    let (date, at) = (*date, *at);
-                    this.day_tasks
-                        .update(cx, |tasks, cx| tasks.show(slug, date, at, window, cx));
+                let Some(slug) = chart.read(cx).slug(cx) else {
+                    return;
+                };
+                match *event {
+                    DayChartEvent::Pick(date, at) => this
+                        .day_tasks
+                        .update(cx, |tasks, cx| tasks.show(slug, date, at, window, cx)),
+                    // LLM-560: the list also opens on hover.
+                    DayChartEvent::Hover(Some((date, at))) => this
+                        .day_tasks
+                        .update(cx, |tasks, cx| tasks.peek(slug, date, at, cx)),
+                    DayChartEvent::Hover(None) => {
+                        this.day_tasks.update(cx, |tasks, cx| tasks.leave(cx))
+                    }
                 }
             }),
             cx.subscribe_in(&day_tasks, window, |this, _, event, window, cx| {

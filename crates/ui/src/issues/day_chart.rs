@@ -175,6 +175,8 @@ pub fn day_label(date: civil::Date) -> String {
 pub enum DayChartEvent {
     /// The owner clicked this day, at this point in the window.
     Pick(civil::Date, gpui_kit::Point<gpui_kit::Pixels>),
+    /// The pointer moved onto a day with tasks, or off every such day.
+    Hover(Option<(civil::Date, gpui_kit::Point<gpui_kit::Pixels>)>),
 }
 
 /// The project slug the list shows, or `None` in any other scope.
@@ -406,7 +408,7 @@ impl Render for DayChart {
                 .w(px(m.slot))
                 .h_full()
                 .when(dim, |this| this.opacity(0.4))
-                .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                .on_hover(cx.listener(move |this, over: &bool, window, cx| {
                     let next = if *over {
                         Some(ix)
                     } else if this.hovered == Some(ix) {
@@ -417,6 +419,12 @@ impl Render for DayChart {
                     if next != this.hovered {
                         this.hovered = next;
                         cx.notify();
+                        // A day with tasks shows its list above the
+                        // pointer; anywhere else lets it go.
+                        let at = point(window.mouse_position().x, this.bounds.get().top() - px(1.));
+                        cx.emit(DayChartEvent::Hover(
+                            (next == Some(ix) && !empty).then_some((date, at)),
+                        ));
                     }
                 }))
                 .when(!empty, |this| {
@@ -591,7 +599,18 @@ pub struct DayTasks {
     selected: usize,
     return_to: Option<FocusHandle>,
     fallback: FocusHandle,
+    /// Opened by a click: it holds the keyboard and stays until Esc or a
+    /// click outside. A list opened by hover follows the pointer instead.
+    pinned: bool,
+    /// The pointer is over the list, so a hover list stays open.
+    inside: bool,
+    /// Closes a hover list a moment after the pointer leaves, so the
+    /// pointer can cross from the strip onto the list.
+    closing: Option<gpui_kit::Task<()>>,
 }
+
+/// How long a hover list waits after the pointer leaves before it closes.
+const HOVER_CLOSE_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl EventEmitter<DayTasksEvent> for DayTasks {}
 
@@ -606,6 +625,9 @@ impl DayTasks {
             selected: 0,
             return_to: None,
             fallback,
+            pinned: false,
+            inside: false,
+            closing: None,
         }
     }
 
@@ -647,9 +669,11 @@ impl DayTasks {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.open.is_none() {
+        if !self.pinned {
             self.return_to = window.focused(cx);
         }
+        self.pinned = true;
+        self.closing = None;
         self.open = Some((slug, date));
         self.at = at;
         self.selected = 0;
@@ -657,8 +681,59 @@ impl DayTasks {
         cx.notify();
     }
 
+    /// The pointer is on a day with tasks: show them, without taking the
+    /// keyboard. A list opened by a click stays as it is.
+    pub fn peek(
+        &mut self,
+        slug: SharedString,
+        date: civil::Date,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pinned {
+            return;
+        }
+        self.closing = None;
+        if self.open.as_ref().map(|(_, d)| *d) != Some(date) {
+            self.selected = 0;
+        }
+        self.open = Some((slug, date));
+        self.at = at;
+        cx.notify();
+    }
+
+    /// The pointer left the days with tasks: a hover list closes soon,
+    /// unless the pointer reaches it first.
+    pub fn leave(&mut self, cx: &mut Context<Self>) {
+        if self.pinned || self.open.is_none() || self.inside {
+            return;
+        }
+        self.closing = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOVER_CLOSE_AFTER).await;
+            this.update(cx, |this, cx| {
+                if !this.pinned && !this.inside {
+                    this.open = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Opened by a click, so it holds the keyboard.
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing = None;
+        self.inside = false;
         if self.open.take().is_none() {
+            return;
+        }
+        if !std::mem::take(&mut self.pinned) {
+            // A hover list never took the keyboard, so it gives none back.
+            cx.notify();
             return;
         }
         let handle = self.return_to.take().unwrap_or(self.fallback.clone());
@@ -791,6 +866,14 @@ impl Render for DayTasks {
                 .on_action(cx.listener(|this, _: &DayClose, window, cx| this.close(window, cx)))
                 // The list under it takes no hover or click.
                 .occlude()
+                .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                    this.inside = *over;
+                    if *over {
+                        this.closing = None;
+                    } else {
+                        this.leave(cx);
+                    }
+                }))
                 .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
                 // In rems, so it grows with zoom.
                 .w(gpui_kit::rems(30.))

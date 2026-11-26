@@ -299,3 +299,57 @@ fn the_strip_comes_back_after_leaving_the_project(cx: &mut TestAppContext) {
         .unwrap();
     }
 }
+
+/// Hover opens a day's list without the keyboard, the pointer can cross
+/// onto it, and it closes a moment after the pointer leaves both. A click
+/// still pins it with the keyboard.
+#[gpui_kit::test]
+fn hovering_a_day_shows_its_list(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let tasks = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).day_tasks().clone());
+    let state = |cx: &mut TestAppContext| {
+        let t = tasks(cx);
+        cx.read(|cx| (t.read(cx).is_open(), t.read(cx).is_pinned()))
+    };
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_scope(Scope::Project("app".into()), cx)
+        });
+        window.render_frame(cx);
+        window.hover("day-2026-11-10", cx);
+    })
+    .unwrap();
+    assert_eq!(state(cx), (true, false), "hover opens it, unpinned");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Onto the list: it stays.
+        window.hover("day-tasks", cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    assert_eq!(state(cx), (true, false), "the pointer on the list keeps it");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("day-chart-readout", cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    assert_eq!(state(cx), (false, false), "leaving both closes it");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("day-2026-11-10", cx);
+    })
+    .unwrap();
+    assert_eq!(state(cx), (true, true), "a click pins it");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("day-chart-readout", cx);
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    assert_eq!(state(cx), (true, true), "a pinned list ignores the pointer");
+}

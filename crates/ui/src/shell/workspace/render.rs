@@ -242,7 +242,8 @@ impl Workspace {
         let mut context = KeyContext::default();
         context.add(CONTEXT);
         // The claims list takes its own keys, so no list key fires under it.
-        let mode = if self.claims.read(cx).is_open() || self.day_tasks.read(cx).is_open() {
+        // A day list opened by hover leaves the keys to the list.
+        let mode = if self.claims.read(cx).is_open() || self.day_tasks.read(cx).is_pinned() {
             "overlay"
         } else {
             self.vim_mode(window, cx)
