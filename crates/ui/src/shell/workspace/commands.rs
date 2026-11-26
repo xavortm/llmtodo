@@ -242,6 +242,7 @@ impl Workspace {
                 self.set_sidebar_open(!self.sidebar_shown(), window, cx);
                 Some(String::new())
             }
+            ("shader", _) => Some(self.command_shader(arg)),
             ("background", _) => {
                 self.toggle_backgrounds(&ToggleBackgrounds, window, cx);
                 None

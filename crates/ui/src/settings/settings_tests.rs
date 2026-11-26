@@ -1269,3 +1269,59 @@ fn the_background_section_writes_each_slot(cx: &mut TestAppContext) {
     assert!(!text.contains("background"), "{text}");
     assert!(shown(cx).list.is_none());
 }
+
+/// LLM-578: a slot runs a shader; a broken one says its line, keeps the
+/// last good program, and `:shader copy` writes a built-in out to edit.
+#[gpui_kit::test]
+fn shader_backgrounds_compile_report_errors_and_copy_out(cx: &mut TestAppContext) {
+    use crate::shell::shader::{Programs, Source};
+    let (dir, store) = saved_store();
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[app.background.list]\nshader = \"builtin:waves\"\nfps = 500\n\
+         [app.background.task]\nshader = \"mine.wgsl\"\n",
+    )
+    .unwrap();
+    let mine = dir.path().join("mine.wgsl");
+    std::fs::write(
+        &mine,
+        "fn main_image(f: vec2<f32>) -> vec4<f32> {\n  return u.accent;\n}\n",
+    )
+    .unwrap();
+    let (handle, view) = open_with(store.load(), store.clone(), cx);
+    let shown = cx.read(crate::shell::backdrop::shown);
+    let list = shown.list.expect("list shader");
+    assert_eq!(list.shader.as_ref().unwrap().fps, 120.);
+    let compiled = |source: Source, cx: &TestAppContext| {
+        cx.read(|cx| cx.try_global::<Programs>().and_then(|p| p.get(&source)))
+    };
+    assert!(compiled(Source::Builtin("waves".into()), cx).is_some());
+    let good = compiled(Source::File(mine.clone()), cx).expect("mine compiles");
+
+    // A broken edit: the line shows, the old program stays.
+    std::fs::write(
+        &mine,
+        "fn main_image(f: vec2<f32>) -> vec4<f32> {\n  return nope;\n}\n",
+    )
+    .unwrap();
+    let file = std::fs::File::options().write(true).open(&mine).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    refocus(handle, &view, cx);
+    let message = cx.read(|cx| view.read(cx).message().to_string());
+    assert!(message.contains("background.task: shader"), "{message}");
+    assert!(message.contains("line 2"), "{message}");
+    let kept = compiled(Source::File(mine.clone()), cx).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&kept, &good));
+
+    run(handle, &view, "shader copy aurora", cx);
+    let copied = dir.path().join("shaders/aurora.wgsl");
+    assert!(
+        std::fs::read_to_string(&copied)
+            .unwrap()
+            .contains("main_image")
+    );
+    let message = cx.read(|cx| view.read(cx).message().to_string());
+    assert!(message.contains("shaders/aurora.wgsl"), "{message}");
+}

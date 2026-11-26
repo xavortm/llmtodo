@@ -1784,8 +1784,42 @@ impl Workspace {
             lines.push(format!("config.toml: {}", problems.join("; ")));
         }
         lines.extend(self.note_missing_backgrounds(missing));
+        lines.extend(backdrop::prepare_shaders(cx));
         if !lines.is_empty() {
             self.message = lines.join("; ").into();
+        }
+    }
+
+    /// LLM-578: `:shader copy <name>` writes a built-in shader next to
+    /// `config.toml`, to edit, and says how to use it.
+    pub fn command_shader(&mut self, arg: &str) -> String {
+        let names = crate::shell::shader::BUILTINS
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let name = arg.strip_prefix("copy").map(str::trim).unwrap_or("");
+        let Some(text) = crate::shell::shader::builtin(name) else {
+            return format!("Copy a built-in shader: :shader copy <{names}>");
+        };
+        let Some(dir) = self.settings.config_path().and_then(|p| p.parent()) else {
+            return "No config folder to copy the shader to".into();
+        };
+        let file = dir
+            .join("shaders")
+            .join(format!("{}.wgsl", name.to_ascii_lowercase()));
+        if file.exists() {
+            return format!("{} is already there", file.display());
+        }
+        let written = std::fs::create_dir_all(file.parent().expect("has a parent"))
+            .and_then(|()| std::fs::write(&file, text));
+        match written {
+            Ok(()) => format!(
+                "Copied to {}. Use it with shader = \"shaders/{}.wgsl\"",
+                file.display(),
+                name.to_ascii_lowercase()
+            ),
+            Err(e) => format!("Could not write {}: {e}", file.display()),
         }
     }
 
@@ -1868,6 +1902,11 @@ impl Workspace {
         let pick = self.background_pick(cx);
         let (backdrops, _) = backdrop::Shown::resolve(&self.background, base, &pick);
         self.show_backgrounds(backdrops, cx);
+        // A project may name a shader the app has not compiled yet.
+        let problems = backdrop::prepare_shaders(cx);
+        if !problems.is_empty() {
+            self.message = problems.join("; ").into();
+        }
     }
 
     /// Shows `backdrops`, or none while the owner hides them (LLM-575),
@@ -1927,7 +1966,9 @@ impl Workspace {
     /// LLM-568: loads each background image whose file changed on disk.
     fn check_background_files(&mut self, cx: &mut Context<Self>) {
         let missing = crate::shell::backdrop::check_files(cx);
-        let lines = self.note_missing_backgrounds(missing);
+        let mut lines = self.note_missing_backgrounds(missing);
+        // A shader file that changed compiles again (LLM-578).
+        lines.extend(crate::shell::backdrop::prepare_shaders(cx));
         if !lines.is_empty() {
             self.message = lines.join("; ").into();
             cx.notify();

@@ -10,6 +10,7 @@ pub mod layout;
 pub mod mascot;
 pub mod motion;
 pub mod palette;
+pub mod shader;
 pub mod sidebar;
 pub mod split;
 pub mod theme;
@@ -32,6 +33,8 @@ mod live_tests;
 mod perf_tests;
 #[cfg(test)]
 mod redraw_tests;
+#[cfg(test)]
+mod shader_tests;
 #[cfg(test)]
 mod sidebar_tests;
 #[cfg(test)]

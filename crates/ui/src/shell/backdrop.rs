@@ -172,7 +172,26 @@ pub struct BackgroundConfig {
     /// LLM-576: `fixed` (the default) or `scroll`, as CSS
     /// `background-attachment`. Only `list` and `task` scroll.
     pub attachment: Option<String>,
+    /// LLM-578: a shader file, or `builtin:<name>`, in place of `image`.
+    pub shader: Option<String>,
+    pub shader_dark: Option<String>,
+    pub shader_light: Option<String>,
+    /// Frames per second, 1 to 120.
+    pub fps: Option<f32>,
+    /// The share of the slot's pixels the shader renders, 0.25 to 1.
+    pub scale: Option<f32>,
 }
+
+/// LLM-578: how a slot runs its shader.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderSpec {
+    pub source: crate::shell::shader::Source,
+    pub fps: f32,
+    pub scale: f32,
+}
+
+pub const DEFAULT_FPS: f32 = 30.;
+pub const DEFAULT_SHADER_SCALE: f32 = 0.5;
 
 /// `size` takes a word or a bare number.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,6 +266,21 @@ pub struct Backdrop {
     pub tint: Option<Hsla>,
     /// LLM-576: the image moves with its panel's content.
     pub scroll: bool,
+    /// LLM-578: the slot runs this shader; `image` then names its file,
+    /// or `builtin:<name>`.
+    pub shader: Option<ShaderSpec>,
+}
+
+impl Backdrop {
+    /// Looks at the file again. A built-in shader is always there.
+    fn restamp(&mut self) {
+        if !matches!(
+            self.shader.as_ref().map(|s| &s.source),
+            Some(crate::shell::shader::Source::Builtin(_))
+        ) {
+            self.stamp = stamp_of(&self.image);
+        }
+    }
 }
 
 /// The modification time of `path`, `None` when it is missing.
@@ -377,14 +411,19 @@ fn resolve_slot(
     dark: bool,
     problems: &mut Vec<String>,
 ) -> Option<Backdrop> {
-    let (image, opacity) = if dark {
-        (&c.image_dark, c.opacity_dark)
+    let (image, opacity, shader) = if dark {
+        (&c.image_dark, c.opacity_dark, &c.shader_dark)
     } else {
-        (&c.image_light, c.opacity_light)
+        (&c.image_light, c.opacity_light, &c.shader_light)
     };
     let name = slot.key();
     let image = image.as_deref().unwrap_or(&c.image).trim();
-    if image.is_empty() {
+    let shader = shader
+        .as_deref()
+        .or(c.shader.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if image.is_empty() && shader.is_none() {
         return None;
     }
     let mut problem = |what: &str, value: &str| {
@@ -459,10 +498,42 @@ fn resolve_slot(
             false
         }
     };
-    let image = resolve_path(image, base);
+    // LLM-578: a shader wins over an image in the same table.
+    let shader = shader.map(|text| {
+        let source = crate::shell::shader::Source::parse(text, base);
+        let fps = match c.fps {
+            Some(f) if f.is_finite() && f > 0. => f.clamp(1., 120.),
+            Some(f) => {
+                problem("fps", &f.to_string());
+                DEFAULT_FPS
+            }
+            None => DEFAULT_FPS,
+        };
+        let scale = match c.scale {
+            Some(f) if f.is_finite() && f > 0. => f.clamp(0.25, 1.),
+            Some(f) => {
+                problem("scale", &f.to_string());
+                DEFAULT_SHADER_SCALE
+            }
+            None => DEFAULT_SHADER_SCALE,
+        };
+        ShaderSpec { source, fps, scale }
+    });
+    let (image, stamp) = match shader.as_ref().map(|s| &s.source) {
+        Some(crate::shell::shader::Source::Builtin(name)) => (
+            PathBuf::from(format!("builtin:{name}")),
+            Some(SystemTime::UNIX_EPOCH),
+        ),
+        Some(crate::shell::shader::Source::File(path)) => (path.clone(), stamp_of(path)),
+        None => {
+            let image = resolve_path(image, base);
+            (image.clone(), stamp_of(&image))
+        }
+    };
     Some(Backdrop {
         scroll,
-        stamp: stamp_of(&image),
+        shader,
+        stamp,
         image,
         opacity,
         layout,
@@ -734,6 +805,41 @@ pub fn set(backdrops: Shown, cx: &mut App) {
     for key in &stale {
         cx.remove_asset::<BackdropLoader>(key);
     }
+    // A slot that no longer runs a shader lets its last frame go. One
+    // that may still fade out keeps it until the next change.
+    let shader_slots: Vec<Slot> = Slot::ALL
+        .into_iter()
+        .filter(|s| {
+            backdrops
+                .each()
+                .iter()
+                .any(|m| m.get(*s).is_some_and(|b| b.shader.is_some()))
+        })
+        .collect();
+    let fading_shader = |slot: &Slot| {
+        cx.try_global::<Fades>().is_some_and(|f| {
+            f.0.borrow()
+                .get(slot)
+                .and_then(|s| s.current.as_ref())
+                .is_some_and(|b| b.shader.is_some())
+        })
+    };
+    let drop_runs: Vec<Slot> = cx
+        .try_global::<Runs>()
+        .map(|r| {
+            r.0.keys()
+                .filter(|s| !shader_slots.contains(s) && !fading_shader(s))
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut gone = Vec::new();
+    for slot in drop_runs {
+        if let Some(run) = cx.default_global::<Runs>().0.remove(&slot) {
+            gone.extend(run.image);
+        }
+    }
+    cx.default_global::<Loads>().retired.extend(gone);
     cx.default_global::<Fades>();
     cx.set_global(backdrops);
     cx.refresh_windows();
@@ -816,7 +922,7 @@ pub fn check_files(cx: &mut App) -> Vec<(Slot, PathBuf)> {
     for mode in all.each_mut() {
         for slot in Slot::ALL {
             if let Some(b) = mode.get_mut(slot) {
-                b.stamp = stamp_of(&b.image);
+                b.restamp();
             }
         }
     }
@@ -1133,6 +1239,21 @@ fn paint(
     for image in retired {
         let _ = window.drop_image(image);
     }
+    if let Some(spec) = &b.shader {
+        let area = if slot == Slot::Window {
+            let view = window.viewport_size();
+            Rect {
+                x: 0.,
+                y: 0.,
+                w: f32::from(view.width),
+                h: f32::from(view.height),
+            }
+        } else {
+            own
+        };
+        paint_shader(slot, b, spec, area, over, bounds, window, cx);
+        return;
+    }
     let key = key_for(b, window, cx);
     let loaded = match window.use_asset::<BackdropLoader>(&key, cx) {
         Some(Ok(loaded)) => loaded,
@@ -1200,6 +1321,204 @@ fn paint(
             });
         }
     }
+}
+
+// LLM-578: shader backgrounds.
+
+/// Compiles the shaders the shown slots name, when new or changed on
+/// disk. Returns a status bar line per shader that fails; the slot keeps
+/// its last good shader.
+pub fn prepare_shaders(cx: &mut App) -> Vec<String> {
+    let Some(shown) = cx.try_global::<Shown>().cloned() else {
+        return Vec::new();
+    };
+    let programs = cx.default_global::<crate::shell::shader::Programs>();
+    let mut problems = Vec::new();
+    for mode in shown.each() {
+        for slot in Slot::ALL {
+            let Some(b) = mode.get(slot) else { continue };
+            let Some(spec) = &b.shader else { continue };
+            if b.stamp.is_none() {
+                continue;
+            }
+            if let Some(e) = programs.prepare(&spec.source, b.stamp) {
+                let line = format!(
+                    "background.{}: shader {}: {e}",
+                    slot.key(),
+                    spec.source.label()
+                );
+                if !problems.contains(&line) {
+                    problems.push(line);
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// What one slot's shader drew last, and the frame on its way.
+struct Run {
+    program: Arc<crate::shell::shader::Program>,
+    started: Instant,
+    image: Option<Arc<RenderImage>>,
+    /// When the frame in `image`, or the one on its way, was asked for.
+    asked: Option<Instant>,
+    size: (u32, u32),
+    pending: bool,
+    /// A finished frame waiting for the next paint.
+    done: Option<(Arc<RenderImage>, (u32, u32))>,
+}
+
+/// Every slot's shader, and one clock for all, so two shaders at the same
+/// rate draw in the same window frame.
+#[derive(Default)]
+struct Runs(HashMap<Slot, Run>, Option<Instant>);
+
+impl gpui_kit::Global for Runs {}
+
+/// The largest side a shader renders, in px.
+const MAX_SHADER_SIDE: f32 = 4096.;
+/// The frame rate while another app is in front.
+const BACKGROUND_FPS: f32 = 2.;
+
+fn rgba_of(color: Hsla) -> [f32; 4] {
+    let c = color.to_rgb();
+    [c.r, c.g, c.b, c.a]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_shader(
+    slot: Slot,
+    b: &Backdrop,
+    spec: &ShaderSpec,
+    area: Rect,
+    over: bool,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gpui_kit::component::ActiveTheme as _;
+    let Some(program) = cx
+        .try_global::<crate::shell::shader::Programs>()
+        .and_then(|p| p.get(&spec.source))
+    else {
+        return;
+    };
+    let now = cx.background_executor().now();
+    let factor = window.scale_factor() * spec.scale;
+    let target = (
+        (area.w * factor).clamp(1., MAX_SHADER_SIDE).round() as u32,
+        (area.h * factor).clamp(1., MAX_SHADER_SIDE).round() as u32,
+    );
+    let theme = cx.theme();
+    let colors = (
+        rgba_of(theme.background),
+        rgba_of(theme.foreground),
+        rgba_of(theme.accent),
+    );
+    let mouse = window.mouse_position();
+    let animate = crate::shell::motion::on(cx);
+    let fps = if !animate {
+        0.
+    } else if window.is_window_active() {
+        spec.fps
+    } else {
+        spec.fps.min(BACKGROUND_FPS)
+    };
+
+    let runs = cx.default_global::<Runs>();
+    let epoch = *runs.1.get_or_insert(now);
+    let run = runs.0.entry(slot).or_insert_with(|| Run {
+        program: program.clone(),
+        started: now,
+        image: None,
+        asked: None,
+        size: target,
+        pending: false,
+        done: None,
+    });
+    let mut retired = Vec::new();
+    if !Arc::ptr_eq(&run.program, &program) {
+        // A new shader, or a reload: start its clock again.
+        run.program = program.clone();
+        run.started = now;
+        run.asked = None;
+    }
+    if let Some((image, made)) = run.done.take() {
+        retired.extend(run.image.replace(image));
+        run.size = made;
+    }
+    let interval = (fps > 0.).then(|| Duration::from_secs_f32(1. / fps));
+    // Frames fall on ticks of the shared clock.
+    let tick_of = |at: Instant, i: Duration| {
+        (at.saturating_duration_since(epoch).as_secs_f64() / i.as_secs_f64()).floor() as u64
+    };
+    // A surface over the panel shows the panel's frame; it asks for none.
+    let due = !over
+        && !run.pending
+        && (run.image.is_none()
+            || run.size != target
+            || interval.is_some_and(|i| run.asked.is_none_or(|a| tick_of(now, i) > tick_of(a, i))));
+    let image = run.image.clone();
+    let next = interval.map(|i| epoch + i.mul_f64((tick_of(now, i) + 1) as f64));
+    if due {
+        run.pending = true;
+        run.asked = Some(now);
+        let inputs = crate::shell::shader::Inputs {
+            time: now.saturating_duration_since(run.started).as_secs_f32(),
+            pad: 0.,
+            resolution: [target.0 as f32, target.1 as f32],
+            origin: [area.x * factor, area.y * factor],
+            pointer: [
+                (f32::from(mouse.x) - area.x) * factor,
+                (f32::from(mouse.y) - area.y) * factor,
+            ],
+            background: colors.0,
+            foreground: colors.1,
+            accent: colors.2,
+        };
+        let view = window.current_view();
+        let program = program.clone();
+        let render = cx
+            .background_executor()
+            .spawn(async move { program.render(target.0, target.1, &inputs) });
+        cx.spawn(async move |cx| {
+            let result = render.await;
+            cx.update(|cx| {
+                let runs = cx.default_global::<Runs>();
+                let Some(run) = runs.0.get_mut(&slot) else {
+                    return;
+                };
+                run.pending = false;
+                // A frame shows at the next tick, which draws anyway. Only
+                // the first frame, or one for a new size, draws at once.
+                let now_please = run.image.is_none() || run.size != target;
+                match result {
+                    Ok(bgra) => {
+                        if let Some(buffer) = image::RgbaImage::from_raw(target.0, target.1, bgra) {
+                            let frame = image::Frame::new(buffer);
+                            run.done = Some((Arc::new(RenderImage::new(vec![frame])), target));
+                        }
+                    }
+                    Err(e) => eprintln!("llmtodo: background shader: {e}"),
+                }
+                if now_please {
+                    cx.notify(view);
+                }
+            });
+        })
+        .detach();
+    }
+    cx.default_global::<Loads>().retired.extend(retired);
+    if let Some(at) = next.filter(|_| !over) {
+        wake_at(at.max(now + Duration::from_millis(1)), window, cx);
+    }
+    let Some(image) = image else { return };
+    let loads = cx.default_global::<Loads>();
+    loads.ready.entry(ident(b)).or_insert(now);
+    // The frame stretches over the slot: it renders at `scale`.
+    let image_bounds = Bounds::new(point(px(area.x), px(area.y)), size(px(area.w), px(area.h)));
+    let _ = window.paint_image(bounds, image_bounds, Default::default(), image, 0, false);
 }
 
 fn rect_of(bounds: Bounds<Pixels>) -> Rect {
