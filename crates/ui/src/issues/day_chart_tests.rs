@@ -132,3 +132,19 @@ fn the_readout_shows_the_hovered_day_or_the_last_seven_days() {
     assert_eq!(readout(&out, None), ("Last 7 days".to_string(), 6, 9));
     assert_eq!(readout(&out, Some(0)), ("Wed Nov 11".to_string(), 1, 0));
 }
+
+/// The dots inside a created bar keep even gaps on the pixel grid: the
+/// 5 px inside a 7 px bar at 1x, 1.5x (8 device px) and 2x.
+#[test]
+fn dots_split_the_room_evenly_at_each_scale() {
+    use crate::issues::day_chart::dot_run;
+    // (room, dot) -> (first dot's offset, count)
+    assert_eq!(dot_run(5, 1), (1, 2), "1x: gap, dot, gap, dot, gap");
+    assert_eq!(dot_run(10, 2), (2, 2), "2x: the same, doubled");
+    assert_eq!(dot_run(8, 2), (3, 1), "1.5x: one centered dot");
+    assert_eq!(dot_run(2, 1), (0, 0), "no room, no dots");
+    // A tall bar: the gap above the last row and below the first match.
+    let (gap, rows) = dot_run(31, 1);
+    assert_eq!((gap, rows), (1, 15));
+    assert_eq!(31 - (gap + (rows - 1) * 2 + 1), gap);
+}

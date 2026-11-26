@@ -541,11 +541,11 @@ impl Workspace {
                 this.open_task(*id, window, cx);
             }),
             cx.subscribe_in(&day_chart, window, |this, chart, event, window, cx| {
-                let DayChartEvent::Pick(date) = event;
+                let DayChartEvent::Pick(date, at) = event;
                 if let Some(slug) = chart.read(cx).slug(cx) {
-                    let date = *date;
+                    let (date, at) = (*date, *at);
                     this.day_tasks
-                        .update(cx, |tasks, cx| tasks.show(slug, date, window, cx));
+                        .update(cx, |tasks, cx| tasks.show(slug, date, at, window, cx));
                 }
             }),
             cx.subscribe_in(&day_tasks, window, |this, _, event, window, cx| {

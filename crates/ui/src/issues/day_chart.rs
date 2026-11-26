@@ -25,11 +25,18 @@ actions!(day_tasks, [DayDown, DayUp, DayOpen, DayClose]);
 
 pub const CONTEXT: &str = "DayTasks";
 
-/// The strip's height, bars and padding together.
-pub const HEIGHT: f32 = 72.;
-/// One day's slot, and the bar inside it.
+/// The strip's height, bars, week labels and padding together.
+pub const HEIGHT: f32 = 88.;
+const PAD_TOP: f32 = 8.;
+const PAD_BOTTOM: f32 = 5.;
+/// The row under the bars that holds each week's date.
+const LABEL_ROW: f32 = 14.;
+/// One day's slot, and the bar inside it. A 7 px bar leaves 5 px inside
+/// its outline, which holds two dots with even gaps at 1x, 1.5x and 2x.
 const SLOT: f32 = 10.;
-const BAR: f32 = 8.;
+const BAR: f32 = 7.;
+/// The bar's offset in its slot, in whole px so it stays sharp.
+const BAR_INSET: f32 = 1.;
 /// The strip shows at most this many days, the newest kept.
 const MAX_DAYS: usize = 730;
 
@@ -126,8 +133,8 @@ pub fn day_label(date: civil::Date) -> String {
 }
 
 pub enum DayChartEvent {
-    /// The owner clicked this day.
-    Pick(civil::Date),
+    /// The owner clicked this day, at this point in the window.
+    Pick(civil::Date, gpui_kit::Point<gpui_kit::Pixels>),
 }
 
 /// The project slug the list shows, or `None` in any other scope.
@@ -187,64 +194,98 @@ impl DayChart {
     }
 }
 
-/// How tall a bar of `n` tasks is against `max`, in `half` px of room.
+/// How tall a bar of `n` tasks is against `max`, in `half` px of room,
+/// in whole px so its ends sit on the pixel grid.
 fn bar_height(n: usize, max: usize, half: f32) -> f32 {
     if n == 0 {
         0.
     } else {
-        (n as f32 / max.max(1) as f32 * half).max(3.)
+        (n as f32 / max.max(1) as f32 * half).round().max(3.)
     }
 }
 
-/// Created tasks: an outline with a grid of dots inside.
+/// Where the dots go along one side of a dotted bar, in device pixels:
+/// the offset of the first dot and the dot count. `room` is the space
+/// inside the outline, `dot` one dot's size, and the dots sit `2 * dot`
+/// apart. They keep at least one dot of gap from the outline, and the
+/// leftover space splits as evenly as the pixel grid allows.
+pub fn dot_run(room: i32, dot: i32) -> (i32, i32) {
+    let pitch = dot * 2;
+    if room < dot * 3 {
+        return (0, 0);
+    }
+    let count = (room - dot * 3) / pitch + 1;
+    let span = (count - 1) * pitch + dot;
+    ((room - span) / 2, count)
+}
+
+/// Created tasks: a 1 px outline with a grid of dots inside. It paints in
+/// device pixels, so the outline and every dot land on whole pixels at any
+/// scale. The rows count up from the bottom, so the dots of bars side by
+/// side line up.
 fn dotted_bar(height: f32, color: Hsla) -> impl IntoElement {
-    div()
-        .w(px(BAR))
-        .h(px(height))
-        .border_1()
-        .border_color(color)
-        .rounded(px(1.5))
-        .overflow_hidden()
-        .child(
-            gpui_kit::canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                    let dot = gpui_kit::size(px(1.), px(1.));
-                    let dots = color.opacity(0.75);
-                    let mut y = bounds.top() + px(1.);
-                    while y + px(1.) <= bounds.bottom() - px(0.5) {
-                        let mut x = bounds.left() + px(1.);
-                        while x + px(1.) <= bounds.right() - px(0.5) {
-                            window.paint_quad(gpui_kit::fill(
-                                gpui_kit::Bounds::new(point(x, y), dot),
-                                dots,
-                            ));
-                            x += px(2.);
-                        }
-                        y += px(2.);
-                    }
-                },
-            )
-            .size_full(),
-        )
+    gpui_kit::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let scale = window.scale_factor();
+            let to_dev = |v: gpui_kit::Pixels| (f32::from(v) * scale).round() as i32;
+            let to_px = |v: i32| px(v as f32 / scale);
+            let (left, top) = (to_dev(bounds.left()), to_dev(bounds.top()));
+            let (w, h) = (to_dev(bounds.size.width), to_dev(bounds.size.height));
+            let line = scale.round().max(1.) as i32;
+            let rect = |x: i32, y: i32, w: i32, h: i32| {
+                gpui_kit::Bounds::new(
+                    point(to_px(left + x), to_px(top + y)),
+                    gpui_kit::size(to_px(w), to_px(h)),
+                )
+            };
+            for edge in [
+                rect(0, 0, w, line),
+                rect(0, h - line, w, line),
+                rect(0, line, line, h - 2 * line),
+                rect(w - line, line, line, h - 2 * line),
+            ] {
+                window.paint_quad(gpui_kit::fill(edge, color));
+            }
+            let dot = line;
+            let (x0, cols) = dot_run(w - 2 * line, dot);
+            let (x_gap, rows) = dot_run(h - 2 * line, dot);
+            // The bottom row keeps the same gap as the sides.
+            let bottom_gap = x0.min(x_gap);
+            let dots = color.opacity(0.8);
+            for row in 0..rows {
+                let y = h - line - bottom_gap - dot - row * dot * 2;
+                if y < line + dot {
+                    break;
+                }
+                for col in 0..cols {
+                    let x = line + x0 + col * dot * 2;
+                    window.paint_quad(gpui_kit::fill(rect(x, y, dot, dot), dots));
+                }
+            }
+        },
+    )
+    .flex_none()
+    .w(px(BAR))
+    .h(px(height))
 }
 
 /// Completed tasks: a solid bar.
 fn solid_bar(height: f32, color: Hsla) -> impl IntoElement {
-    div().w(px(BAR)).h(px(height)).bg(color).rounded(px(1.5))
+    div().flex_none().w(px(BAR)).h(px(height)).bg(color)
 }
 
 /// The legend's sample of a bar, beside a count.
 fn swatch(dotted: bool, color: Hsla) -> gpui_kit::AnyElement {
     if dotted {
-        dotted_bar(10., color).into_any_element()
+        dotted_bar(11., color).into_any_element()
     } else {
-        solid_bar(10., color).into_any_element()
+        solid_bar(11., color).into_any_element()
     }
 }
 
-/// What the readout at the right shows: the hovered day, or the last
-/// seven days when no day is hovered.
+/// What the readout shows: the hovered day, or the last seven days when
+/// no day is hovered.
 pub fn readout(days: &[Day], hovered: Option<usize>) -> (String, usize, usize) {
     match hovered.and_then(|ix| days.get(ix)) {
         Some(day) => (day_label(day.date), day.created.len(), day.completed.len()),
@@ -283,8 +324,7 @@ impl Render for DayChart {
             .map(|d| d.created.len().max(d.completed.len()))
             .max()
             .unwrap_or(0);
-        // The padding takes 8 px above and below, the line 1 px.
-        let half = (HEIGHT - 17.) / 2.;
+        let half = (HEIGHT - PAD_TOP - PAD_BOTTOM - LABEL_ROW - 1.) / 2.;
         let (label, made, done) = readout(&days, hovered);
         let slots = days.iter().enumerate().map(|(ix, day)| {
             let date = day.date;
@@ -292,16 +332,16 @@ impl Render for DayChart {
             let is_hovered = hovered == Some(ix);
             // While one day is hovered, the others step back.
             let dim = hovered.is_some() && !is_hovered;
+            // Each week starts on a Monday, with its date under it.
+            let week_start = date.weekday() == jiff::civil::Weekday::Monday;
             v_flex()
                 .id(SharedString::from(format!("day-{date}")))
                 .test_support()
+                .relative()
                 .flex_none()
                 .w(px(SLOT))
                 .h_full()
-                .items_center()
-                .rounded(px(2.))
                 .when(dim, |this| this.opacity(0.4))
-                .when(is_hovered, |this| this.bg(hover_bg))
                 .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                     let next = if *over {
                         Some(ix)
@@ -316,27 +356,58 @@ impl Render for DayChart {
                     }
                 }))
                 .when(!empty, |this| {
-                    this.cursor_pointer()
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(DayChartEvent::Pick(date));
-                        }))
+                    this.cursor_pointer().on_click(cx.listener(
+                        move |_, event: &gpui_kit::ClickEvent, _, cx| {
+                            cx.emit(DayChartEvent::Pick(date, event.position()));
+                        },
+                    ))
                 })
                 .child(
                     v_flex()
-                        .h(px(half))
-                        .justify_end()
-                        .when(!day.created.is_empty(), |this| {
-                            this.child(dotted_bar(bar_height(day.created.len(), max, half), color))
-                        }),
+                        .w_full()
+                        .pt(px(PAD_TOP))
+                        .when(is_hovered, |this| this.bg(hover_bg))
+                        .child(v_flex().h(px(half)).pl(px(BAR_INSET)).justify_end().when(
+                            !day.created.is_empty(),
+                            |this| {
+                                this.child(dotted_bar(
+                                    bar_height(day.created.len(), max, half),
+                                    color,
+                                ))
+                            },
+                        ))
+                        .child(div().w_full().h(px(1.)).bg(axis))
+                        .child(v_flex().h(px(half)).pl(px(BAR_INSET)).when(
+                            !day.completed.is_empty(),
+                            |this| {
+                                this.child(solid_bar(
+                                    bar_height(day.completed.len(), max, half),
+                                    color,
+                                ))
+                            },
+                        )),
                 )
-                .child(div().w_full().h(px(1.)).bg(axis))
-                .child(
-                    v_flex()
-                        .h(px(half))
-                        .when(!day.completed.is_empty(), |this| {
-                            this.child(solid_bar(bar_height(day.completed.len(), max, half), color))
-                        }),
-                )
+                .when(week_start, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .bottom(px(PAD_BOTTOM))
+                            .h(px(LABEL_ROW))
+                            .flex()
+                            .items_end()
+                            .gap_1()
+                            .child(div().w(px(1.)).h_full().bg(axis))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .line_height(px(10.))
+                                    .whitespace_nowrap()
+                                    .text_color(muted)
+                                    .child(date.strftime("%b %-d").to_string()),
+                            ),
+                    )
+                })
         });
         let count = |n: usize, word: &'static str, dotted: bool| {
             h_flex()
@@ -359,30 +430,19 @@ impl Render for DayChart {
             .border_color(theme.border)
             .bg(theme.background)
             .child(
-                h_flex()
-                    .id("day-chart-days")
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .py(px(8.))
-                    .px_2()
-                    .overflow_x_scroll()
-                    .track_scroll(&self.scroll)
-                    .children(slots),
-            )
-            .child(
                 v_flex()
                     .id("day-chart-readout")
                     .test_support()
                     .flex_none()
-                    // Wide enough for any day, so a hover never moves it.
+                    // Wide enough for any day, so a hover never moves the
+                    // strip beside it.
                     .min_w(gpui_kit::rems(13.))
                     .h_full()
                     .px_4()
                     .justify_center()
                     .gap_1p5()
                     .text_xs()
-                    .border_l_1()
+                    .border_r_1()
                     .border_color(theme.border)
                     .child(
                         div()
@@ -396,6 +456,17 @@ impl Render for DayChart {
                             .child(count(made, "created", true))
                             .child(count(done, "completed", false)),
                     ),
+            )
+            .child(
+                h_flex()
+                    .id("day-chart-days")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px_2()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.scroll)
+                    .children(slots),
             )
             .into_any_element()
     }
@@ -420,6 +491,8 @@ pub struct DayTasks {
     store: Entity<IssueStore>,
     focus: FocusHandle,
     open: Option<(SharedString, civil::Date)>,
+    /// Where the owner clicked. The list opens above it, centered on it.
+    at: gpui_kit::Point<gpui_kit::Pixels>,
     selected: usize,
     return_to: Option<FocusHandle>,
     fallback: FocusHandle,
@@ -434,6 +507,7 @@ impl DayTasks {
             store,
             focus: cx.focus_handle(),
             open: None,
+            at: point(px(0.), px(0.)),
             selected: 0,
             return_to: None,
             fallback,
@@ -474,6 +548,7 @@ impl DayTasks {
         &mut self,
         slug: SharedString,
         date: civil::Date,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -481,6 +556,7 @@ impl DayTasks {
             self.return_to = window.focused(cx);
         }
         self.open = Some((slug, date));
+        self.at = at;
         self.selected = 0;
         window.focus(&self.focus, cx);
         cx.notify();
@@ -579,53 +655,55 @@ impl Render for DayTasks {
                 }))
                 .into_any_element()
         };
-        let root = div()
-            .absolute()
-            .top_10()
-            .left_4()
-            .right_4()
-            .flex()
-            .justify_center()
-            .child(
-                v_flex()
-                    .id("day-tasks")
-                    .test_support()
-                    .key_context(CONTEXT)
-                    .track_focus(&self.focus)
-                    .on_action(cx.listener(|this, _: &DayDown, _, cx| this.step(true, cx)))
-                    .on_action(cx.listener(|this, _: &DayUp, _, cx| this.step(false, cx)))
-                    .on_action(cx.listener(|this, _: &DayOpen, window, cx| {
-                        let ix = this.selected;
-                        this.open_row(ix, window, cx);
-                    }))
-                    .on_action(cx.listener(|this, _: &DayClose, window, cx| this.close(window, cx)))
-                    // The list under it takes no hover or click.
-                    .occlude()
-                    .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
-                    .w(px(560.))
-                    .max_w_full()
-                    .max_h(px(480.))
-                    .overflow_y_scroll()
-                    .p_1()
-                    .gap_1()
-                    .bg(theme.popover)
-                    .text_color(theme.popover_foreground)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(theme.radius)
-                    .shadow_lg()
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .pt_1()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(title)
-                            .child("Enter opens · Esc closes"),
-                    )
-                    .child(body),
-            );
-        crate::shell::motion::enter(root, "day-tasks-enter", cx).into_any_element()
+        let panel = div().child(
+            v_flex()
+                .id("day-tasks")
+                .test_support()
+                .key_context(CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|this, _: &DayDown, _, cx| this.step(true, cx)))
+                .on_action(cx.listener(|this, _: &DayUp, _, cx| this.step(false, cx)))
+                .on_action(cx.listener(|this, _: &DayOpen, window, cx| {
+                    let ix = this.selected;
+                    this.open_row(ix, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &DayClose, window, cx| this.close(window, cx)))
+                // The list under it takes no hover or click.
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                .w(px(480.))
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .p_1()
+                .gap_1()
+                .bg(theme.popover)
+                .text_color(theme.popover_foreground)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius)
+                .shadow_lg()
+                .child(
+                    h_flex()
+                        .px_2()
+                        .pt_1()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(title)
+                        .child("Enter opens · Esc closes"),
+                )
+                .child(body),
+        );
+        // Above the click and centered on it, kept 8 px inside the window.
+        let at = self.at - point(px(0.), px(6.));
+        gpui_kit::deferred(
+            gpui_kit::anchored()
+                .position(at)
+                .anchor(gpui_kit::Anchor::BottomCenter)
+                .snap_to_window_with_margin(px(8.))
+                .child(crate::shell::motion::enter(panel, "day-tasks-enter", cx)),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 }
