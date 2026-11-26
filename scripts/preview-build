@@ -31,12 +31,17 @@ if [ -z "$key" ] || [ $# -ne 1 ]; then
   exit 2
 fi
 case "$key" in
-  *[!A-Za-z0-9-]*) echo "not a ticket key: $key" >&2; exit 2 ;;
+  -* | *[!A-Za-z0-9-]*) echo "not a ticket key: $key" >&2; exit 2 ;;
 esac
 key=$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')
 
 if ! git diff --quiet HEAD --; then
   echo "commit your changes first: the preview build must match a commit" >&2
+  exit 1
+fi
+# The ticket records the branch, which tells whether the build is current.
+if ! git symbolic-ref -q HEAD >/dev/null; then
+  echo "check out the ticket's branch first: HEAD is detached" >&2
   exit 1
 fi
 commit=$(git rev-parse HEAD)

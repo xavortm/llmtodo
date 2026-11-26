@@ -1371,3 +1371,103 @@ async fn preview_build_flags() {
     assert_eq!(v.get("preview_build"), None, "{v}");
     t.stop().await;
 }
+
+/// LLM-590: `scripts/preview-build` in a temp repo, with the build skipped.
+/// It refuses bad keys, uncommitted changes and a detached `HEAD`, copies the
+/// binaries into `target/preview/<KEY>/`, and records the build with the
+/// branch. A new commit on the branch makes it stale.
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_build_script() {
+    let t = T::new().await;
+    t.json("s1", &["team", "create", "LLM", "llmtodo"]);
+    t.json("s1", &["issue", "create", "-t", "Preview", "--team", "LLM"]);
+    let repo = t.dir.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir_all(repo.join("scripts")).unwrap();
+    std::fs::create_dir_all(repo.join("target/release")).unwrap();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/preview-build");
+    std::fs::copy(&src, repo.join("scripts/preview-build")).unwrap();
+    std::fs::write(repo.join("target/release/llmtodo-app"), "app").unwrap();
+    std::fs::write(repo.join("target/release/llmtodo"), "cli").unwrap();
+    std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+    let git = |args: &[&str]| -> String {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "llm-1-preview"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let run = |key: &str| {
+        let bin = assert_cmd::cargo::cargo_bin("llmtodo");
+        Command::new("bash")
+            .arg(repo.join("scripts/preview-build"))
+            .arg(key)
+            .env_clear()
+            .env("HOME", t.dir.path())
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("LLMTODO_DATA_DIR", t.dir.path())
+            .env("LLMTODO_SESSION", "s1")
+            .env("LLMTODO_ACTOR", "agent:test-harness/test-model/high")
+            .env("LLMTODO_PREVIEW_SKIP_BUILD", "1")
+            .env("LLMTODO_BIN", bin)
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+    };
+    let view = || {
+        let out = t
+            .cmd("s1", &["--json", "issue", "view", "LLM-1"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+
+    assert_eq!(run("--help").status.code(), Some(2), "a flag is no key");
+    std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+    let out = run("LLM-1");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("commit your changes"));
+    git(&["checkout", "-q", "README.md"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "--detach"]);
+    let out = run("LLM-1");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("detached"));
+    git(&["checkout", "-q", "llm-1-preview"]);
+
+    let out = run("llm-1");
+    assert!(out.status.success(), "{out:?}");
+    let dir = repo.join("target/preview/LLM-1");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("llmtodo-app")).unwrap(),
+        "app"
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("llmtodo")).unwrap(), "cli");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("build-commit"))
+            .unwrap()
+            .trim(),
+        head
+    );
+    let v = view();
+    let b = &v["preview_build"];
+    assert_eq!(b["path"], dir.join("llmtodo-app").to_str().unwrap(), "{v}");
+    assert_eq!(b["commit"], head.as_str());
+    assert_eq!(b["stale"], false, "{v}");
+    assert_eq!(v["git"]["branch"], "llm-1-preview");
+
+    git(&["commit", "-q", "--allow-empty", "-m", "after the build"]);
+    assert_eq!(view()["preview_build"]["stale"], true);
+    t.stop().await;
+}

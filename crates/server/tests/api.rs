@@ -2677,6 +2677,41 @@ async fn preview_build_records_and_goes_stale() {
         .await;
     assert_eq!(v["preview_build"]["stale"], true);
 
+    // A session on another branch says nothing about this build. The
+    // script records the branch with the build.
+    let v = t
+        .ok(
+            &who,
+            "PATCH",
+            &url,
+            json!({
+                "branch": "p1-branch",
+                "preview_build": { "path": "/w/target/preview/app", "commit": commit },
+            }),
+        )
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false);
+    let mut elsewhere = agent("p2");
+    elsewhere.0.branch = Some("main".into());
+    elsewhere.0.head = Some("fff9999".into());
+    let v = t
+        .ok(&elsewhere, "PATCH", &url, json!({ "priority": "low" }))
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false, "another branch");
+
+    // The owner records a build of a newer commit. The agent sessions are
+    // older than the build, so they do not make it stale.
+    let newer = format!("bbb2222{}", "0".repeat(33));
+    let v = t
+        .ok(
+            &owner(),
+            "PATCH",
+            &url,
+            json!({ "preview_build": { "path": "/w/app", "commit": newer } }),
+        )
+        .await;
+    assert_eq!(v["preview_build"]["stale"], false, "older sessions");
+
     // Only a full hash and a path are accepted.
     for bad in [
         json!({ "path": "/p", "commit": "abc1234" }),
@@ -2701,7 +2736,8 @@ async fn preview_build_records_and_goes_stale() {
         .filter_map(|e| e["field"].as_str())
         .filter(|f| *f == "preview_build")
         .collect();
-    assert_eq!(fields.len(), 2, "{log}");
+    // Three recorded builds and one clear.
+    assert_eq!(fields.len(), 4, "{log}");
     t.stop().await;
 }
 

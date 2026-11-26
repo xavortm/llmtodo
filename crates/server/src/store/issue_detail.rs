@@ -83,10 +83,7 @@ pub async fn load_with(
     let preview_build = preview_build(&git_row);
     let git = git(git_row, &attachments, &sessions);
     let preview_build = preview_build.map(|mut b| {
-        b.stale = git
-            .head
-            .as_deref()
-            .is_some_and(|h| !same_commit(h, &b.commit));
+        b.stale = preview_stale(&b, git.branch.as_deref(), &sessions);
         b
     });
     Ok(IssueDetail {
@@ -113,6 +110,20 @@ fn preview_build(r: &GitRow) -> Option<PreviewBuild> {
         built_at: crate::db::parse_ts(r.preview_build_at.as_deref().unwrap_or_default()),
         stale: false,
     })
+}
+
+/// Whether a newer `HEAD` of the build's branch exists. Only agent sessions
+/// on the issue's branch, seen at or after the build, count: a session on
+/// another branch or an older one says nothing about this build. Without
+/// a branch, every session seen since the build counts.
+fn preview_stale(b: &PreviewBuild, branch: Option<&str>, sessions: &[WorkSession]) -> bool {
+    sessions
+        .iter()
+        .filter(|s| s.last_seen_at >= b.built_at)
+        .filter(|s| branch.is_none() || s.branch.as_deref() == branch)
+        .filter_map(|s| Some((s.last_seen_at, s.last_head.as_deref()?)))
+        .max_by_key(|(at, _)| *at)
+        .is_some_and(|(_, h)| !same_commit(h, &b.commit))
 }
 
 /// Whether two commit hashes name the same commit. Either may be short.
