@@ -21,6 +21,22 @@ A Linear-style task tracker: a GPUI desktop app for people, and a CLI with full 
 
 This repo tracks its own build in llmtodo. Load the `llmtodo` skill in `.claude/skills/llmtodo` before you touch a ticket. The map issue is LLM-1. Run `scripts/gen-agent-docs` after any CLI change, so `docs/agents/cli-reference.md` stays current. After a round of work lands on `main`, run `scripts/publish` from the main checkout. The issue tracker doc explains it.
 
+## Build and review
+
+Claude Code builds. agy reviews. Every ticket that ends in a commit gets at least one agy review before the owner sees it.
+
+1. **Build.** Claim the ticket and work on a branch named after it, such as `llm-589-review-queue`. When the checks pass, commit and push the branch.
+2. **Request a review.** Move the ticket to In Review: `llmtodo issue update <KEY> --status "In Review"`. That ends your claim and makes it wait on the reviewer. Then run `scripts/request-review <KEY>` (base `main`, or pass a base ref). It runs agy headless with the `llmtodo-review` skill. agy answers with `llmtodo issue review answer`: numbered findings marked `blocking`, `should-fix` or `nit`. The script prints the answer and exits 0 on pass, 3 on changes requested, 1 when agy wrote no answer.
+3. **Pass** moves the ticket to User review for the owner, with agy's notes kept. Finish as the llmtodo skill says.
+4. **Changes requested** moves the ticket back to In Progress. Claim it, fix every blocking and should-fix finding or decline it with a reason, and commit. Add one line per finding to the Agent notes under `Round N (agy, changes requested)`: `1. fixed in <sha>`, `2. declined: <why>`, `3. skipped (nit)`. Then go back to step 2.
+5. Stop after round 3 and ask the owner with `llmtodo issue ask`.
+
+agy reviews a throwaway clone (no hardlinks, no remote, build cache copied in) with a clean environment, so its commands cannot change this checkout. Its permission rules are not the guard; the clone is, and it does not jail agy, which still runs as the owner. llmtodo does not detect agy by itself, so the script sets `LLMTODO_ACTOR=agent:antigravity/<model>/<effort>`. Without it agy would act as the owner, who may approve. `AGY_MODEL` picks the model, default `gemini-4-neon-high`.
+
+The reviewer never edits code, commits, branches or claims. A builder never edits a reviewer's answer.
+
+## Worktrees and data
+
 A new git worktree starts without a `target` folder and compiles every dependency again. Several at once overload the machine. Before the first build in a worktree, copy the build cache from the main checkout: `cp -cRp <main checkout>/target <worktree>/target`. The copy takes under a minute and uses almost no disk, because APFS shares the file blocks.
 
 The owner's real data lives in `~/Library/Application Support/llmtodo`. Tests and previews must use `LLMTODO_DATA_DIR` with a temporary folder.
@@ -54,6 +70,7 @@ This repo is MIT, so the license decides what we can copy.
 ### Skills
 
 - `.claude/skills/gpui-kit` and `.claude/skills/gpui-kit-design-guides` are copied from GPUI Kit. Load them before any app work. The design guide applies on top of the Zed look from `SPEC.md`. `.claude/skills/NOTICE.md` records the source and license.
+- `.claude/skills/llmtodo-review` is the reviewer's procedure for agy (see "Build and review").
 - `zed/.agents/skills/gpui-test` explains `#[gpui::test]`, seeds and flaky test replay. Read it in place when you write app tests. It is not copied, because Zed's license for repo-level files is unclear.
 - `zed/.agents/skills/gpui-bench` covers GPUI benchmarks and UI hangs. Read it in place when the app is slow.
 
