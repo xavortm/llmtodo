@@ -316,6 +316,10 @@ pub struct Workspace {
     /// project's list, and the list of a picked day's tasks.
     day_chart: Entity<DayChart>,
     day_tasks: Entity<DayTasks>,
+    /// The view each tracker showed when the owner switched away from it,
+    /// by tracker index. A switch back opens it again, so a project the
+    /// other tracker lacks is not lost to All issues.
+    tracker_scopes: std::collections::HashMap<usize, Scope>,
     /// The API thread. None in tests on demo data.
     backend: Option<Backend>,
     /// Which writes are on their way, and the owner's unsaved text.
@@ -707,6 +711,7 @@ impl Workspace {
             claims,
             day_chart,
             day_tasks,
+            tracker_scopes: Default::default(),
             backend: None,
             pipeline: WritePipeline::default(),
             activity: Default::default(),
@@ -920,6 +925,8 @@ impl Workspace {
         let Some(starter) = self.starter.clone() else {
             return false;
         };
+        let scope = self.list.read(cx).scope.clone();
+        self.tracker_scopes.insert(current, scope);
         // Nothing from the old tracker may reach the new one.
         self.backend = None;
         self._events = None;
@@ -1001,6 +1008,15 @@ impl Workspace {
                 tracker.teams = Some(teams);
             }
         });
+        // Back on a tracker: open the view it showed when the owner left.
+        let open = self.store.read(cx).tracker;
+        if let Some(scope) = self.tracker_scopes.remove(&open)
+            && scope != Scope::Settings
+            && scope != self.list.read(cx).scope
+            && scope.exists(&self.store.read(cx).catalog)
+        {
+            self.set_scope(scope, cx);
+        }
         let store = self.store.clone();
         let held = |key: &str, cx: &App| {
             !partial || store.read(cx).by_key(key).is_some_and(|i| !i.deleted)

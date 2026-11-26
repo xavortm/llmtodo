@@ -267,3 +267,35 @@ fn zoom_grows_the_strip_and_the_day_list(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// The strip comes back after any trip away from a project.
+#[gpui_kit::test]
+fn the_strip_comes_back_after_leaving_the_project(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    for (scope, shown) in [
+        (Scope::Project("app".into()), true),
+        (Scope::All, false),
+        (Scope::Project("app".into()), true),
+        (Scope::Project("server".into()), true),
+        (Scope::Team("LLM".into()), false),
+        (Scope::Project("server".into()), true),
+    ] {
+        cx.update_window(handle, |_, _, cx| {
+            view.update(cx, |this, cx| this.set_scope(scope.clone(), cx));
+        })
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let found = window.try_find("day-chart").is_some();
+            assert_eq!(found, shown, "{scope:?}");
+            if shown {
+                let strip = window.find("day-chart").bounds();
+                assert!(
+                    strip.size.height > gpui_kit::px(40.),
+                    "{scope:?}: {strip:?}"
+                );
+            }
+        })
+        .unwrap();
+    }
+}

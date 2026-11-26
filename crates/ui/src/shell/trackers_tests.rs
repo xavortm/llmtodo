@@ -340,3 +340,50 @@ fn one_tracker_shows_no_tracker_rows(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-560: a tracker that lacks the open project shows all issues, and a
+/// switch back opens that project again, with its day strip.
+#[gpui_kit::test]
+fn a_switch_back_reopens_the_trackers_last_view(cx: &mut TestAppContext) {
+    use crate::model::backend::Loaded;
+    use crate::model::scope::Scope;
+    let (handle, view, _) = open(cx, None);
+    let strip = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("day-chart").is_some()
+        })
+        .unwrap()
+    };
+    let scope = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).scope(cx));
+    view.update(cx, |this, cx| {
+        this.set_scope(Scope::Project("app".into()), cx)
+    });
+    assert!(strip(cx));
+
+    // The real tracker has no App project.
+    view.update(cx, |this, cx| {
+        assert!(this.switch_tracker(1, cx));
+        this.apply_event(Event::Snapshot(Box::new(real_snapshot().load())), cx);
+    });
+    assert_eq!(scope(cx), Scope::All);
+    assert!(!strip(cx));
+
+    // Back on the demo, its snapshot holds App again.
+    view.update(cx, |this, cx| {
+        assert!(this.switch_tracker(0, cx));
+        let catalog = crate::model::demo::catalog();
+        let issues = crate::model::demo::issues(&catalog);
+        let loaded = Loaded {
+            data: Default::default(),
+            catalog,
+            issues,
+            questions: Vec::new(),
+            partial: false,
+            raw: real_snapshot(),
+        };
+        this.apply_event(Event::Snapshot(Box::new(loaded)), cx);
+    });
+    assert_eq!(scope(cx), Scope::Project("app".into()));
+    assert!(strip(cx), "the strip shows again");
+}
