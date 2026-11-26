@@ -1,4 +1,7 @@
-//! `issue review`: the review section and the owner's answers.
+//! `issue review`: the review section, the reviewer's queue, and the answers
+//! of the reviewer agent and the owner.
+
+use std::path::PathBuf;
 
 use clap::Subcommand;
 use llmtodo_api_types::*;
@@ -21,23 +24,39 @@ pub enum ReviewCmd {
         #[arg(long = "check", required = true)]
         checks: Vec<String>,
     },
-    /// Answer the review of an issue in User review. `approve` moves it to
-    /// Done, or, with an open PR, leaves it waiting on an agent to merge.
-    /// `request-changes` needs --feedback and moves it to Todo for an agent.
-    /// Several keys send every answer in one write, and print one result
-    /// per key. A refused answer leaves the others in place, and the exit
-    /// code is then 6.
+    /// List the tickets that wait on the reviewer agent, oldest first: open
+    /// tickets in an agent-review status, such as In Review. Each row has
+    /// the key, title, status, PR URL, branch, worktree and the round the
+    /// answer will be. Every project is listed unless --project is set.
+    Queue {
+        /// Only tickets in this project, by slug.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Answer the review of an issue in a review status. The reviewer agent
+    /// answers `pass` or `request-changes` in a status such as In Review.
+    /// `pass` moves the ticket to the owner's review status, such as User
+    /// review, and keeps the feedback as notes for the owner. Only the owner
+    /// may `approve`: it moves the ticket to Done, or, with an open PR, leaves
+    /// it waiting on an agent to merge. `request-changes` needs feedback and
+    /// moves the ticket to Todo for an agent. Several keys send every answer
+    /// in one write, and print one result per key. A refused answer leaves
+    /// the others in place, and the exit code is then 6.
     Answer {
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
-        /// `approve` or `request-changes`.
+        /// `pass`, `request-changes` (or `changes`), or `approve`.
         verdict: ReviewVerdict,
-        /// What to change, or a note on the approval.
-        #[arg(long, short = 'm')]
+        /// What to change, the reviewer's notes, or a note on the approval.
+        #[arg(long, short = 'm', conflicts_with = "feedback_file")]
         feedback: Option<String>,
+        /// Read the feedback from a file, or from stdin with `-`.
+        #[arg(long)]
+        feedback_file: Option<PathBuf>,
     },
-    /// Wait for the next review answer and print it as JSON. It listens on
-    /// the live events, so it does not poll.
+    /// Wait for the next review answer, by the reviewer agent or the owner,
+    /// and print it as JSON. It listens on the live events, so it does not
+    /// poll.
     Wait {
         /// Only answers on this issue.
         key: Option<String>,
@@ -68,14 +87,16 @@ pub async fn run(app: &App, c: &llmtodo_client::Client, cmd: ReviewCmd) -> CliRe
             c.update_issue(&key, &req).await?;
             show(app, &c.review(&key).await?);
         }
+        ReviewCmd::Queue { project } => queue(app, c, project).await?,
         ReviewCmd::Answer {
             mut keys,
             verdict,
             feedback,
+            feedback_file,
         } => {
             let req = SubmitReview {
                 verdict,
-                feedback: feedback.unwrap_or_default(),
+                feedback: crate::read_text(feedback, feedback_file)?.unwrap_or_default(),
             };
             if keys.len() > 1 {
                 return answer_many(app, c, keys, req).await;
@@ -96,6 +117,66 @@ pub async fn run(app: &App, c: &llmtodo_client::Client, cmd: ReviewCmd) -> CliRe
             timeout,
         } => wait(app, c, key, after_seq, timeout).await?,
     }
+    Ok(())
+}
+
+/// The reviewer agent's queue (LLM-589): open tickets that wait on the
+/// reviewer, oldest update first, with what a reviewer needs to read the
+/// diff.
+async fn queue(app: &App, c: &llmtodo_client::Client, project: Option<String>) -> CliResult {
+    let q = IssueQuery {
+        projects: project.into_iter().collect(),
+        filter: IssueFilter {
+            open: true,
+            ..Default::default()
+        },
+        waiting_on: Some("reviewer".into()),
+        ..Default::default()
+    };
+    let mut items = c.query_all(&q).await?;
+    // `waiting_on reviewer` can outlive a move out of In Review, and anyone
+    // may set it by hand. Pass works only in an agent-review status.
+    items.retain(|i| i.status.review && i.status.review_role == Some(ReviewRole::Agent));
+    items.sort_by_key(|i| i.updated_at);
+    let mut rows = Vec::with_capacity(items.len());
+    for i in &items {
+        let key = i.key.to_string();
+        let d = c.issue(&key).await?;
+        let round = d.reviews.iter().map(|a| a.round).max().unwrap_or(0) + 1;
+        rows.push(json!({
+            "key": key,
+            "title": i.title,
+            "status": i.status.name,
+            "pr": d.git.pr.as_ref().map(|p| p.url.clone()),
+            "branch": d.git.branch,
+            "worktree": d.git.worktree,
+            "host": d.git.host,
+            "round": round,
+            "updated_at": i.updated_at,
+        }));
+    }
+    if app.out.json {
+        app.out.ser(&rows);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("Nothing waits on the reviewer.");
+        return Ok(());
+    }
+    let cell = |v: &Value| v.as_str().unwrap_or("-").to_string();
+    let table: Vec<[String; 5]> = rows
+        .iter()
+        .map(|r| {
+            [
+                cell(&r["key"]),
+                r["round"].to_string(),
+                cell(&r["title"]),
+                cell(&r["pr"]),
+                cell(&r["branch"]),
+            ]
+        })
+        .collect();
+    crate::output::table(&["KEY", "ROUND", "TITLE", "PR", "BRANCH"], &table);
     Ok(())
 }
 
