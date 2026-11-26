@@ -78,7 +78,9 @@ pub async fn run(app: &App, cmd: StatusCmd) -> CliResult {
                     kind,
                     color,
                     position,
-                    review: Some(review),
+                    // `--review-role` implies the flag, so send no false
+                    // beside a role.
+                    review: Some(review || review_role.is_some()),
                     review_role,
                 },
             )

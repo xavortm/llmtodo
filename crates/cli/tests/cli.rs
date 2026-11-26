@@ -738,6 +738,155 @@ async fn review_set_answer_and_wait() {
     t.stop().await;
 }
 
+/// The reviewer agent's queue and verdicts (LLM-589): `queue` lists what
+/// waits on the reviewer with its git panel, `pass` hands the ticket to the
+/// owner, `request-changes` reads feedback from stdin, and an agent cannot
+/// approve.
+#[tokio::test(flavor = "multi_thread")]
+async fn reviewer_queue_pass_and_changes() {
+    let t = T::new().await;
+    t.json("s1", &["team", "create", "LLM", "llmtodo"]);
+    // A new team has In Review already: make it the reviewer agent's step.
+    let statuses = t.json("s1", &["--json", "status", "list", "--team", "LLM"]);
+    let in_review = statuses
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "In Review")
+        .expect("a new team has In Review")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.json(
+        "s1",
+        &["status", "update", &in_review, "--review-role", "agent"],
+    );
+    t.json(
+        "s1",
+        &[
+            "status",
+            "create",
+            "LLM",
+            "User review",
+            "--type",
+            "started",
+            "--review-role",
+            "owner",
+        ],
+    );
+    for title in ["Panel", "Badge"] {
+        t.json("s1", &["issue", "create", "-t", title, "--team", "LLM"]);
+    }
+    for key in ["LLM-1", "LLM-2"] {
+        t.json(
+            "s1",
+            &[
+                "issue",
+                "review",
+                "set",
+                key,
+                "--step",
+                "Open the app.",
+                "--check",
+                "It opens.",
+            ],
+        );
+    }
+    t.json(
+        "s1",
+        &[
+            "issue",
+            "update",
+            "LLM-1",
+            "--branch",
+            "llm-1-panel",
+            "--worktree",
+            "/tmp/wt-1",
+            "--pr",
+            "https://github.com/o/r/pull/7",
+        ],
+    );
+    t.json("s1", &["issue", "update", "LLM-1", "--status", "In Review"]);
+    t.json("s1", &["issue", "update", "LLM-2", "--status", "In Review"]);
+
+    let q = t.json("s1", &["--json", "issue", "review", "queue"]);
+    let rows = q.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{q}");
+    assert_eq!(rows[0]["key"], "LLM-1", "oldest first: {q}");
+    assert_eq!(rows[0]["pr"], "https://github.com/o/r/pull/7");
+    assert_eq!(rows[0]["branch"], "llm-1-panel");
+    assert_eq!(rows[0]["worktree"], "/tmp/wt-1");
+    assert_eq!(rows[0]["round"], 1);
+    assert_eq!(rows[1]["pr"], Value::Null);
+
+    // An agent may not approve.
+    assert_eq!(
+        t.code(
+            "s2",
+            &[
+                "--no-input",
+                "issue",
+                "review",
+                "answer",
+                "LLM-1",
+                "approve"
+            ]
+        ),
+        6
+    );
+    let a = t.json(
+        "s2",
+        &[
+            "--json",
+            "issue",
+            "review",
+            "answer",
+            "LLM-1",
+            "pass",
+            "-m",
+            "Looks right.",
+        ],
+    );
+    assert_eq!(a["status"], "User review");
+    assert_eq!(a["waiting_on"], "owner");
+    assert_eq!(a["answer"]["verdict"], "passed");
+
+    let out = t
+        .cmd(
+            "s2",
+            &[
+                "--json",
+                "issue",
+                "review",
+                "answer",
+                "LLM-2",
+                "changes",
+                "--feedback-file",
+                "-",
+            ],
+        )
+        .write_stdin("The text is too small.\n")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let a: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(a["status"], "Todo");
+    assert_eq!(a["answer"]["feedback"], "The text is too small.");
+
+    let q = t.json("s1", &["--json", "issue", "review", "queue"]);
+    assert_eq!(q, serde_json::json!([]));
+
+    // `show` lists each round with its author and verdict.
+    let r = t.json("s1", &["--json", "issue", "review", "show", "LLM-1"]);
+    assert_eq!(r["answers"][0]["verdict"], "passed");
+    assert_eq!(r["answers"][0]["author"]["kind"], "agent");
+    t.stop().await;
+}
+
 /// `llmtodo app` opens the installed bundle, and says so clearly when there
 /// is none. `LLMTODO_OPEN_COMMAND` stands in for `open`.
 #[test]
