@@ -494,6 +494,7 @@ Gap review additions:
   - Per team and project (LLM-574): `[app.background.project.<slug>.<slot>]` and `[app.background.team.<KEY>.<slot>]` take the same keys. The most specific table wins, per slot: the sidebar's project, then its team (or the project's teams), then the global table. A sidebar scope change switches the images.
   - View > Show Background Images, `g b` and `:background` hide or show all images, as for a screen share (LLM-575). The switch is saved in `ui-state.json` and never changes `config.toml`. The menu item is disabled while no image is set.
   - `attachment` (LLM-576): `fixed` by default, or `scroll`, as CSS `background-attachment`. With `scroll`, the list image moves with the list's scroll offset and the task image with the description's. A repeated image keeps filling the panel; one that does not repeat scrolls away. The window and sidebar slots take only `fixed`.
+  - The list's open and close animation draws the page color and the same images as the panel under it, lined up with the panel, so the image does not vanish while rows move (LLM-570). Popovers, menus and dialogs keep their solid color. Small legibility discs, such as the waiting mark and the order dot, keep the page color too.
 - The app never fights the person's setup for `config.toml`:
   - No file is fine. The app does not create it at start, and writes only the keys the person changes.
   - A save edits the file in place with `toml_edit`, so comments, key order, formatting and unknown keys survive.

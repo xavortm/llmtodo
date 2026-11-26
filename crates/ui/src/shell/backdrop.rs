@@ -45,7 +45,7 @@ pub mod load;
 use load::{BackdropLoader, Effects, Fit, ImageKey};
 
 /// Where an image sits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Slot {
     Window,
     Sidebar,
@@ -693,6 +693,9 @@ struct Loads {
     keys: HashMap<ImageKey, Option<Arc<RenderImage>>>,
     /// Images to take out of the sprite atlas at the next paint.
     retired: Vec<Arc<RenderImage>>,
+    /// Where each panel's own layer last drew, so a layer over part of
+    /// the panel lines its image up with the panel (LLM-570).
+    areas: HashMap<Slot, Rect>,
 }
 
 impl gpui_kit::Global for Loads {}
@@ -789,6 +792,23 @@ pub type ScrollOffset = std::rc::Rc<dyn Fn() -> gpui_kit::Point<Pixels>>;
 
 /// [`layer`] for a panel whose images may scroll with `scroll`.
 pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Option<AnyElement> {
+    layer_inner(slots, scroll, false, cx)
+}
+
+/// A layer for a surface that covers part of a panel and must show the
+/// same picture as the panel under it, such as the list's open and close
+/// animation (LLM-570). Each panel image lines up with where the panel's
+/// own layer last drew, not with this layer. Put it over the page color.
+pub fn layer_over(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Option<AnyElement> {
+    layer_inner(slots, scroll, true, cx)
+}
+
+fn layer_inner(
+    slots: &[Slot],
+    scroll: Option<ScrollOffset>,
+    over: bool,
+    cx: &App,
+) -> Option<AnyElement> {
     let images: Vec<(Slot, Backdrop)> = slots
         .iter()
         .filter_map(|s| current(*s, cx).map(|b| (*s, b)))
@@ -816,7 +836,7 @@ pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Opt
                             |_, _, _| {},
                             move |bounds, _, window, cx| {
                                 let offset = scroll.as_ref().map(|f| f());
-                                paint(slot, &b, offset, bounds, window, cx)
+                                paint(slot, &b, offset, over, bounds, window, cx)
                             },
                         )
                         .size_full(),
@@ -856,10 +876,18 @@ fn paint(
     slot: Slot,
     b: &Backdrop,
     scroll: Option<gpui_kit::Point<Pixels>>,
+    over: bool,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let loads = cx.default_global::<Loads>();
+    let own = if over {
+        loads.areas.get(&slot).copied().unwrap_or(rect_of(bounds))
+    } else {
+        loads.areas.insert(slot, rect_of(bounds));
+        rect_of(bounds)
+    };
     let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
     for image in retired {
         let _ = window.drop_image(image);
@@ -888,7 +916,7 @@ fn paint(
             h: f32::from(view.height),
         }
     } else {
-        let mut area = rect_of(bounds);
+        let mut area = own;
         // The offset is negative as the content moves up.
         if let Some(offset) = scroll {
             area.x += f32::from(offset.x);

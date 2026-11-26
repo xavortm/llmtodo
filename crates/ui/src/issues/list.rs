@@ -1049,12 +1049,26 @@ impl IssueList {
             }
             y += row + crop;
         }
+        // LLM-570: the overlay hides the rows under it, so it draws the
+        // page color and the same background images as the panel.
+        let scroll = self.scroll.clone();
+        let images = crate::shell::backdrop::layer_over(
+            &[
+                crate::shell::backdrop::Slot::Window,
+                crate::shell::backdrop::Slot::List,
+            ],
+            Some(std::rc::Rc::new(move || {
+                scroll.0.borrow().base_handle.offset()
+            })),
+            cx,
+        );
         Some(
             div()
                 .absolute()
                 .inset_0()
                 .overflow_hidden()
                 .bg(cx.theme().background)
+                .children(images)
                 .children(children)
                 .child(div().absolute().inset_0().occlude())
                 .into_any_element(),
