@@ -36,6 +36,16 @@ pub fn card_text(child: impl IntoElement, cx: &App) -> gpui_kit::Div {
     card_underline(div().child(child), cx)
 }
 
+/// [`card_text`] with the underline in `color`, for text on a surface of
+/// its own color, such as a preview build's title bar (LLM-592).
+pub fn card_text_in(child: impl IntoElement, color: gpui_kit::Hsla) -> gpui_kit::Div {
+    div()
+        .child(child)
+        .border_b_1()
+        .border_dashed()
+        .border_color(color)
+}
+
 /// The fill and the text color of the `Locked` badge. The owner chose
 /// color here, as an exception to the monochrome theme.
 pub fn lock_colors(cx: &App) -> (gpui_kit::Hsla, gpui_kit::Hsla) {
