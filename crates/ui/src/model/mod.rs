@@ -28,6 +28,7 @@ mod boundary {
             ("drafts.rs", include_str!("drafts.rs")),
             ("demo.rs", include_str!("demo.rs")),
             ("pipeline.rs", include_str!("pipeline.rs")),
+            ("preview.rs", include_str!("preview.rs")),
             ("external_editor.rs", include_str!("external_editor.rs")),
             ("order.rs", include_str!("order.rs")),
             ("scope.rs", include_str!("scope.rs")),

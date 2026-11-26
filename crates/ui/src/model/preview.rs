@@ -11,14 +11,15 @@ pub fn ticket_from_env() -> Option<String> {
     parse(std::env::var(TICKET_VAR).ok().as_deref())
 }
 
-/// A ticket key such as `LLM-123`, in capitals. Anything else is no
-/// preview, so a stray value never paints the owner's app yellow.
+/// A ticket key such as `LLM-123`, in capitals. Anything else, and a
+/// provisional key, is no preview, so a stray value never paints the
+/// owner's app yellow.
 pub fn parse(raw: Option<&str>) -> Option<String> {
-    let key = raw?.trim();
-    let (team, number) = key.split_once('-')?;
-    let team_ok = !team.is_empty() && team.chars().all(|c| c.is_ascii_alphanumeric());
-    let number_ok = !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
-    (team_ok && number_ok).then(|| key.to_ascii_uppercase())
+    raw?.trim()
+        .parse::<llmtodo_core::IssueKey>()
+        .ok()
+        .filter(|k| !k.provisional)
+        .map(|k| k.to_string())
 }
 
 /// The text the title bar shows for a preview of `key`.
@@ -47,6 +48,11 @@ mod tests {
             Some("-12"),
             Some("LLM-1a"),
             Some("L M-1"),
+            Some("2026-11"),
+            Some("0-0"),
+            Some("123-456"),
+            Some("LLM-~1"),
+            Some("LLM-0123"),
         ] {
             assert_eq!(parse(raw), None, "{raw:?}");
         }

@@ -220,3 +220,46 @@ fn a_preview_build_has_a_yellow_bar_with_its_ticket(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// LLM-592, agy round 1: on a preview bar the repo of a project reads as
+/// bar text. The link color, which can vanish on yellow, draws nowhere in
+/// the bar.
+#[gpui_kit::test]
+fn a_preview_bar_draws_the_repo_in_its_text_color(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    view.update(cx, |this, cx| {
+        this.set_scope(crate::model::scope::Scope::Project("app".into()), cx)
+    });
+    cx.run_until_parked();
+    let link = cx.read(|cx| gpui_kit::component::ActiveTheme::theme(cx).link);
+    let bar_link_underlines = |window: &mut gpui_kit::Window| {
+        let bar = window
+            .find("project-repo")
+            .bounds()
+            .scale(window.scale_factor());
+        window
+            .painted_underlines()
+            .iter()
+            .filter(|u| u.bounds.intersects(&bar) && u.color.h == link.h && u.color.s == link.s)
+            .count()
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            bar_link_underlines(window) > 0,
+            "the real app links the repo"
+        );
+    })
+    .unwrap();
+
+    view.update(cx, |this, cx| {
+        this.set_preview_ticket(Some("LLM-123".into()), cx)
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("project-repo-link").is_some());
+        assert_eq!(bar_link_underlines(window), 0, "no link color on yellow");
+    })
+    .unwrap();
+}

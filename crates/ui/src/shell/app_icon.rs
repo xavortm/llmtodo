@@ -110,19 +110,22 @@ pub fn set_preview_dock_icon(key: &str) {
     let band = NSRect::new(NSPoint::new(48.0, 96.0), NSSize::new(side - 96.0, 260.0));
     NSColor::colorWithSRGBRed_green_blue_alpha(0.1, 0.1, 0.1, 0.85).setFill();
     NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, 56.0, 56.0).fill();
-    // The longest keys still fit the band.
-    let font_size = match key.chars().count() {
-        0..=6 => 190.0,
-        7..=8 => 160.0,
-        _ => 128.0,
-    };
-    let font = NSFont::boldSystemFontOfSize(font_size);
     let yellow = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.82, 0.1, 1.0);
     let text = NSString::from_str(key);
     let keys = unsafe { [NSFontAttributeName, NSForegroundColorAttributeName] };
-    let values: [&AnyObject; 2] = [&font, &yellow];
-    let attrs = NSDictionary::from_slices(&keys, &values);
-    let size = unsafe { text.sizeWithAttributes(Some(&attrs)) };
+    let attrs_at = |points: f64| {
+        let font = NSFont::boldSystemFontOfSize(points);
+        let values: [&AnyObject; 2] = [&font, &yellow];
+        NSDictionary::from_slices(&keys, &values)
+    };
+    // Start large, then shrink until the key fits the band.
+    let room = band.size.width - 64.0;
+    let mut attrs = attrs_at(190.0);
+    let mut size = unsafe { text.sizeWithAttributes(Some(&attrs)) };
+    if size.width > room {
+        attrs = attrs_at(190.0 * room / size.width);
+        size = unsafe { text.sizeWithAttributes(Some(&attrs)) };
+    }
     let at = NSPoint::new(
         (side - size.width) / 2.0,
         band.origin.y + (band.size.height - size.height) / 2.0,

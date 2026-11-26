@@ -41,6 +41,9 @@ pub(super) struct TitleShown {
 /// text that keeps 4.5:1 on it (LLM-592).
 #[derive(Clone, Copy)]
 struct BarColors {
+    /// A preview build's bar. Every part then draws in `text`, since
+    /// theme colors such as the link color can vanish on yellow.
+    preview: bool,
     fill: Option<gpui_kit::Hsla>,
     text: gpui_kit::Hsla,
     muted: gpui_kit::Hsla,
@@ -53,6 +56,7 @@ impl BarColors {
         if preview {
             let (fill, text) = crate::shell::theme::preview_bar(theme);
             Self {
+                preview: true,
                 fill: Some(fill),
                 text,
                 muted: text,
@@ -60,6 +64,7 @@ impl BarColors {
             }
         } else {
             Self {
+                preview: false,
                 fill: None,
                 text: theme.foreground,
                 muted: theme.muted_foreground,
@@ -349,12 +354,29 @@ impl TitleBarView {
                         .hover(move |s| s.bg(hover))
                         .active(move |s| s.bg(pressed))
                         .tooltip(crate::shell::tooltip::Card::text(tip).builder())
-                        .child(
-                            crate::shell::widgets::link("project-repo-link", url, cx)
-                                .font_family(mono)
-                                .text_xs()
-                                .child(crate::shell::widgets::card_text(label, cx)),
-                        )
+                        .map(|this| {
+                            if colors.preview {
+                                // On yellow the link color can vanish, so
+                                // the repo reads as plain bar text.
+                                this.cursor_pointer()
+                                    .on_click(move |_, _, cx| cx.open_url(&url))
+                                    .child(
+                                        crate::shell::widgets::card_text_in(label, colors.border)
+                                            .id("project-repo-link")
+                                            .test_support()
+                                            .font_family(mono)
+                                            .text_xs()
+                                            .text_color(colors.text),
+                                    )
+                            } else {
+                                this.child(
+                                    crate::shell::widgets::link("project-repo-link", url, cx)
+                                        .font_family(mono)
+                                        .text_xs()
+                                        .child(crate::shell::widgets::card_text(label, cx)),
+                                )
+                            }
+                        })
                         .into_any_element(),
                 )
             }
@@ -371,7 +393,11 @@ impl TitleBarView {
                     .hover(move |s| s.bg(hover))
                     .active(move |s| s.bg(pressed))
                     .tooltip(crate::shell::tooltip::Card::text("Copy path").builder())
-                    .child(crate::shell::widgets::card_text(path.clone(), cx))
+                    .child(if colors.preview {
+                        crate::shell::widgets::card_text_in(path.clone(), colors.border)
+                    } else {
+                        crate::shell::widgets::card_text(path.clone(), cx)
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let path = path.clone();
                         this.on_workspace(window, cx, move |workspace, window, cx| {
@@ -410,7 +436,12 @@ impl Render for TitleBarView {
                 .id("title-project-icon")
                 .test_support()
                 .flex_none()
-                .child(crate::shell::icons::project_icon(&style, colors.muted, cx).small())
+                .child(
+                    crate::shell::icons::project_icon(&style, colors.muted, cx)
+                        // A project's own color may not read on yellow.
+                        .when(colors.preview, |icon| icon.text_color(colors.text))
+                        .small(),
+                )
         });
         let preview_label = preview.map(|key| {
             div()
@@ -439,7 +470,11 @@ impl Render for TitleBarView {
                 })
                 .tooltip(crate::shell::tooltip::Card::text(t.tip).builder())
                 .child(Icon::new(IconName::Database).xsmall())
-                .child(crate::shell::widgets::card_text(t.label, cx))
+                .child(if colors.preview {
+                    crate::shell::widgets::card_text_in(t.label, colors.border)
+                } else {
+                    crate::shell::widgets::card_text(t.label, cx)
+                })
         });
         // Owner rule: the title bar is the plain page color, with no fill,
         // and always has a border under it. Zoom never changes its size
@@ -469,7 +504,21 @@ impl Render for TitleBarView {
                                 .child(crate::shell::tooltip::with_card(
                                     "toggle-sidebar-tip",
                                     Button::new("toggle-sidebar")
-                                        .ghost()
+                                        .map(|b| {
+                                            if colors.preview {
+                                                // Ghost icons are near white
+                                                // in dark themes: on yellow
+                                                // they use the bar's text.
+                                                b.custom(
+                                                    gpui_kit::component::button::ButtonCustomVariant::new(cx)
+                                                        .foreground(colors.text)
+                                                        .hover(colors.text.opacity(0.12))
+                                                        .active(colors.text.opacity(0.2)),
+                                                )
+                                            } else {
+                                                b.ghost()
+                                            }
+                                        })
                                         .xsmall()
                                         .icon(IconName::PanelLeft)
                                         .selected(sidebar_open)
