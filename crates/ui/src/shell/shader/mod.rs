@@ -110,6 +110,30 @@ pub struct Frame {
     pub surfaces: Vec<(Blend, Surface)>,
 }
 
+/// What one slot's frames draw into: the frame texture and the pool its
+/// surfaces come from. Each slot keeps its own, so slots of different
+/// sizes that share a [`Program`] keep their buffers (LLM-585).
+#[derive(Default)]
+pub struct Target {
+    #[cfg(target_os = "macos")]
+    inner: metal::Target,
+}
+
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Target")
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl Target {
+    /// The frame texture's size, and the pool and the texture cache as
+    /// addresses, so a test can tell which of them were made again.
+    pub fn ids(&self) -> (Option<(u32, u32)>, Option<usize>, Option<usize>) {
+        self.inner.ids()
+    }
+}
+
 /// A compiled shader, ready to render frames.
 #[derive(Debug)]
 pub struct Program {
@@ -119,9 +143,11 @@ pub struct Program {
 
 impl Program {
     /// Renders a frame: as bytes with `pixels`, and as one surface per
-    /// blend. The shader runs once for all of them. Blocks on the GPU.
+    /// blend, into `target`. The shader runs once for all of them.
+    /// Blocks on the GPU.
     pub fn render(
         &self,
+        target: &mut Target,
         width: u32,
         height: u32,
         inputs: &Inputs,
@@ -130,11 +156,12 @@ impl Program {
     ) -> Result<Frame, String> {
         #[cfg(target_os = "macos")]
         {
-            self.pipeline.render(width, height, inputs, pixels, blends)
+            self.pipeline
+                .render(&mut target.inner, width, height, inputs, pixels, blends)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (width, height, inputs, pixels, blends);
+            let _ = (target, width, height, inputs, pixels, blends);
             Err("shader backgrounds run only on macOS".into())
         }
     }

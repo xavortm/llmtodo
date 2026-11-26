@@ -17,7 +17,14 @@ fn inputs(w: f32, h: f32) -> Inputs {
 #[cfg(target_os = "macos")]
 fn pixels(program: &shader::Program, w: u32, h: u32) -> Vec<u8> {
     let frame = program
-        .render(w, h, &inputs(w as f32, h as f32), true, &[])
+        .render(
+            &mut shader::Target::default(),
+            w,
+            h,
+            &inputs(w as f32, h as f32),
+            true,
+            &[],
+        )
         .unwrap();
     assert!(frame.surfaces.is_empty());
     frame.pixels.unwrap()
@@ -183,7 +190,14 @@ fn a_surface_holds_the_shaders_color() {
         amount: 0.5,
     };
     let frame = program
-        .render(30, 17, &inputs(30., 17.), false, &[opaque, half])
+        .render(
+            &mut shader::Target::default(),
+            30,
+            17,
+            &inputs(30., 17.),
+            false,
+            &[opaque, half],
+        )
         .unwrap();
     assert!(frame.pixels.is_none(), "no read back was asked for");
     assert_eq!(frame.surfaces.len(), 2);
@@ -218,7 +232,14 @@ fn a_surface_keeps_the_frame_upright() {
         amount: 1.,
     };
     let frame = program
-        .render(8, 16, &inputs(8., 16.), true, &[blend])
+        .render(
+            &mut shader::Target::default(),
+            8,
+            16,
+            &inputs(8., 16.),
+            true,
+            &[blend],
+        )
         .unwrap();
     let bytes = frame.pixels.unwrap();
     assert_eq!(bytes[2], 255, "the image's top row is red");
@@ -227,4 +248,132 @@ fn a_surface_keeps_the_frame_upright() {
     let bottom = rgb_of(ycbcr(surface, 2, 14));
     assert!(near(top, [255., 0., 0.]), "top {top:?}");
     assert!(near(bottom, [0., 0., 0.]), "bottom {bottom:?}");
+}
+
+/// A shader of one flat color, for the LLM-585 tests.
+#[cfg(target_os = "macos")]
+fn flat(rgba: [f32; 4]) -> shader::Program {
+    let [r, g, b, a] = rgba;
+    let text = format!(
+        "fn main_image(frag: vec2<f32>) -> vec4<f32> {{\n    return vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});\n}}"
+    );
+    shader::compile(&text, Lang::Wgsl).unwrap()
+}
+
+/// LLM-585: a slot's target makes a new texture and pool when its size
+/// changes, keeps them while the size stays, and keeps its texture cache
+/// throughout.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_target_follows_its_size_and_keeps_its_cache() {
+    use objc2_core_video::{CVPixelBufferGetHeight, CVPixelBufferGetWidth};
+    let program = flat([0.8, 0.4, 0.2, 1.]);
+    let blend = shader::Blend {
+        under: [0., 0., 1.],
+        amount: 1.,
+    };
+    let mut target = shader::Target::default();
+    let render = |target: &mut shader::Target, w: u32, h: u32| {
+        program
+            .render(target, w, h, &inputs(w as f32, h as f32), false, &[blend])
+            .unwrap()
+    };
+    let big = render(&mut target, 30, 17);
+    let (size, pool, cache) = target.ids();
+    assert_eq!(size, Some((30, 17)));
+    assert!(pool.is_some() && cache.is_some());
+
+    let small = render(&mut target, 8, 8);
+    let surface = &small.surfaces[0].1;
+    assert_eq!(
+        (
+            CVPixelBufferGetWidth(&surface.0),
+            CVPixelBufferGetHeight(&surface.0)
+        ),
+        (8, 8),
+        "a new size takes buffers from a new pool"
+    );
+    let (size, small_pool, small_cache) = target.ids();
+    assert_eq!(size, Some((8, 8)));
+    assert_eq!(small_cache, cache, "the texture cache stays");
+    assert!(near(rgb_of(ycbcr(surface, 4, 4)), [204., 102., 51.]));
+
+    // The same size again keeps the pool.
+    let again = render(&mut target, 8, 8);
+    assert_eq!(target.ids(), (Some((8, 8)), small_pool, small_cache));
+    // The first frame's buffer still holds its picture.
+    assert!(near(
+        rgb_of(ycbcr(&big.surfaces[0].1, 29, 16)),
+        [204., 102., 51.]
+    ));
+    drop(again);
+}
+
+/// LLM-585: a render that asks for nothing does no GPU work.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_render_that_asks_for_nothing_makes_nothing() {
+    let mut target = shader::Target::default();
+    let frame = flat([1., 0., 0., 1.])
+        .render(&mut target, 16, 16, &inputs(16., 16.), false, &[])
+        .unwrap();
+    assert!(frame.pixels.is_none() && frame.surfaces.is_empty());
+    assert_eq!(target.ids(), (None, None, None));
+}
+
+/// LLM-585: a 1 × 1 slot still renders an image and a surface.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_one_pixel_frame_renders() {
+    use objc2_core_video::{CVPixelBufferGetHeight, CVPixelBufferGetWidth};
+    let blend = shader::Blend {
+        under: [0., 0., 0.],
+        amount: 1.,
+    };
+    let frame = flat([0.8, 0.4, 0.2, 1.])
+        .render(
+            &mut shader::Target::default(),
+            1,
+            1,
+            &inputs(1., 1.),
+            true,
+            &[blend],
+        )
+        .unwrap();
+    let bytes = frame.pixels.unwrap();
+    assert_eq!(bytes.len(), 4);
+    assert_eq!(bytes[3], 255);
+    let surface = &frame.surfaces[0].1;
+    assert_eq!(
+        (
+            CVPixelBufferGetWidth(&surface.0),
+            CVPixelBufferGetHeight(&surface.0)
+        ),
+        (1, 1)
+    );
+    let rgb = rgb_of(ycbcr(surface, 0, 0));
+    assert!(near(rgb, [204., 102., 51.]), "{rgb:?}");
+}
+
+/// LLM-585: a shader's own alpha and the slot's opacity multiply in the
+/// blend: half-clear red at half opacity over blue shows a quarter red.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_translucent_shader_blends_at_its_alpha_times_the_opacity() {
+    let blend = shader::Blend {
+        under: [0., 0., 1.],
+        amount: 0.5,
+    };
+    let frame = flat([1., 0., 0., 0.5])
+        .render(
+            &mut shader::Target::default(),
+            8,
+            8,
+            &inputs(8., 8.),
+            false,
+            &[blend],
+        )
+        .unwrap();
+    let rgb = rgb_of(ycbcr(&frame.surfaces[0].1, 3, 3));
+    assert!(near(rgb, [63.75, 0., 191.25]), "{rgb:?}");
 }

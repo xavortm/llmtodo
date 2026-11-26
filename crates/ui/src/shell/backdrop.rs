@@ -945,9 +945,10 @@ fn current(slot: Slot, cx: &App) -> Option<Backdrop> {
         .and_then(|s| s.mode(cx.theme().is_dark()).get(slot).cloned())
 }
 
-/// Whether `slot` draws anything now, or still fades out.
-fn shows(slot: Slot, cx: &App) -> bool {
-    current(slot, cx).is_some_and(|b| b.opacity > 0.)
+/// Whether `slot` draws anything now, or still fades out. A missing file
+/// draws nothing, as in `layer_inner` (LLM-585).
+pub(crate) fn shows(slot: Slot, cx: &App) -> bool {
+    current(slot, cx).is_some_and(|b| b.opacity > 0. && b.stamp.is_some())
         || cx.try_global::<Fades>().is_some_and(|f| {
             f.0.borrow()
                 .get(&slot)
@@ -990,6 +991,24 @@ pub fn layer_with(slots: &[Slot], scroll: Option<ScrollOffset>, cx: &App) -> Opt
 /// parent renders, such as a panel that fades in (LLM-579). A shader
 /// draws as a surface only at 1: a surface ignores element opacity.
 pub type ParentFade = std::rc::Rc<std::cell::Cell<f32>>;
+
+/// How a paint at `opacity` blends with `flat`, the one color under it,
+/// when it may draw as a surface: only while the parent, if any, shows at
+/// full opacity, since a surface ignores element opacity (LLM-579).
+pub(crate) fn surface_blend(
+    flat: Option<Hsla>,
+    parent: Option<&ParentFade>,
+    opacity: f32,
+) -> Option<crate::shell::shader::Blend> {
+    flat.filter(|_| parent.is_none_or(|p| p.get() >= 1.))
+        .map(|c| {
+            let [r, g, b, _] = rgba_of(c);
+            crate::shell::shader::Blend {
+                under: [r, g, b],
+                amount: opacity,
+            }
+        })
+}
 
 /// [`layer_with`] inside a parent whose opacity `fade` reports.
 pub fn layer_faded(
@@ -1081,17 +1100,7 @@ fn layer_inner(
                                     |_, _, _| {},
                                     move |bounds, _, window, cx| {
                                         let offset = scroll.as_ref().map(|f| f());
-                                        let blend = flat
-                                            .filter(|_| {
-                                                parent.as_ref().is_none_or(|p| p.get() >= 1.)
-                                            })
-                                            .map(|c| {
-                                                let [r, g, b, _] = rgba_of(c);
-                                                crate::shell::shader::Blend {
-                                                    under: [r, g, b],
-                                                    amount: opacity,
-                                                }
-                                            });
+                                        let blend = surface_blend(flat, parent.as_ref(), opacity);
                                         paint(slot, &b, offset, over, blend, bounds, window, cx);
                                         if running {
                                             window.request_animation_frame();
@@ -1425,6 +1434,12 @@ pub fn prepare_shaders(cx: &mut App) -> Vec<String> {
 /// What one slot's shader drew last, and the frame on its way.
 struct Run {
     program: Arc<crate::shell::shader::Program>,
+    /// What this slot's frames draw into. Only one render runs per slot
+    /// at a time, so the lock never waits (LLM-585).
+    target: Arc<std::sync::Mutex<crate::shell::shader::Target>>,
+    /// The view of the last paint that was not `over`, which a finished
+    /// frame wakes as well (LLM-585).
+    view: Option<gpui_kit::EntityId>,
     started: Instant,
     frame: Option<ShaderFrame>,
     /// When the frame in `frame`, or the one on its way, was asked for.
@@ -1456,14 +1471,41 @@ impl ShaderFrame {
     }
 }
 
-#[derive(Default)]
-struct Wants {
-    image: bool,
-    blends: Vec<crate::shell::shader::Blend>,
+/// The surface a paint draws, from a frame's `surfaces`: the one for
+/// `blend`, else, while the frame has no image, one over the same color,
+/// else any, for the one frame until the right one arrives. A paint with
+/// no blend fades or lies over another background, so it never draws an
+/// opaque surface (LLM-585).
+pub(crate) fn pick_surface<T>(
+    surfaces: &[(crate::shell::shader::Blend, T)],
+    has_image: bool,
+    blend: Option<crate::shell::shader::Blend>,
+) -> Option<&T> {
+    let blend = blend?;
+    surfaces
+        .iter()
+        .find(|(b, _)| *b == blend)
+        .or_else(|| {
+            (!has_image)
+                .then(|| {
+                    surfaces
+                        .iter()
+                        .find(|(b, _)| b.under == blend.under)
+                        .or(surfaces.first())
+                })
+                .flatten()
+        })
+        .map(|(_, s)| s)
+}
+
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct Wants {
+    pub(crate) image: bool,
+    pub(crate) blends: Vec<crate::shell::shader::Blend>,
 }
 
 impl Wants {
-    fn add(&mut self, blend: Option<crate::shell::shader::Blend>) {
+    pub(crate) fn add(&mut self, blend: Option<crate::shell::shader::Blend>) {
         match blend {
             Some(blend) if !self.blends.contains(&blend) => self.blends.push(blend),
             Some(_) => {}
@@ -1543,6 +1585,8 @@ fn paint_shader(
     let epoch = *runs.1.get_or_insert(now);
     let run = runs.0.entry(slot).or_insert_with(|| Run {
         program: program.clone(),
+        target: Default::default(),
+        view: None,
         started: now,
         frame: None,
         asked: None,
@@ -1553,10 +1597,14 @@ fn paint_shader(
     });
     let mut retired = Vec::new();
     if !Arc::ptr_eq(&run.program, &program) {
-        // A new shader, or a reload: start its clock again.
+        // A new shader, or a reload: start its clock again. A clear
+        // `asked` also renders it at once with Animations off (LLM-585).
         run.program = program.clone();
         run.started = now;
         run.asked = None;
+    }
+    if !over {
+        run.view = Some(window.current_view());
     }
     if let Some((frame, made)) = run.done.take() {
         let old = run.frame.replace(frame);
@@ -1575,7 +1623,8 @@ fn paint_shader(
     let due = !run.pending
         && (missing
             || (!over
-                && (run.size != target
+                && (run.asked.is_none()
+                    || run.size != target
                     || interval.is_some_and(|i| {
                         run.asked.is_none_or(|a| tick_of(now, i) > tick_of(a, i))
                     }))));
@@ -1583,6 +1632,8 @@ fn paint_shader(
     let next = interval.map(|i| epoch + i.mul_f64((tick_of(now, i) + 1) as f64));
     if due {
         run.pending = true;
+        // The first frame of a new or reloaded shader draws at once.
+        let restarted = run.asked.is_none();
         run.asked = Some(now);
         let wants = std::mem::take(&mut run.wants);
         let inputs = crate::shell::shader::Inputs {
@@ -1598,10 +1649,19 @@ fn paint_shader(
             foreground: colors.1,
             accent: colors.2,
         };
-        let view = window.current_view();
+        let views = [Some(window.current_view()), run.view];
         let program = program.clone();
+        let into = run.target.clone();
         let render = cx.background_executor().spawn(async move {
-            program.render(target.0, target.1, &inputs, wants.image, &wants.blends)
+            let mut into = into.lock().map_err(|_| "poisoned".to_string())?;
+            program.render(
+                &mut into,
+                target.0,
+                target.1,
+                &inputs,
+                wants.image,
+                &wants.blends,
+            )
         });
         cx.spawn(async move |cx| {
             let result = render.await;
@@ -1624,7 +1684,8 @@ fn paint_shader(
                         // A frame shows at the next tick, which draws
                         // anyway. The first frame, one for a new size, or
                         // one with a form a paint lacked draws at once.
-                        let now_please = run.size != target
+                        let now_please = restarted
+                            || run.size != target
                             || run.frame.as_ref().is_none_or(|old| {
                                 (made.image.is_some() && old.image.is_none())
                                     || made.surfaces.iter().any(|(b, _)| !old.has(Some(*b)))
@@ -1637,7 +1698,15 @@ fn paint_shader(
                             cx.default_global::<Loads>().retired.push(image);
                         }
                         if now_please {
-                            cx.notify(view);
+                            // A paint `over` the panel asked from another
+                            // view than the one that draws the panel.
+                            let [asker, painter] = views;
+                            for view in [asker, painter.filter(|p| Some(*p) != asker)]
+                                .into_iter()
+                                .flatten()
+                            {
+                                cx.notify(view);
+                            }
                         }
                     }
                     Err(e) => eprintln!("llmtodo: background shader: {e}"),
@@ -1656,18 +1725,8 @@ fn paint_shader(
     // The frame stretches over the slot: it renders at `scale`.
     let image_bounds = Bounds::new(point(px(area.x), px(area.y)), size(px(area.w), px(area.h)));
     // The surface for this paint's color; else the image, which honors
-    // opacity; else any surface, for the one frame until the right one
-    // arrives.
-    let surface = blend
-        .and_then(|blend| frame.surfaces.iter().find(|(b, _)| *b == blend))
-        .or_else(|| {
-            frame
-                .image
-                .is_none()
-                .then(|| frame.surfaces.first())
-                .flatten()
-        })
-        .map(|(_, s)| s.clone());
+    // opacity.
+    let surface = pick_surface(&frame.surfaces, frame.image.is_some(), blend).cloned();
     match (surface, frame.image) {
         (Some(surface), _) => paint_surface(surface, bounds, image_bounds, window),
         (None, Some(image)) => {

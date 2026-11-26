@@ -15,9 +15,9 @@
 //! `metal_renderer.rs` (Apache-2.0); no code is copied.
 
 use std::ptr::NonNull;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_video::{
@@ -29,11 +29,11 @@ use objc2_core_video::{
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLLibrary, MTLLoadAction, MTLOrigin,
-    MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStorageMode, MTLStoreAction,
-    MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+    MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice,
+    MTLFunction, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineState, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 
 use super::translate::{Inputs, Translated, VERTEX};
@@ -161,15 +161,17 @@ fn pipeline_state(
         .map_err(|e| format!("Metal: {}", e.localizedDescription()))
 }
 
-/// A compiled shader, with what its frames draw into.
+/// A compiled shader. What its frames draw into is a [`Target`], one per
+/// slot, so two slots of different sizes that run the same shader do not
+/// take turns making new textures and pools (LLM-585).
 pub struct Pipeline {
     state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    target: Mutex<Target>,
 }
 
-/// Kept from frame to frame while the size stays.
+/// What one slot's frames draw into, kept from frame to frame while the
+/// size stays.
 #[derive(Default)]
-struct Target {
+pub struct Target {
     texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     /// Hands out YCbCr buffers of the texture's size. A buffer goes back
     /// to the pool once GPUI has drawn it and lets it go.
@@ -177,10 +179,31 @@ struct Target {
     cache: Option<CFRetained<CVMetalTextureCache>>,
 }
 
-// SAFETY: a render pipeline state is immutable and thread-safe. The
-// target is only touched under the mutex.
+// SAFETY: a render pipeline state is immutable and thread-safe.
 unsafe impl Send for Pipeline {}
 unsafe impl Sync for Pipeline {}
+
+// SAFETY: Metal textures, CoreVideo pools and texture caches are
+// reference counted with atomics and may move between threads. The
+// target is used by one render at a time: `render` takes it by `&mut`.
+unsafe impl Send for Target {}
+
+impl Target {
+    /// The texture's size, and the pool and the texture cache as
+    /// addresses, so a test can tell which of them were made again.
+    #[cfg(test)]
+    pub fn ids(&self) -> (Option<(u32, u32)>, Option<usize>, Option<usize>) {
+        (
+            self.texture
+                .as_ref()
+                .map(|t| (t.width() as u32, t.height() as u32)),
+            self.pool.as_deref().map(|p| std::ptr::from_ref(p) as usize),
+            self.cache
+                .as_deref()
+                .map(|c| std::ptr::from_ref(c) as usize),
+        )
+    }
+}
 
 impl std::fmt::Debug for Pipeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -200,10 +223,7 @@ pub fn compile(t: &Translated) -> Result<Pipeline, String> {
         &*function(&library, &t.fragment)?,
         MTLPixelFormat::BGRA8Unorm,
     )?;
-    Ok(Pipeline {
-        state,
-        target: Mutex::new(Target::default()),
-    })
+    Ok(Pipeline { state })
 }
 
 impl Pipeline {
@@ -213,6 +233,28 @@ impl Pipeline {
     /// thread.
     pub fn render(
         &self,
+        target: &mut Target,
+        width: u32,
+        height: u32,
+        inputs: &Inputs,
+        pixels: bool,
+        blends: &[Blend],
+    ) -> Result<Frame, String> {
+        if !pixels && blends.is_empty() {
+            return Ok(Frame {
+                pixels: None,
+                surfaces: Vec::new(),
+            });
+        }
+        // A worker thread has no run loop to drain autoreleased objects,
+        // such as the command buffer and the pass descriptors, so each
+        // frame drains its own, as GPUI's headless Metal renderer does.
+        autoreleasepool(|_| self.render_in(target, width, height, inputs, pixels, blends))
+    }
+
+    fn render_in(
+        &self,
+        target: &mut Target,
         width: u32,
         height: u32,
         inputs: &Inputs,
@@ -221,7 +263,6 @@ impl Pipeline {
     ) -> Result<Frame, String> {
         let gpu = gpu()?;
         let (width, height) = (width.max(1), height.max(1));
-        let mut target = self.target.lock().map_err(|_| "poisoned".to_string())?;
         let reuse = target
             .texture
             .as_ref()
@@ -272,7 +313,7 @@ impl Pipeline {
         if !blends.is_empty() {
             let convert = convert()?;
             for blend in blends {
-                let surface = new_surface(gpu, &mut target, width, height)?;
+                let surface = new_surface(gpu, target, width, height)?;
                 let under = [blend.under[0], blend.under[1], blend.under[2], blend.amount];
                 for (plane, format, state) in [
                     (0, MTLPixelFormat::R8Unorm, &convert.luma),
@@ -341,7 +382,8 @@ impl Pipeline {
     }
 }
 
-/// A render pass that clears `texture` and draws into it.
+/// A render pass that draws into `texture`. Each pass draws a triangle
+/// over every pixel, so the old contents need no load or clear.
 fn pass(
     buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     texture: &ProtocolObject<dyn MTLTexture>,
@@ -350,13 +392,7 @@ fn pass(
     // SAFETY: index 0 is within the color attachment array.
     let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
     attachment.setTexture(Some(texture));
-    attachment.setLoadAction(MTLLoadAction::Clear);
-    attachment.setClearColor(MTLClearColor {
-        red: 0.,
-        green: 0.,
-        blue: 0.,
-        alpha: 0.,
-    });
+    attachment.setLoadAction(MTLLoadAction::DontCare);
     attachment.setStoreAction(MTLStoreAction::Store);
     buffer
         .renderCommandEncoderWithDescriptor(&pass)
