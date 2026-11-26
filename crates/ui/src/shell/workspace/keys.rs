@@ -238,7 +238,7 @@ pub(super) const HELP: &[(&str, &[(&str, &str)])] = &[
             (":sync", "Check whether this machine is the primary"),
             ("gc / :claims", "Claims: which agent holds which task"),
             ("ga / :activity", "Show or hide the activity strip"),
-            ("gb / :background", "Show or hide background images"),
+            ("gb / ⌘⇧B / :background", "Show or hide background images"),
             (":open LLM-12", "Open a task by its key"),
         ],
     ),

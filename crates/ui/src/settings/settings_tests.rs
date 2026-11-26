@@ -1196,6 +1196,14 @@ fn background_images_hide_and_show_without_touching_config(cx: &mut TestAppConte
     assert!(shown(cx));
     assert!(store.load().background_images);
 
+    // LLM-582: Cmd-Shift-B works from anywhere, also from a text field.
+    press(handle, &["escape", "/"], cx);
+    press(handle, &["cmd-shift-b"], cx);
+    assert!(!shown(cx));
+    press(handle, &["cmd-shift-b"], cx);
+    assert!(shown(cx));
+    press(handle, &["escape"], cx);
+
     // With no image set, the switch says so and stays.
     std::fs::write(&config, "").unwrap();
     refocus(handle, &view, cx);
