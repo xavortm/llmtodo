@@ -16,10 +16,13 @@ mod metal;
 pub use translate::{CompileError, Inputs, Lang};
 
 /// The shaders that ship with the app: `shader = "builtin:<name>"`.
-pub const BUILTINS: [(&str, &str); 3] = [
+pub const BUILTINS: [(&str, &str); 6] = [
     ("aurora", include_str!("builtin/aurora.wgsl")),
     ("grain", include_str!("builtin/grain.wgsl")),
     ("waves", include_str!("builtin/waves.wgsl")),
+    ("silk", include_str!("builtin/silk.wgsl")),
+    ("lights", include_str!("builtin/lights.wgsl")),
+    ("metal", include_str!("builtin/metal.wgsl")),
 ];
 
 /// The source of a built-in shader by name.
