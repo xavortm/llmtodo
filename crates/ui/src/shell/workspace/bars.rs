@@ -33,6 +33,40 @@ pub(super) struct TitleShown {
     icon: Option<ProjectStyle>,
     tracker: Option<TrackerBadge>,
     sidebar_open: bool,
+    /// LLM-592: the ticket key of a preview build.
+    preview: Option<SharedString>,
+}
+
+/// The title bar's colors. A preview build paints the bar yellow, with
+/// text that keeps 4.5:1 on it (LLM-592).
+#[derive(Clone, Copy)]
+struct BarColors {
+    fill: Option<gpui_kit::Hsla>,
+    text: gpui_kit::Hsla,
+    muted: gpui_kit::Hsla,
+    border: gpui_kit::Hsla,
+}
+
+impl BarColors {
+    fn new(preview: bool, cx: &App) -> Self {
+        let theme = cx.theme();
+        if preview {
+            let (fill, text) = crate::shell::theme::preview_bar(theme);
+            Self {
+                fill: Some(fill),
+                text,
+                muted: text,
+                border: text.opacity(0.35),
+            }
+        } else {
+            Self {
+                fill: None,
+                text: theme.foreground,
+                muted: theme.muted_foreground,
+                border: theme.border,
+            }
+        }
+    }
 }
 
 /// Everything the status bar shows.
@@ -83,7 +117,19 @@ impl Workspace {
             icon: self.title_project_style(cx),
             tracker,
             sidebar_open: self.sidebar_shown(),
+            preview: self.preview.clone(),
         }
+    }
+
+    /// The ticket key when this app is a preview build of it (LLM-592).
+    pub fn preview_ticket(&self) -> Option<&SharedString> {
+        self.preview.as_ref()
+    }
+
+    /// Marks this app as a preview build of `key`, or as no preview.
+    pub fn set_preview_ticket(&mut self, key: Option<SharedString>, cx: &mut Context<Self>) {
+        self.preview = key;
+        cx.notify();
     }
 
     /// The style of the scope's project, for its icon before its name in
@@ -274,12 +320,17 @@ impl TitleBarView {
 
     /// The repo as a link, or the folder as a copy button. Neither for a
     /// scope that is not one project.
-    fn render_place(&self, place: TitlePlace, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_place(
+        &self,
+        place: TitlePlace,
+        colors: BarColors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let theme = cx.theme();
-        let hover = theme.foreground.opacity(0.08);
-        let pressed = theme.foreground.opacity(0.16);
+        let hover = colors.text.opacity(0.08);
+        let pressed = colors.text.opacity(0.16);
         let mono = theme.mono_font_family.clone();
-        let muted = theme.muted_foreground;
+        let muted = colors.muted;
         let radius = theme.radius;
         match place {
             TitlePlace::None => None,
@@ -349,17 +400,27 @@ impl Render for TitleBarView {
             icon,
             tracker,
             sidebar_open,
+            preview,
         } = shown;
-        let place = self.render_place(place, cx);
+        let colors = BarColors::new(preview.is_some(), cx);
+        let place = self.render_place(place, colors, cx);
         let theme = cx.theme();
         let project_icon = icon.map(|style| {
             div()
                 .id("title-project-icon")
                 .test_support()
                 .flex_none()
-                .child(
-                    crate::shell::icons::project_icon(&style, theme.muted_foreground, cx).small(),
-                )
+                .child(crate::shell::icons::project_icon(&style, colors.muted, cx).small())
+        });
+        let preview_label = preview.map(|key| {
+            div()
+                .id("title-preview")
+                .test_support()
+                .flex_none()
+                .text_xs()
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_color(colors.text)
+                .child(crate::model::preview::title(&key))
         });
         let tracker = tracker.map(|t| {
             h_flex()
@@ -370,17 +431,9 @@ impl Render for TitleBarView {
                 .px_1p5()
                 .rounded(theme.radius)
                 .border_1()
-                .border_color(if t.real {
-                    theme.foreground
-                } else {
-                    theme.border
-                })
+                .border_color(if t.real { colors.text } else { colors.border })
                 .text_xs()
-                .text_color(if t.real {
-                    theme.foreground
-                } else {
-                    theme.muted_foreground
-                })
+                .text_color(if t.real { colors.text } else { colors.muted })
                 .when(t.real, |this| {
                     this.font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 })
@@ -390,16 +443,20 @@ impl Render for TitleBarView {
         });
         // Owner rule: the title bar is the plain page color, with no fill,
         // and always has a border under it. Zoom never changes its size
-        // (LLM-212).
+        // (LLM-212). A preview build is the one exception: it fills the bar
+        // with yellow, so it never passes for the real app.
+        let fill = colors.fill.unwrap_or_else(|| {
+            crate::shell::backdrop::surface(
+                theme.background,
+                &[crate::shell::backdrop::Slot::Window],
+                cx,
+            )
+        });
         crate::shell::unzoomed::unzoomed(
             TitleBar::new()
-                .bg(crate::shell::backdrop::surface(
-                    theme.background,
-                    &[crate::shell::backdrop::Slot::Window],
-                    cx,
-                ))
+                .bg(fill)
                 .border_b_1()
-                .border_color(theme.border)
+                .border_color(colors.border)
                 .child(
                     h_flex()
                         .w_full()
@@ -440,12 +497,18 @@ impl Render for TitleBarView {
                                     div()
                                         .id("project-name")
                                         .test_support()
-                                        .text_color(theme.foreground)
+                                        .text_color(colors.text)
                                         .child(name),
                                 )
                                 .children(tracker),
                         )
-                        .child(h_flex().gap_2().children(update).children(place)),
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .children(preview_label)
+                                .children(update)
+                                .children(place),
+                        ),
                 ),
         )
         .into_any_element()

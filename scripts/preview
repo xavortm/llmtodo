@@ -7,6 +7,9 @@
 #   scripts/preview empty      an empty database
 #   scripts/preview <folder>   a copy of another data folder, such as a Linear import
 #
+# Set LLMTODO_PREVIEW_TICKET=<KEY> to mark the window as that ticket's
+# preview build: a yellow title bar and a gray Dock icon (LLM-592).
+#
 # Prints PREVIEW_EXIT=<code> and the log paths when the app exits. No server
 # for the preview's folder is left running after that.
 set -u

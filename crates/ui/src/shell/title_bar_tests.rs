@@ -167,3 +167,56 @@ fn the_title_bar_shows_the_project_icon(cx: &mut TestAppContext) {
     });
     assert!(has_icon(cx));
 }
+
+/// LLM-592: a preview build fills the title bar with yellow,
+/// names the ticket, and never offers Restart to update.
+#[gpui_kit::test]
+fn a_preview_build_has_a_yellow_bar_with_its_ticket(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("llmtodo.app");
+    std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+    std::fs::write(bundle.join(llmtodo_core::bundle::COMMIT_FILE), "newer").unwrap();
+    let watch = crate::model::update::UpdateWatch {
+        bundle,
+        own: "own".into(),
+    };
+    view.update(cx, |this, cx| {
+        this.watch_for_updates(watch, dir.path().to_path_buf(), None, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| view.read(cx).update_button_shown()));
+
+    // Without a preview, the bar is not yellow.
+    let warning = cx
+        .read(|cx| crate::shell::theme::preview_bar(gpui_kit::component::ActiveTheme::theme(cx)).0);
+    // The bar is the full-width quad at the top of the window.
+    let has_warning_fill = |window: &mut gpui_kit::Window| {
+        let width = f32::from(window.viewport_size().width) * window.scale_factor();
+        window.painted_quads().iter().any(|q| {
+            q.background.as_solid() == Some(warning)
+                && q.bounds.origin.y.0 <= 1.
+                && q.bounds.size.width.0 >= width - 1.
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("title-preview").is_none());
+        assert!(!has_warning_fill(window));
+    })
+    .unwrap();
+
+    view.update(cx, |this, cx| {
+        this.set_preview_ticket(Some("LLM-123".into()), cx)
+    });
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| view.read(cx).update_button_shown()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let label = window.find("title-preview");
+        assert!(label.bounds().size.width > gpui_kit::px(0.));
+        assert!(window.try_find("restart-update").is_none());
+        assert!(has_warning_fill(window));
+    })
+    .unwrap();
+}

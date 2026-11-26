@@ -312,6 +312,10 @@ impl Workspace {
 
     /// The title bar button. It shows only when a new build is installed.
     pub(super) fn update_button(&self) -> Option<Entity<UpdateButton>> {
+        // A preview is not the installed app (LLM-592).
+        if self.preview.is_some() {
+            return None;
+        }
         let state = self.update.as_ref()?;
         state.ready.as_ref()?;
         if state.dismissed {

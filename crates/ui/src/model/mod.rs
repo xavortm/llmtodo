@@ -9,6 +9,7 @@ pub mod drafts;
 pub mod external_editor;
 pub mod order;
 pub mod pipeline;
+pub mod preview;
 pub mod scope;
 pub mod store;
 pub mod trackers;
