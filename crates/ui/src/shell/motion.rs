@@ -128,8 +128,13 @@ pub fn glide(id: impl Into<ElementId>, target: f32, window: &mut Window, cx: &mu
     )
 }
 
-/// New content in a card that glides to fit it: it stays hidden while the
-/// card glides, then fades in. Keyed by `id`, so new content plays again.
+/// How long new content waits before it fades in: the first part of the
+/// card's glide, so it starts showing while the card settles.
+pub const CARD_FADE_WAIT: Duration = Duration::from_millis(60);
+
+/// New content in a card that glides to fit it: it waits out the start of
+/// the glide, then fades in while the card settles. Keyed by `id`, so new
+/// content plays again.
 pub fn fade_in_after_glide<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
 where
     E: Styled + IntoElement + 'static,
@@ -137,9 +142,9 @@ where
     if !on(cx) {
         return el.into_any_element();
     }
-    let wait = CARD_GLIDE.as_secs_f32();
+    let wait = CARD_FADE_WAIT.as_secs_f32();
     let total = wait + FADE.as_secs_f32();
-    el.with_animation(id, Animation::new(CARD_GLIDE + FADE), move |el, t| {
+    el.with_animation(id, Animation::new(CARD_FADE_WAIT + FADE), move |el, t| {
         el.opacity(((t * total - wait) / (total - wait)).clamp(0., 1.))
     })
     .into_any_element()
