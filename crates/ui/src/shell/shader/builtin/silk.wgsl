@@ -33,9 +33,14 @@ fn main_image(frag: vec2<f32>) -> vec4<f32> {
     let shine = pow(max(dot(n, half_way), 0.0), 10.0);
 
     let bg = u.background.rgb;
-    let lit = mix(u.foreground.rgb, u.accent.rgb, 0.35);
-    var color = mix(bg, u.foreground.rgb, 0.01 + diffuse * 0.08);
-    color = color + (lit - bg) * shine * 0.12;
+    let fg = u.foreground.rgb;
+    let lit = mix(fg, u.accent.rgb, 0.35);
+    // On a dark theme the folds' shadows sink below the background,
+    // toward black; a light theme keeps its paper.
+    let dark = 1.0 - dot(bg, vec3<f32>(0.299, 0.587, 0.114));
+    var color = bg * (1.0 - 0.5 * dark * (1.0 - diffuse));
+    color = mix(color, fg, diffuse * diffuse * 0.035);
+    color = color + (lit - bg) * shine * 0.05;
     color = color + dither(frag) / 255.0;
     return vec4<f32>(color, 1.0);
 }

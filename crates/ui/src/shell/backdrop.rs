@@ -1411,10 +1411,17 @@ fn paint_shader(
         (area.h * factor).clamp(1., MAX_SHADER_SIDE).round() as u32,
     );
     let theme = cx.theme();
+    // The panel's own fill, so the shader starts from what it covers. A
+    // translucent token, such as the Default theme's accent, arrives as
+    // it shows on that fill: the shader reads only `.rgb` (LLM-583).
+    let fill = match slot {
+        Slot::Sidebar => crate::shell::theme::blend(theme.sidebar, theme.background),
+        _ => theme.background,
+    };
     let colors = (
-        rgba_of(theme.background),
-        rgba_of(theme.foreground),
-        rgba_of(theme.accent),
+        rgba_of(fill),
+        rgba_of(crate::shell::theme::blend(theme.foreground, fill)),
+        rgba_of(crate::shell::theme::blend(theme.accent, fill)),
     );
     let mouse = window.mouse_position();
     let animate = crate::shell::motion::on(cx);

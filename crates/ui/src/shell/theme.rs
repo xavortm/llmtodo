@@ -589,7 +589,7 @@ pub fn ensure_contrast(color: Hsla, surfaces: &[Hsla], min: f32) -> Hsla {
 }
 
 /// `top` drawn over the opaque `bottom`.
-fn blend(top: Hsla, bottom: Hsla) -> Hsla {
+pub(crate) fn blend(top: Hsla, bottom: Hsla) -> Hsla {
     if top.a >= 1.0 {
         return top;
     }
