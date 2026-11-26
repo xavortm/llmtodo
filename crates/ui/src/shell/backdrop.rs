@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::{
     AnyElement, App, Bounds, Hsla, IntoElement, ParentElement as _, Pixels, RenderImage,
@@ -246,13 +246,6 @@ pub struct Backdrop {
     pub tint: Option<Hsla>,
     /// LLM-576: the image moves with its panel's content.
     pub scroll: bool,
-}
-
-impl Backdrop {
-    /// Whether `key` loads this image, at any size.
-    fn loads(&self, key: &ImageKey) -> bool {
-        key.path == self.image && key.stamp == self.stamp && key.effects == self.effects
-    }
 }
 
 /// The modification time of `path`, `None` when it is missing.
@@ -696,6 +689,11 @@ struct Loads {
     /// Where each panel's own layer last drew, so a layer over part of
     /// the panel lines its image up with the panel (LLM-570).
     areas: HashMap<Slot, Rect>,
+    /// When each image first drew. A fade in and an animation count from
+    /// here (LLM-577, LLM-569).
+    ready: HashMap<Ident, Instant>,
+    /// When a timer will next redraw the window for an animated image.
+    wake: Option<Instant>,
 }
 
 impl gpui_kit::Global for Loads {}
@@ -707,17 +705,23 @@ pub fn set(backdrops: Shown, cx: &mut App) {
     if before == backdrops {
         return;
     }
+    // The images still in use: the new ones, and what each slot shows
+    // now, which may fade out after this (LLM-577).
+    let mut live: Vec<Ident> = backdrops
+        .each()
+        .iter()
+        .flat_map(|mode| Slot::ALL.iter().filter_map(|s| mode.get(*s).map(ident)))
+        .collect();
+    if let Some(f) = cx.try_global::<Fades>() {
+        for state in f.0.borrow().values() {
+            live.extend(state.current.iter().chain(&state.previous).map(ident));
+        }
+    }
     let loads = cx.default_global::<Loads>();
     let stale: Vec<ImageKey> = loads
         .keys
         .keys()
-        .filter(|key| {
-            !backdrops.each().iter().any(|mode| {
-                Slot::ALL
-                    .iter()
-                    .any(|s| mode.get(*s).is_some_and(|b| b.loads(key)))
-            })
-        })
+        .filter(|key| !live.contains(&key_ident(key)))
         .cloned()
         .collect();
     for key in &stale {
@@ -725,11 +729,81 @@ pub fn set(backdrops: Shown, cx: &mut App) {
             loads.retired.push(image);
         }
     }
+    loads.ready.retain(|k, _| live.contains(k));
     for key in &stale {
         cx.remove_asset::<BackdropLoader>(key);
     }
+    cx.default_global::<Fades>();
     cx.set_global(backdrops);
     cx.refresh_windows();
+}
+
+// LLM-569: animated images.
+
+/// The frame of `image` to show now, counted from when it first drew.
+/// Asks for a redraw when the next frame is due. With animations off,
+/// the first frame.
+fn animation_frame(
+    image: &RenderImage,
+    ready: Instant,
+    now: Instant,
+    window: &Window,
+    cx: &mut App,
+) -> usize {
+    let count = image.frame_count();
+    if count < 2 || !crate::shell::motion::on(cx) {
+        return 0;
+    }
+    let delays: Vec<u64> = (0..count).map(|i| load::frame_ms(image.delay(i))).collect();
+    let (frame, until) = frame_at(&delays, now.saturating_duration_since(ready));
+    wake_at(now + until, window, cx);
+    frame
+}
+
+/// The frame showing `elapsed` into a loop of `delays` ms, and how long
+/// until the next one.
+pub fn frame_at(delays: &[u64], elapsed: Duration) -> (usize, Duration) {
+    let total: u64 = delays.iter().sum();
+    if total == 0 {
+        return (0, Duration::from_millis(100));
+    }
+    let at = elapsed.as_millis() as u64 % total;
+    let mut start = 0;
+    for (i, d) in delays.iter().enumerate() {
+        if at < start + d {
+            return (i, Duration::from_millis(start + d - at));
+        }
+        start += d;
+    }
+    (0, Duration::from_millis(delays[0]))
+}
+
+/// Redraws the painting view at `at`. One timer serves every image: an
+/// earlier wish moves it, a later one waits for it. Only the workspace
+/// root draws again; the cached panels stay as they are.
+fn wake_at(at: Instant, window: &Window, cx: &mut App) {
+    let now = cx.background_executor().now();
+    let loads = cx.default_global::<Loads>();
+    if let Some(w) = loads.wake
+        && w > now
+        && w <= at
+    {
+        return;
+    }
+    loads.wake = Some(at);
+    let view = window.current_view();
+    let delay = at.saturating_duration_since(now);
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(|cx| {
+            let loads = cx.default_global::<Loads>();
+            if loads.wake == Some(at) {
+                loads.wake = None;
+            }
+            cx.notify(view);
+        });
+    })
+    .detach();
 }
 
 /// Looks at each image file again, and loads the ones that changed on
@@ -809,12 +883,24 @@ fn layer_inner(
     over: bool,
     cx: &App,
 ) -> Option<AnyElement> {
-    let images: Vec<(Slot, Backdrop)> = slots
-        .iter()
-        .filter_map(|s| current(*s, cx).map(|b| (*s, b)))
-        .filter(|(_, b)| b.opacity > 0. && b.stamp.is_some())
-        .collect();
-    if images.is_empty() {
+    let now = cx.background_executor().now();
+    let animate = crate::shell::motion::on(cx);
+    let mut draws: Vec<(Slot, Backdrop, f32, bool)> = Vec::new();
+    let mut running = false;
+    for &slot in slots {
+        let b = current(slot, cx).filter(|b| b.opacity > 0. && b.stamp.is_some());
+        if over {
+            // A surface over the panel shows what the panel shows now.
+            draws.extend(b.map(|b| (slot, b.clone(), b.opacity, false)));
+            continue;
+        }
+        let ready = |b: &Backdrop| ready_at(b, cx);
+        for (b, opacity, fading) in fade(slot, b, animate, now, &ready, cx) {
+            running |= fading;
+            draws.push((slot, b, opacity, fading));
+        }
+    }
+    if draws.is_empty() {
         return None;
     }
     Some(
@@ -823,20 +909,23 @@ fn layer_inner(
             .top_0()
             .left_0()
             .size_full()
-            .children(images.into_iter().map(|(slot, b)| {
+            .children(draws.into_iter().map(move |(slot, b, opacity, _)| {
                 let scroll = scroll.clone().filter(|_| b.scroll);
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .size_full()
-                    .opacity(b.opacity)
+                    .opacity(opacity)
                     .child(
                         canvas(
                             |_, _, _| {},
                             move |bounds, _, window, cx| {
                                 let offset = scroll.as_ref().map(|f| f());
-                                paint(slot, &b, offset, over, bounds, window, cx)
+                                paint(slot, &b, offset, over, bounds, window, cx);
+                                if running {
+                                    window.request_animation_frame();
+                                }
                             },
                         )
                         .size_full(),
@@ -844,6 +933,119 @@ fn layer_inner(
             }))
             .into_any_element(),
     )
+}
+
+// LLM-577: a changed image fades in.
+
+/// How long the old image takes to fade out and the new one in.
+pub const FADE: Duration = Duration::from_millis(200);
+
+/// What each slot showed, so a change can fade.
+#[derive(Default)]
+pub(crate) struct Fades(std::cell::RefCell<HashMap<Slot, FadeState>>);
+
+impl gpui_kit::Global for Fades {}
+
+pub(crate) struct FadeState {
+    /// What the slot shows now. `None` while it fades out to nothing.
+    current: Option<Backdrop>,
+    /// What it showed before, while that fades out.
+    previous: Option<Backdrop>,
+    changed: Instant,
+}
+
+/// The images to draw for `slot`, with their opacity and whether they
+/// still fade. Changing what `b` is starts a fade when `animate` is on.
+/// A new image that is still loading keeps the old one at full opacity,
+/// then fades in from the moment it is ready, so it never pops in.
+pub(crate) fn fade(
+    slot: Slot,
+    b: Option<Backdrop>,
+    animate: bool,
+    now: Instant,
+    ready: &dyn Fn(&Backdrop) -> Option<Instant>,
+    cx: &App,
+) -> Vec<(Backdrop, f32, bool)> {
+    let Some(fades) = cx.try_global::<Fades>() else {
+        return b
+            .map(|b| vec![(b.clone(), b.opacity, false)])
+            .unwrap_or_default();
+    };
+    let mut map = fades.0.borrow_mut();
+    let state = map.entry(slot).or_insert(FadeState {
+        current: None,
+        previous: None,
+        changed: now,
+    });
+    if state.current != b {
+        state.previous = if animate { state.current.take() } else { None };
+        state.current = b;
+        state.changed = now;
+    }
+    if !animate {
+        state.previous = None;
+    }
+    let mut out = Vec::new();
+    // The new image's fade starts when it is ready, not when it was set.
+    let t = match &state.current {
+        Some(c) if animate => match ready(c) {
+            Some(at) => progress(now, at.max(state.changed)),
+            None => 0.,
+        },
+        _ => 1.,
+    };
+    // With nothing new, the old image fades out over the same time.
+    let t = if state.current.is_none() && state.previous.is_some() {
+        progress(now, state.changed)
+    } else {
+        t
+    };
+    let fading = t < 1.;
+    if let Some(p) = &state.previous
+        && fading
+    {
+        out.push((p.clone(), p.opacity * (1. - t), true));
+    }
+    if !fading {
+        state.previous = None;
+    }
+    if let Some(c) = &state.current {
+        // Drawn even at 0, so it loads.
+        out.push((c.clone(), c.opacity * t, fading));
+    }
+    out
+}
+
+/// From 0 to 1 over [`FADE`] since `start`.
+fn progress(now: Instant, start: Instant) -> f32 {
+    (now.saturating_duration_since(start).as_secs_f32() / FADE.as_secs_f32()).clamp(0., 1.)
+}
+
+/// What identifies a decoded image apart from its size.
+type Ident = (PathBuf, Option<SystemTime>, u32, u32);
+
+fn key_ident(k: &ImageKey) -> Ident {
+    (
+        k.path.clone(),
+        k.stamp,
+        k.effects.blur.to_bits(),
+        k.effects.brightness.to_bits(),
+    )
+}
+
+fn ident(b: &Backdrop) -> Ident {
+    (
+        b.image.clone(),
+        b.stamp,
+        b.effects.blur.to_bits(),
+        b.effects.brightness.to_bits(),
+    )
+}
+
+/// When `b` first drew, `None` while it loads.
+fn ready_at(b: &Backdrop, cx: &App) -> Option<Instant> {
+    cx.try_global::<Loads>()
+        .and_then(|l| l.ready.get(&ident(b)).copied())
 }
 
 /// The largest screen attached, in logical px. Images shrink to it.
@@ -897,14 +1099,24 @@ fn paint(
         Some(Ok(loaded)) => loaded,
         // Loading, or a file that is not an image. The loader has
         // written why to the log.
-        _ => {
-            cx.default_global::<Loads>().keys.entry(key).or_insert(None);
+        result => {
+            let now = cx.background_executor().now();
+            let loads = cx.default_global::<Loads>();
+            loads.keys.entry(key).or_insert(None);
+            // A file that fails counts as ready, so the old image still
+            // fades out.
+            if result.is_some() {
+                loads.ready.entry(ident(b)).or_insert(now);
+            }
             return;
         }
     };
-    cx.default_global::<Loads>()
-        .keys
-        .insert(key, Some(loaded.image.clone()));
+    let loads = cx.default_global::<Loads>();
+    loads.keys.insert(key, Some(loaded.image.clone()));
+    let now = cx.background_executor().now();
+    let loads = cx.default_global::<Loads>();
+    let ready = *loads.ready.entry(ident(b)).or_insert(now);
+    let frame = animation_frame(&loaded.image, ready, now, window, cx);
     // The window image lines up with the window, so it runs on across
     // panels. A panel image lines up with its panel.
     let area = if slot == Slot::Window {
@@ -939,7 +1151,7 @@ fn paint(
             image_bounds,
             Default::default(),
             loaded.image.clone(),
-            0,
+            frame,
             b.grayscale,
         );
         // LLM-572: the tint washes over the image only, not the panel.

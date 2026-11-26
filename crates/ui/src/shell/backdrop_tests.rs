@@ -499,3 +499,127 @@ fn a_scrolled_single_image_scrolls_away() {
     };
     assert!(tiles_over(moved, panel, (50., 50.), &l).is_empty());
 }
+
+// LLM-569: animated images step through their frames.
+
+#[test]
+fn frames_follow_their_own_timing_and_loop() {
+    use std::time::Duration;
+    let delays = [100, 50, 200];
+    let ms = Duration::from_millis;
+    assert_eq!(frame_at(&delays, ms(0)), (0, ms(100)));
+    assert_eq!(frame_at(&delays, ms(120)), (1, ms(30)));
+    assert_eq!(frame_at(&delays, ms(150)), (2, ms(200)));
+    // 350 ms is one loop.
+    assert_eq!(frame_at(&delays, ms(360)), (0, ms(90)));
+}
+
+#[test]
+fn a_zero_delay_frame_shows_for_a_tenth_of_a_second() {
+    assert_eq!(load::frame_ms(image::Delay::from_numer_denom_ms(0, 1)), 100);
+    assert_eq!(load::frame_ms(image::Delay::from_numer_denom_ms(40, 1)), 40);
+}
+
+#[test]
+fn an_animated_gif_keeps_every_frame_with_its_delay() {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let mut bytes = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut bytes);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        for shade in [0u8, 120, 240] {
+            let buf = image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, shade, shade, 255]));
+            enc.encode_frame(image::Frame::from_parts(
+                buf,
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(70, 1),
+            ))
+            .unwrap();
+        }
+    }
+    let loaded = load::load_bytes(&bytes, &key("a.gif", BgSize::Cover)).unwrap();
+    assert_eq!(loaded.image.frame_count(), 3);
+    assert_eq!(load::frame_ms(loaded.image.delay(1)), 70);
+}
+
+// LLM-577: a changed image fades.
+
+fn backdrop(name: &str) -> Backdrop {
+    let config: BackgroundsConfig =
+        toml::from_str(&format!("[window]\nimage = \"{name}\"\nopacity = 0.8")).unwrap();
+    let mut b = Backdrops::resolve(&config, None, &Pick::default(), false)
+        .0
+        .window
+        .unwrap();
+    b.stamp = Some(std::time::SystemTime::UNIX_EPOCH);
+    b
+}
+
+#[gpui_kit::test]
+fn a_new_image_fades_in_once_ready_and_the_old_one_out(cx: &mut gpui_kit::TestAppContext) {
+    use std::time::{Duration, Instant};
+    cx.update(|cx| cx.set_global(Fades::default()));
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    let (a, b) = (backdrop("a.png"), backdrop("b.png"));
+    let ready_at = |map: Vec<(&'static str, Instant)>| {
+        move |x: &Backdrop| {
+            map.iter()
+                .find(|(n, _)| x.image.ends_with(n))
+                .map(|(_, t)| *t)
+        }
+    };
+    let opacities = |b: Option<Backdrop>,
+                     now: Instant,
+                     ready: &dyn Fn(&Backdrop) -> Option<Instant>,
+                     cx: &mut gpui_kit::TestAppContext| {
+        cx.update(|cx| {
+            fade(Slot::Window, b, true, now, ready, cx)
+                .into_iter()
+                .map(|(b, o, _)| (b.image.to_string_lossy().into_owned(), (o * 100.).round()))
+                .collect::<Vec<_>>()
+        })
+    };
+    // The first image fades in from when it is ready.
+    let r = ready_at(vec![("a.png", ms(0))]);
+    assert_eq!(
+        opacities(Some(a.clone()), ms(0), &r, cx),
+        vec![("a.png".into(), 0.)]
+    );
+    assert_eq!(
+        opacities(Some(a.clone()), ms(100), &r, cx),
+        vec![("a.png".into(), 40.)]
+    );
+    assert_eq!(
+        opacities(Some(a.clone()), ms(250), &r, cx),
+        vec![("a.png".into(), 80.)]
+    );
+
+    // A new image that still loads keeps the old one at full.
+    let r = ready_at(vec![("a.png", ms(0))]);
+    assert_eq!(
+        opacities(Some(b.clone()), ms(300), &r, cx),
+        vec![("a.png".into(), 80.), ("b.png".into(), 0.)]
+    );
+    // Ready at 400: half way at 500.
+    let r = ready_at(vec![("a.png", ms(0)), ("b.png", ms(400))]);
+    assert_eq!(
+        opacities(Some(b.clone()), ms(500), &r, cx),
+        vec![("a.png".into(), 40.), ("b.png".into(), 40.)]
+    );
+    assert_eq!(
+        opacities(Some(b.clone()), ms(700), &r, cx),
+        vec![("b.png".into(), 80.)]
+    );
+
+    // Animations off: a swap at once.
+    let r = ready_at(vec![("a.png", ms(0)), ("b.png", ms(0))]);
+    let now = cx.update(|cx| {
+        fade(Slot::Window, Some(a.clone()), false, ms(800), &r, cx)
+            .into_iter()
+            .map(|(b, o, _)| (b.image.to_string_lossy().into_owned(), (o * 100.).round()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(now, vec![("a.png".to_string(), 80.)]);
+}
