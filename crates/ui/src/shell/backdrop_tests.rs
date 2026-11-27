@@ -802,34 +802,10 @@ fn a_change_with_no_toggle_lands_at_once() {
     assert!(!g.running(t0));
 }
 
-#[test]
-fn only_the_edge_inside_the_panel_is_soft() {
-    // The panel grew to the right; the image has not caught up yet.
-    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 600. - GLIDE_EDGE));
-    assert_eq!(strips.len(), GLIDE_STRIPS);
-    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
-    // The faintest strip sits at the image's edge.
-    assert_eq!(strips[0], vec![rect(600. - w, w)]);
-    assert_eq!(strips[GLIDE_STRIPS - 1], vec![rect(600. - GLIDE_EDGE, w)]);
-    assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
-    assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
-    // Wider than the panel: no soft edge, the panel clips it.
-    let (inner, strips) = soft_edges(rect(-100., 1000.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 800.));
-    assert!(strips.iter().all(Vec::is_empty));
-}
-
-#[test]
-fn a_panel_growing_left_softens_the_left_edge() {
-    let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(200. + GLIDE_EDGE, 600. - GLIDE_EDGE));
-    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
-    assert_eq!(strips[0], vec![rect(200., w)]);
-}
-
 #[gpui_kit::test]
-fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::TestAppContext) {
+fn a_contained_list_image_glides_when_the_sidebar_toggles_then_rests(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
     cx.update(crate::init);
@@ -847,10 +823,9 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
         )
         .unwrap()
     });
-    let list = Backdrop {
-        image: "list.png".into(),
-        ..backdrop("list.png")
-    };
+    // `contain` glides. `cover` would follow the panel at once.
+    let mut list = backdrop("list.png");
+    list.layout.size = BgSize::Contain;
     cx.update(|cx| {
         crate::shell::motion::set(true, cx);
         let mode = Backdrops {
@@ -927,26 +902,70 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
     assert_eq!(g.to.w, before.w);
 }
 
-#[test]
-fn soft_edge_cuts_fall_on_whole_device_pixels() {
-    // A mid-glide rect, nowhere near a whole pixel.
-    let area = Rect {
-        x: 0.,
-        y: 0.,
-        w: 613.37,
-        h: 100.,
+#[gpui_kit::test]
+fn a_cover_image_follows_its_panel_frame_by_frame(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+    cx.update(crate::init);
+    let (handle, _view) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1400.), px(900.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| cx.new(|cx| crate::shell::workspace::Workspace::new(window, cx)),
+        )
+        .unwrap()
+    });
+    cx.update(|cx| {
+        crate::shell::motion::set(true, cx);
+        let mode = Backdrops {
+            list: Some(backdrop("list.png")),
+            ..Default::default()
+        };
+        set(
+            Shown {
+                light: mode.clone(),
+                dark: mode,
+            },
+            cx,
+        );
+    });
+    let draw = |cx: &mut gpui_kit::TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap()
     };
-    let scale = 2.;
-    let (inner, strips) = soft_edges(area, rect(0., 800.), scale);
-    let whole = |v: f32| (v * scale).fract() == 0.;
-    // From the edge inwards: each strip ends where the next one starts,
-    // and the last meets the full-strength rect.
-    let mut at = strips[0][0].x + strips[0][0].w;
-    for s in &strips[..] {
-        let r = s[0];
-        assert!(whole(r.x) && whole(r.x + r.w), "{r:?}");
-        assert_eq!(r.x + r.w, at, "{r:?} meets the strip before it");
-        at = r.x;
+    draw(cx);
+    cx.update_window(handle, |_, window, cx| window.press("cmd-b", cx))
+        .unwrap();
+    for _ in 0..60 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        let drew = cx
+            .update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        if drew > 0 {
+            draw(cx);
+        }
+        cx.run_until_parked();
+        // It never keeps a glide: it lays out in the panel's rect.
+        assert!(cx.read(|cx| glide_of(Slot::List, cx)).is_none());
     }
-    assert_eq!(inner.x + inner.w, at, "the inner rect meets the last strip");
+}
+
+#[test]
+fn only_sizes_that_leave_room_glide() {
+    let with = |size| Layout {
+        size,
+        ..Layout::default()
+    };
+    assert!(fills_panel(&with(BgSize::Cover)));
+    assert!(fills_panel(&with(BgSize::Fill)));
+    assert!(!fills_panel(&with(BgSize::Contain)));
+    assert!(!fills_panel(&with(BgSize::Scale(1.))));
+    assert!(!fills_panel(&with(BgSize::Width(320.))));
 }

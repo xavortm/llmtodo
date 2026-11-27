@@ -753,12 +753,6 @@ pub fn tiles_over(area: Rect, cover: Rect, natural: (f32, f32), layout: &Layout)
 
 /// How long a panel image takes to reach its new place.
 pub const GLIDE: Duration = Duration::from_millis(500);
-/// How wide the soft edge is that reveals the room an image grows into.
-pub const GLIDE_EDGE: f32 = 120.;
-/// The soft edge draws as this many strips, each a step fainter: a GPUI
-/// image has no mask. A step is far below what the eye sees at a
-/// background's opacity.
-pub const GLIDE_STRIPS: usize = 8;
 /// How long after a toggle a change of a panel's size glides. It covers
 /// the panel's own slide, so a window resize or a divider drag later
 /// still moves the image at once.
@@ -774,17 +768,6 @@ impl Rect {
             y: l(self.y, to.y),
             w: l(self.w, to.w),
             h: l(self.h, to.h),
-        }
-    }
-
-    fn intersect(self, o: Rect) -> Rect {
-        let x = self.x.max(o.x);
-        let y = self.y.max(o.y);
-        Rect {
-            x,
-            y,
-            w: ((self.x + self.w).min(o.x + o.w) - x).max(0.),
-            h: ((self.y + self.h).min(o.y + o.h) - y).max(0.),
         }
     }
 }
@@ -808,13 +791,13 @@ impl Glide {
         }
     }
 
-    fn progress(&self, now: Instant) -> f32 {
-        now.saturating_duration_since(self.start).as_secs_f32() / GLIDE.as_secs_f32()
+    fn elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.start)
     }
 
     /// Where the image lays out at `now`.
     pub fn at(&self, now: Instant) -> Rect {
-        let t = self.progress(now);
+        let t = self.elapsed(now).as_secs_f32() / GLIDE.as_secs_f32();
         if t >= 1. {
             self.to
         } else {
@@ -823,13 +806,14 @@ impl Glide {
     }
 
     pub fn running(&self, now: Instant) -> bool {
-        self.from != self.to && self.progress(now) < 1.
+        self.from != self.to && self.elapsed(now) < GLIDE
     }
 
     /// The panel now lays out in `to`. With `glide`, a new size glides
     /// there from where the image is now, so a second toggle never jumps.
-    /// A panel that only moves takes its image along at once, as a panel
-    /// that slides in does. Without `glide`, the image is there at once.
+    /// A panel that only moves
+    /// takes its image along at once, as a panel that slides in does.
+    /// Without `glide`, the image is there at once.
     pub fn retarget(&mut self, to: Rect, glide: bool, now: Instant) {
         if to == self.to {
             return;
@@ -842,82 +826,14 @@ impl Glide {
                 start: now,
             };
         } else if glide && self.running(now) {
-            self.from.x += to.x - self.to.x;
-            self.from.y += to.y - self.to.y;
+            let (dx, dy) = (to.x - self.to.x, to.y - self.to.y);
+            self.from.x += dx;
+            self.from.y += dy;
             self.to = to;
         } else {
             *self = Self::new(to, now);
         }
     }
-}
-
-/// How an image laid out in `area` draws in `clip` while it glides: the
-/// rect it draws at full strength, and per strip, from the faintest at
-/// the image's edge inwards, the rects it draws at that strength. Only an
-/// edge of `area` inside `clip` is soft: there the image has not yet
-/// reached the panel's edge. Where two soft edges meet, the corner stays
-/// clear; a toggle changes one side at a time.
-///
-/// Every cut between two masks falls on a whole device pixel at `scale`.
-/// GPUI widens a mask to whole pixels, so a cut between pixels would draw
-/// that line twice, as a seam.
-pub fn soft_edges(area: Rect, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) {
-    const SLACK: f32 = 0.5;
-    let scale = if scale > 0. { scale } else { 1. };
-    let snap = |v: f32| (v * scale).round() / scale;
-    let (right_edge, bottom_edge) = (area.x + area.w, area.y + area.h);
-    let left = area.x > clip.x + SLACK;
-    let right = right_edge < clip.x + clip.w - SLACK;
-    let top = area.y > clip.y + SLACK;
-    let bottom = bottom_edge < clip.y + clip.h - SLACK;
-    let n = GLIDE_STRIPS;
-    let (sx, sy) = (
-        GLIDE_EDGE.min(area.w / 2.) / n as f32,
-        GLIDE_EDGE.min(area.h / 2.) / n as f32,
-    );
-    // The cuts from each edge inwards: cut `k` is `k` strips in.
-    let cuts = |from: f32, step: f32| -> Vec<f32> {
-        (0..=n).map(|k| snap(from + step * k as f32)).collect()
-    };
-    let (cl, cr) = (cuts(area.x, sx), cuts(right_edge, -sx));
-    let (ct, cb) = (cuts(area.y, sy), cuts(bottom_edge, -sy));
-    let x0 = if left { cl[n] } else { area.x };
-    let x1 = if right { cr[n] } else { right_edge };
-    let y0 = if top { ct[n] } else { area.y };
-    let y1 = if bottom { cb[n] } else { bottom_edge };
-    let edges = |l: f32, t: f32, r: f32, b: f32| Rect {
-        x: l,
-        y: t,
-        w: (r - l).max(0.),
-        h: (b - t).max(0.),
-    };
-    let strips = (0..n)
-        .map(|i| {
-            let mut out = Vec::new();
-            if left {
-                out.push(edges(cl[i], y0, cl[i + 1], y1));
-            }
-            if right {
-                out.push(edges(cr[i + 1], y0, cr[i], y1));
-            }
-            if top {
-                out.push(edges(x0, ct[i], x1, ct[i + 1]));
-            }
-            if bottom {
-                out.push(edges(x0, cb[i + 1], x1, cb[i]));
-            }
-            out.into_iter()
-                .map(|r| r.intersect(clip))
-                .filter(|r| r.w > 0. && r.h > 0.)
-                .collect()
-        })
-        .collect();
-    (edges(x0, y0, x1, y1).intersect(clip), strips)
-}
-
-/// How strong strip `i` of a soft edge draws, from the edge inwards.
-pub fn strip_strength(i: usize) -> f32 {
-    (i as f32 + 0.5) / GLIDE_STRIPS as f32
 }
 
 /// Notes which panels show. A change lets panel images glide for a
@@ -951,18 +867,6 @@ pub(crate) fn glide_of(slot: Slot, cx: &App) -> Option<Glide> {
         .and_then(|l| l.glides.get(&slot).copied())
 }
 
-/// Whether a panel image in `slot` may glide now: it is a panel's image,
-/// not a shader, and a toggle may be under way.
-fn may_glide(slot: Slot, b: &Backdrop, cx: &App) -> bool {
-    slot != Slot::Window
-        && b.shader.is_none()
-        && crate::shell::motion::on(cx)
-        && cx.try_global::<Loads>().is_some_and(|l| {
-            let now = cx.background_executor().now();
-            l.armed.is_some_and(|a| now < a) || l.glides.get(&slot).is_some_and(|g| g.running(now))
-        })
-}
-
 // Global and drawing.
 
 /// The images drawn so far, by what loaded them. `set` drops the ones
@@ -987,9 +891,6 @@ struct Loads {
     /// Whether the sidebar and the task panel show. The filter panel
     /// sits inside the list's layer, so it moves no panel image.
     panels: Option<(bool, bool)>,
-    /// The rect each gliding image drew in this frame's main pass, which
-    /// its strips draw in too.
-    gliding: HashMap<Slot, Rect>,
 }
 
 impl gpui_kit::Global for Loads {}
@@ -1300,62 +1201,43 @@ fn layer_inner(
                 .then_some(base)
         })
         .collect();
-    // LLM-584: an image that may glide also draws its soft edges, each
-    // strip in a layer of its own strength.
-    let glides: Vec<bool> = draws
-        .iter()
-        .map(|(slot, b, _, _)| !over && may_glide(*slot, b, cx))
-        .collect();
     Some(
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
-            .children(draws.into_iter().zip(flat).zip(glides).map(
-                move |(((slot, b, opacity, _), flat), glides)| {
-                    let scroll = scroll.clone().filter(|_| b.scroll);
-                    let parent = parent.clone();
-                    let strips = if glides { GLIDE_STRIPS } else { 0 };
-                    let pass = |strip: Option<usize>| {
-                        let b = b.clone();
-                        let scroll = scroll.clone();
+            .children(
+                draws
+                    .into_iter()
+                    .zip(flat)
+                    .map(move |((slot, b, opacity, _), flat)| {
+                        let scroll = scroll.clone().filter(|_| b.scroll);
                         let parent = parent.clone();
-                        canvas(
-                            |_, _, _| {},
-                            move |bounds, _, window, cx| {
-                                let offset = scroll.as_ref().map(|f| f());
-                                let blend = surface_blend(flat, parent.as_ref(), opacity);
-                                let gliding =
-                                    paint(slot, &b, offset, over, blend, strip, bounds, window, cx);
-                                if running || gliding {
-                                    window.request_animation_frame();
-                                }
-                            },
-                        )
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                    };
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .opacity(opacity)
-                        .child(pass(None))
-                        .children((0..strips).map(|i| {
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full()
-                                .opacity(strip_strength(i))
-                                .child(pass(Some(i)))
-                        }))
-                },
-            ))
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .opacity(opacity)
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, window, cx| {
+                                        let offset = scroll.as_ref().map(|f| f());
+                                        let blend = surface_blend(flat, parent.as_ref(), opacity);
+                                        let gliding = paint(
+                                            slot, &b, offset, over, blend, bounds, window, cx,
+                                        );
+                                        if running || gliding {
+                                            window.request_animation_frame();
+                                        }
+                                    },
+                                )
+                                .size_full(),
+                            )
+                    }),
+            )
             .into_any_element(),
     )
 }
@@ -1537,10 +1419,7 @@ fn key_for(b: &Backdrop, window: &Window, cx: &App) -> ImageKey {
     }
 }
 
-/// Paints one slot's image. `strip` is `None` for the main pass, which
-/// keeps the books and draws the image at full strength, or one strip of
-/// a gliding image's soft edges, drawn after it (LLM-584). Returns whether
-/// the image still glides.
+/// Paints one slot's image. Returns whether it still glides (LLM-584).
 #[allow(clippy::too_many_arguments)]
 fn paint(
     slot: Slot,
@@ -1548,7 +1427,6 @@ fn paint(
     scroll: Option<gpui_kit::Point<Pixels>>,
     over: bool,
     blend: Option<crate::shell::shader::Blend>,
-    strip: Option<usize>,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -1565,19 +1443,13 @@ fn paint(
     };
     let loads = cx.default_global::<Loads>();
     // Where the image lays out, and whether it glides there.
-    let (laid, gliding) = if strip.is_some() {
-        // A strip draws only while the main pass found a glide this
-        // frame, and in the same rect.
-        let Some(laid) = loads.gliding.get(&slot).copied() else {
-            return false;
-        };
-        (laid, true)
-    } else if over {
+    let (laid, gliding) = if over {
         (loads.areas.get(&slot).copied().unwrap_or(own), false)
-    } else if slot == Slot::Window || b.shader.is_some() {
+    } else if slot == Slot::Window || b.shader.is_some() || fills_panel(&b.layout) {
+        // A shader, and an image that fills its panel, follow the panel
+        // frame by frame, so no edge ever shows.
         loads.areas.insert(slot, own);
         loads.glides.remove(&slot);
-        loads.gliding.remove(&slot);
         (own, false)
     } else {
         // LLM-584: a panel's new size glides only just after a toggle.
@@ -1590,30 +1462,21 @@ fn paint(
         if !animate {
             *g = Glide::new(own, now);
         }
-        let (at, running) = (g.at(now), g.running(now));
+        let at = g.at(now);
         loads.areas.insert(slot, at);
-        if running {
-            loads.gliding.insert(slot, at);
-        } else {
-            loads.gliding.remove(&slot);
-        }
-        (at, running)
+        (at, g.running(now))
     };
-    if strip.is_none() {
-        let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
-        for image in retired {
-            let _ = window.drop_image(image);
-        }
+    let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
+    for image in retired {
+        let _ = window.drop_image(image);
     }
     if let Some(spec) = &b.shader {
-        if strip.is_none() {
-            let area = if slot == Slot::Window {
-                window_area()
-            } else {
-                own
-            };
-            paint_shader(slot, b, spec, area, over, blend, bounds, window, cx);
-        }
+        let area = if slot == Slot::Window {
+            window_area()
+        } else {
+            own
+        };
+        paint_shader(slot, b, spec, area, over, blend, bounds, window, cx);
         return false;
     }
     let key = key_for(b, window, cx);
@@ -1622,14 +1485,12 @@ fn paint(
         // Loading, or a file that is not an image. The loader has
         // written why to the log.
         result => {
-            if strip.is_none() {
-                let loads = cx.default_global::<Loads>();
-                loads.keys.entry(key).or_insert(None);
-                // A file that fails counts as ready, so the old image
-                // still fades out.
-                if result.is_some() {
-                    loads.ready.entry(ident(b)).or_insert(now);
-                }
+            let loads = cx.default_global::<Loads>();
+            loads.keys.entry(key).or_insert(None);
+            // A file that fails counts as ready, so the old image still
+            // fades out.
+            if result.is_some() {
+                loads.ready.entry(ident(b)).or_insert(now);
             }
             return gliding;
         }
@@ -1638,20 +1499,6 @@ fn paint(
     loads.keys.insert(key, Some(loaded.image.clone()));
     let ready = *loads.ready.entry(ident(b)).or_insert(now);
     let frame = animation_frame(&loaded.image, ready, now, window, cx);
-    let clip = rect_of(bounds);
-    // While it glides, the image draws in full inside its soft edges, and
-    // each strip draws its part of them. Its repeats fill only the room it
-    // has reached.
-    let (mask, cover) = if gliding {
-        let (inner, strips) = soft_edges(laid, clip, window.scale_factor());
-        let mask = match strip {
-            None => vec![inner],
-            Some(i) => strips.into_iter().nth(i).unwrap_or_default(),
-        };
-        (mask, laid.intersect(clip))
-    } else {
-        (vec![clip], clip)
-    };
     // The window image lines up with the window, so it runs on across
     // panels. A panel image lines up with its panel.
     let area = if slot == Slot::Window {
@@ -1665,37 +1512,39 @@ fn paint(
         }
         area
     };
-    let tiles = tiles_over(area, cover, loaded.natural, &b.layout);
-    for m in mask {
-        if m.w <= 0. || m.h <= 0. {
+    let clip = rect_of(bounds);
+    for t in tiles_over(area, clip, loaded.natural, &b.layout) {
+        if t.x >= clip.x + clip.w
+            || t.y >= clip.y + clip.h
+            || t.x + t.w <= clip.x
+            || t.y + t.h <= clip.y
+        {
             continue;
         }
-        let m_bounds = bounds_of(m);
-        window.with_content_mask(Some(gpui_kit::ContentMask { bounds: m_bounds }), |window| {
-            for t in &tiles {
-                if t.x >= m.x + m.w || t.y >= m.y + m.h || t.x + t.w <= m.x || t.y + t.h <= m.y {
-                    continue;
-                }
-                let image_bounds = bounds_of(*t);
-                let _ = window.paint_image(
-                    bounds,
-                    image_bounds,
-                    Default::default(),
-                    loaded.image.clone(),
-                    frame,
-                    b.grayscale,
-                );
-                // LLM-572: the tint washes over the image only, not the
-                // panel.
-                if let Some(tint) = b.tint {
-                    window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
-                        window.paint_quad(gpui_kit::fill(image_bounds, tint))
-                    });
-                }
-            }
-        });
+        let image_bounds = bounds_of(t);
+        let _ = window.paint_image(
+            bounds,
+            image_bounds,
+            Default::default(),
+            loaded.image.clone(),
+            frame,
+            b.grayscale,
+        );
+        // LLM-572: the tint washes over the image only, not the panel.
+        if let Some(tint) = b.tint {
+            window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+                window.paint_quad(gpui_kit::fill(image_bounds, tint))
+            });
+        }
     }
     gliding
+}
+
+/// Whether an image of `layout` covers its whole panel, as `cover` and
+/// `fill` do. Laid out anywhere but the panel's own rect, it would show
+/// an edge, so it never glides.
+pub fn fills_panel(layout: &Layout) -> bool {
+    matches!(layout.size, BgSize::Cover | BgSize::Fill)
 }
 
 fn bounds_of(r: Rect) -> Bounds<Pixels> {
