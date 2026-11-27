@@ -3,17 +3,19 @@
 //!
 //! A [`Harness`] is the program that runs an agent, such as Claude Code.
 //! It knows how to find the agent's session, its transcript and its usage.
-//! [`ClaudeCode`] is the first one. An agent from a harness with no
+//! [`ClaudeCode`] and [`Antigravity`] have implementations. An agent from a harness with no
 //! implementation still works: it names itself with `LLMTODO_ACTOR`, and
 //! the client sends no usage for it.
 
 mod active_time;
+mod antigravity;
 mod claude_code;
 
 use std::path::{Path, PathBuf};
 
 use llmtodo_api_types::{ActorInput, ActorKind, ClientContext, TokenUsage, VERSION};
 
+pub use antigravity::Antigravity;
 pub use claude_code::ClaudeCode;
 
 use crate::{TranscriptTotals, UsageFn};
@@ -52,8 +54,11 @@ pub trait Harness: Send + Sync {
 }
 
 /// Every harness with an implementation, in the order detection tries them.
+/// An inner harness comes first: agy started from a Claude Code shell
+/// inherits `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`, and the call is
+/// still agy's.
 pub fn harnesses() -> Vec<&'static dyn Harness> {
-    vec![&ClaudeCode]
+    vec![&Antigravity, &ClaudeCode]
 }
 
 /// The harness this process runs in, if any.
@@ -170,12 +175,15 @@ pub fn detect(
         ActorInput::default()
     };
 
-    let harness_version = harness.and_then(|h| h.version()).or_else(|| {
-        ai_agent
+    // A detected harness names its own version. `AI_AGENT` may belong to
+    // an outer harness, so it counts only when none is detected.
+    let harness_version = match harness {
+        Some(h) => h.version(),
+        None => ai_agent
             .as_deref()
             .and_then(|a| a.split('_').nth(1))
-            .map(|v| v.replace('-', "."))
-    });
+            .map(|v| v.replace('-', ".")),
+    };
     // The harness that reads the transcript: the detected one, else one
     // that names its own session, such as a test or a script that sets
     // `CLAUDE_CODE_SESSION_ID` with its own `LLMTODO_ACTOR`.
@@ -312,5 +320,11 @@ mod tests {
     #[test]
     fn claude_code_is_a_known_harness() {
         assert!(harnesses().iter().any(|h| h.name() == "claude-code"));
+    }
+
+    #[test]
+    fn antigravity_is_tried_before_claude_code() {
+        let names: Vec<_> = harnesses().iter().map(|h| h.name()).collect();
+        assert_eq!(names, ["antigravity", "claude-code"]);
     }
 }

@@ -251,7 +251,7 @@ The CLI picks the actor in this order:
 
 1. `LLMTODO_ACTOR`
 2. `.llmtodo.toml`
-3. Detection: `AI_AGENT` set means a Claude Code agent. Nothing set means the human owner.
+3. Detection: `ANTIGRAVITY_AGENT` set means an Antigravity (agy) agent, whose session is `ANTIGRAVITY_CONVERSATION_ID`. `CLAUDECODE` or `AI_AGENT` set means a Claude Code agent. Antigravity wins when both are set, because agy started from a Claude Code shell inherits Claude's variables. Nothing set means the human owner.
 
 A human actor in `.llmtodo.toml` applies only when no agent is detected. Every caller in the repo shares that file, so it must not turn an agent into the owner. Only `LLMTODO_ACTOR` overrides the detection.
 

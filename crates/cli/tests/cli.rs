@@ -279,6 +279,42 @@ async fn repo_human_actor_does_not_hide_an_agent() {
     t.stop().await;
 }
 
+/// agy (Antigravity) sets `ANTIGRAVITY_*` for its shell commands. Started
+/// from a Claude Code shell, it also inherits Claude's variables. The call
+/// is still agy's: an agent with harness `antigravity`, whose session is
+/// agy's conversation, never the owner and never Claude's session.
+#[tokio::test(flavor = "multi_thread")]
+async fn antigravity_is_detected_inside_claude_code() {
+    let t = T::new().await;
+    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["issue", "create", "-t", "Work"]);
+    let out = t
+        .cmd("unused", &["--json", "issue", "claim", "ALX-1"])
+        .env_remove("LLMTODO_ACTOR")
+        .env_remove("LLMTODO_SESSION")
+        .env("ANTIGRAVITY_AGENT", "1")
+        .env("ANTIGRAVITY_CONVERSATION_ID", "agy-conv-1")
+        .env("CLAUDECODE", "1")
+        .env("CLAUDE_CODE_SESSION_ID", "claude-sess-1")
+        .env("AI_AGENT", "claude-code_2-1-322_agent")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = t.json(
+        "s1",
+        &["--json", "issue", "view", "ALX-1", "--fields", "claim"],
+    );
+    let claim = &v["claim"];
+    assert_eq!(claim["actor"]["kind"], "agent", "{v}");
+    assert_eq!(claim["actor"]["harness"], "antigravity", "{v}");
+    assert_eq!(claim["session_id"], "agy-conv-1", "{v}");
+    t.stop().await;
+}
+
 /// Subagents can share one session. A repeated claim then succeeds without
 /// a change, so the CLI must say so on stderr, where JSON readers see it.
 #[tokio::test(flavor = "multi_thread")]
