@@ -354,7 +354,9 @@ fn pids_running(app: &Path) -> Vec<i32> {
         .collect()
 }
 
-/// Brings the running app at `app` to the front. False when none runs.
+/// Brings the running app at `app` to the front. True whenever it runs,
+/// even when macOS refuses to bring it forward, so a click never starts a
+/// second copy.
 ///
 /// It looks the process up by its ID each time. `NSWorkspace`'s list of
 /// running apps changes only while the main run loop runs, so it can miss
@@ -366,11 +368,17 @@ pub fn bring_forward(app: &Path) -> bool {
     use objc2::sel;
     use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
 
-    let Some(found) = pids_running(app)
+    let pids = pids_running(app);
+    if pids.is_empty() {
+        return false;
+    }
+    // A process that has not checked in with the window server yet has
+    // no running app. It still runs.
+    let Some(found) = pids
         .into_iter()
         .find_map(NSRunningApplication::runningApplicationWithProcessIdentifier)
     else {
-        return false;
+        return true;
     };
     // Since macOS 14 an app comes forward only when the active app yields
     // to it.
@@ -380,7 +388,8 @@ pub fn bring_forward(app: &Path) -> bool {
             me.yieldActivationToApplication(&found);
         }
     }
-    found.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows)
+    found.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+    true
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -560,5 +569,43 @@ mod tests {
         assert_eq!(previews.open(&launch), Ok(Opened::Starting));
         std::fs::write(&gate, "").unwrap();
         wait_for("ended", || previews.state("LLM-5").is_none());
+    }
+
+    #[test]
+    fn a_preview_left_by_an_earlier_run_is_not_started_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("started");
+        let script = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
+        let app = checkout(tmp.path(), "LLM-6", &script);
+        // A process whose command is the build's path stands in for the
+        // preview another run of the app opened: a copy of this test
+        // binary that runs only `sleeper`. A copy of a system binary such
+        // as /bin/sleep gets killed by macOS.
+        std::fs::copy(std::env::current_exe().unwrap(), &app).unwrap();
+        let mut running = Command::new(&app)
+            .args(["--exact", "model::try_it::tests::sleeper", "--ignored"])
+            .env("TRY_IT_SLEEPER", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_for("listed", || !pids_running(&app).is_empty());
+        let launch = check("LLM-6", &build(&app, false, None), None).unwrap();
+        let previews = Previews::default();
+        assert_eq!(previews.open(&launch), Ok(Opened::Forward));
+        let _ = running.kill();
+        let _ = running.wait();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "a second preview started");
+        assert_eq!(previews.state("LLM-6"), None);
+    }
+
+    /// The stand-in preview of the test above.
+    #[test]
+    #[ignore]
+    fn sleeper() {
+        if std::env::var_os("TRY_IT_SLEEPER").is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
     }
 }

@@ -2386,7 +2386,6 @@ const MISSING: &str = "—";
 /// the title are this tall, so they sit on its first line.
 const HEADER_LINE_REM: f32 = 1.25;
 
-/// One group of the meta line. Its items sit close and wrap inside it.
 /// The Try it previews, and the task that draws the view again each time
 /// one starts, opens or ends (LLM-591). The previews report from their own
 /// threads, which GPUI's test scheduler refuses, so tests get previews that
@@ -2417,6 +2416,7 @@ fn watch_previews(
     }
 }
 
+/// One group of the meta line. Its items sit close and wrap inside it.
 fn meta_group() -> gpui_kit::Div {
     h_flex()
         .flex_wrap()

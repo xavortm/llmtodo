@@ -485,6 +485,7 @@ impl IssueStore {
         id: IssueId,
         build: Option<llmtodo_api_types::PreviewBuild>,
     ) {
+        self.note(Some(id));
         match build {
             Some(build) => self.preview_builds.insert(id, build),
             None => self.preview_builds.remove(&id),
