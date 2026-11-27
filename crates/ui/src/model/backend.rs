@@ -32,7 +32,7 @@ use tokio::sync::mpsc as tmpsc;
 
 /// The teams with their statuses, the labels, projects, saved views and
 /// documents.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CatalogData {
     pub teams: Vec<Team>,
     pub labels: Vec<Label>,
@@ -56,7 +56,7 @@ impl CatalogData {
 }
 
 /// Everything the list needs, loaded in one go, as the server sent it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub catalog: CatalogData,
     /// Live issues, then the Trash, without their descriptions. The app
@@ -256,6 +256,9 @@ pub enum Event {
         loaded: u64,
         total: Option<u64>,
     },
+    /// LLM-625: the last full load, read from the cache file at start. The
+    /// live [`Event::Snapshot`] replaces it.
+    Cached(Box<Loaded>),
     /// Everything, or only the open issues when `partial` is set.
     Snapshot(Box<Loaded>),
     /// The closed and trashed issues of the partial snapshot just before.
@@ -374,6 +377,9 @@ pub struct Target {
     /// Read only: the client refuses every write, and the app never starts
     /// a server here, because a start can migrate the database.
     pub read_only: bool,
+    /// LLM-625: read the last full load from the cache file at start, and
+    /// save each new one there. Never on a read-only tracker.
+    pub cache: bool,
     /// Tests: each live refresh waits this long first, to stand in for a
     /// slow one.
     #[cfg(test)]
@@ -401,6 +407,7 @@ impl Target {
             data_dir,
             spawn: beside.or_else(on_path),
             read_only: false,
+            cache: true,
             #[cfg(test)]
             slow_flush: Duration::ZERO,
         }
@@ -408,6 +415,11 @@ impl Target {
 }
 
 impl Target {
+    /// The cache file, when this target keeps one.
+    fn cache_path(&self) -> Option<PathBuf> {
+        (self.cache && !self.read_only).then(|| crate::model::cache::path(&self.data_dir))
+    }
+
     /// Whether `config.toml` sends this folder to the shared database. The
     /// app knows it before any server answers, so the first connect can say
     /// the database is waking (LLM-470).
@@ -668,7 +680,20 @@ impl Backoff {
 }
 
 async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, events: Events) {
-    let mut state = State::default();
+    let mut state = State {
+        cache: target.cache_path(),
+        ..Default::default()
+    };
+    // The cache shows while the thread connects. It is read first, so it
+    // always comes before the live snapshot.
+    if let Some(path) = state.cache.clone() {
+        let read = tokio::task::spawn_blocking(move || {
+            crate::model::cache::read(&path).map(Snapshot::load)
+        });
+        if let Ok(Some(loaded)) = read.await {
+            send(&events, Event::Cached(Box::new(loaded)));
+        }
+    }
     let mut backoff = Backoff::default();
     loop {
         state.connected = false;
@@ -844,6 +869,8 @@ struct State {
     /// A copy of the work the running flush took from `pending`, until it
     /// finishes.
     flushing: Option<Pending>,
+    /// LLM-625: the cache file each full load is saved to.
+    cache: Option<PathBuf>,
 }
 
 /// A flush running on its own task. Dropping it stops the task.
@@ -973,7 +1000,14 @@ async fn session(
             // First connect, or a new database with fewer events.
             _ => state.pending.reload = true,
         }
-        flush(&client, &mut state.pending, open, events).await
+        flush(
+            &client,
+            &mut state.pending,
+            open,
+            events,
+            state.cache.as_deref(),
+        )
+        .await
     };
     // The live socket is watched while the first load runs, so a server
     // that stops answering ends the session within the ping window, not
@@ -1058,12 +1092,13 @@ async fn session(
                 let mut work = std::mem::take(&mut state.pending);
                 state.flushing = Some(work.clone());
                 let (client, events, open) = (client.clone(), events.clone(), state.open);
+                let cache = state.cache.clone();
                 #[cfg(test)]
                 let slow = target.slow_flush;
                 flushing = Some(FlushTask(tokio::spawn(async move {
                     #[cfg(test)]
                     tokio::time::sleep(slow).await;
-                    flush(&client, &mut work, open, &events).await
+                    flush(&client, &mut work, open, &events, cache.as_deref()).await
                 })));
             }
         }
@@ -1164,7 +1199,7 @@ async fn handle(
     settled: &mut bool,
 ) -> Result<(), Lost> {
     match request {
-        Request::Reload => snapshot(client, events).await?,
+        Request::Reload => snapshot(client, events, state.cache.as_deref()).await?,
         Request::Fetch { key } => {
             if let Err(e) = refresh(client, &key, events).await {
                 state.pending.owe(key);
@@ -1496,9 +1531,10 @@ async fn flush(
     pending: &mut Pending,
     open: Option<IssueId>,
     events: &Events,
+    cache: Option<&std::path::Path>,
 ) -> Result<(), String> {
     if pending.reload {
-        snapshot(client, events).await?;
+        snapshot(client, events, cache).await?;
         pending.reload = false;
         pending.catalog = false;
         // The snapshot settles every other key. The owed ones still need
@@ -1594,7 +1630,12 @@ async fn dependents(client: &Client, key: &str) -> Result<Vec<Issue>, String> {
 /// Sends the open issues first, so the list shows before the closed and
 /// trashed issues load (LLM-347). Those follow as [`Event::SnapshotRest`].
 /// Both reads start at once, and live events wait until both are sent.
-async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
+/// A full load is saved to `cache`, when there is one (LLM-625).
+async fn snapshot(
+    client: &Client,
+    events: &Events,
+    cache: Option<&std::path::Path>,
+) -> Result<(), String> {
     // ID order: a write between two pages never moves an issue across the
     // page edge. The app sorts the list itself. Descriptions stay out: they
     // are most of a snapshot's size, and the app fetches one when a task
@@ -1633,16 +1674,19 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
             query_counted(client, &open, 0, &progress, events),
             client.questions(&open_questions)
         )?;
-        let mut loaded = Snapshot {
+        let snapshot = Snapshot {
             catalog,
             issues,
             questions,
-        }
-        .load();
+        };
+        // The open issues go to the app, and a copy waits for the rest
+        // to make the cache.
+        let saved = cache.map(|_| snapshot.clone());
+        let mut loaded = snapshot.load();
         loaded.partial = true;
         let catalog = loaded.catalog.clone();
         send(events, Event::Snapshot(Box::new(loaded)));
-        Ok(catalog)
+        Ok((catalog, saved))
     };
     let rest = async {
         let (mut issues, trashed) = tokio::try_join!(
@@ -1652,11 +1696,19 @@ async fn snapshot(client: &Client, events: &Events) -> Result<(), String> {
         issues.extend(trashed);
         Ok(last_copy_of_each(issues, |i| i.key.to_string()))
     };
-    let (catalog, rest) = tokio::try_join!(first, rest).map_err(|e: ClientError| e.to_string())?;
+    let ((catalog, saved), rest) =
+        tokio::try_join!(first, rest).map_err(|e: ClientError| e.to_string())?;
     let issues = rest
         .iter()
         .map(|i| crate::model::data::Issue::from_api(i, &catalog))
         .collect();
+    if let (Some(path), Some(mut saved)) = (cache, saved) {
+        saved.issues.extend(rest.iter().cloned());
+        let path = path.to_path_buf();
+        // A cache that fails to save only costs the next start its head
+        // start.
+        tokio::task::spawn_blocking(move || crate::model::cache::write(&path, saved));
+    }
     send(
         events,
         Event::SnapshotRest(Box::new(Rest {
@@ -2321,6 +2373,7 @@ mod tests {
             data_dir: PathBuf::from("/nowhere"),
             spawn: Some(PathBuf::from("/bin/llmtodo")),
             read_only: false,
+            cache: false,
             slow_flush: Duration::ZERO,
         };
         let mut state = State::default();
@@ -2338,6 +2391,7 @@ mod tests {
             data_dir: PathBuf::from("/nowhere"),
             spawn: Some(PathBuf::from("/bin/llmtodo")),
             read_only: true,
+            cache: false,
             slow_flush: Duration::ZERO,
         };
         assert!(State::default().spawn(&target).is_none());

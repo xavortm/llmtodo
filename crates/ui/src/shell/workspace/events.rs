@@ -27,7 +27,9 @@ impl Workspace {
         // Any answer means the server, and its database, are awake.
         if !matches!(
             event,
-            backend::Event::Offline { .. } | backend::Event::DatabaseDown { .. }
+            backend::Event::Offline { .. }
+                | backend::Event::DatabaseDown { .. }
+                | backend::Event::Cached(_)
         ) {
             let now = cx.background_executor().now();
             self.activity.answer(now);
@@ -89,7 +91,18 @@ impl Workspace {
                 self.activity.loading(loaded, total, now);
                 self.set_loading(Some((loaded, total)), cx);
             }
+            backend::Event::Cached(cached) => self.on_cached(*cached, cx),
             backend::Event::Snapshot(snapshot) => {
+                // The live data replaces the cache, and edits work again.
+                // The list fades back in from now.
+                self.live_loaded = true;
+                let now = cx.background_executor().now();
+                self.store.update(cx, |store, _| {
+                    if store.cached {
+                        store.refreshed_at = Some(now);
+                    }
+                    store.cached = false;
+                });
                 // The API thread already mapped the issues.
                 let backend::Loaded {
                     catalog,
@@ -204,6 +217,25 @@ impl Workspace {
         }
         self.sync_activity(cx);
         cx.notify();
+    }
+
+    /// LLM-625: the last run's data, shown while the app connects. It
+    /// loads only into an empty store, before any live snapshot.
+    fn on_cached(&mut self, cached: backend::Loaded, cx: &mut Context<Self>) {
+        if self.live_loaded || !self.store.read(cx).is_empty() {
+            return;
+        }
+        let backend::Loaded {
+            catalog,
+            issues,
+            questions,
+            ..
+        } = cached;
+        // Marked first, so the load keeps what the cache lacks.
+        self.store.update(cx, |store, _| store.cached = true);
+        self.load_questions(&issues, &questions, cx);
+        self.load(catalog, issues, cx);
+        self.loaded_tracker(cx);
     }
 
     /// Starts over for a new connection: the app waits for its server.

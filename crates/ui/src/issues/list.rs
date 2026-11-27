@@ -304,6 +304,8 @@ pub struct IssueList {
     pub strike_done: bool,
     /// The list animation that runs now, with animations on (LLM-195).
     motion: Option<ListMotion>,
+    /// What the last frame drew of the cached look, for tests.
+    pub(crate) stale_shown: Stale,
     /// The first row the list drew in the last frame, where a sort's wave
     /// starts.
     visible_start: usize,
@@ -439,6 +441,7 @@ impl IssueList {
             strike_done: true,
             draft_kept: false,
             motion: None,
+            stale_shown: Stale::default(),
             fill_layer: cx.new(|_| Default::default()),
             store_seen: 0,
             drawn: Default::default(),
@@ -1300,6 +1303,9 @@ impl IssueList {
         }
         let store = self.store.read(cx);
         Some(Empty::Note(match (&store.connection, &self.scope) {
+            // The cache shows while the live load runs (LLM-625). A scope
+            // it leaves empty says nothing until that arrives.
+            _ if store.cached => return None,
             (Connection::Connecting, _) if store.is_empty() => {
                 return store
                     .slow_connect
@@ -2816,6 +2822,8 @@ impl Render for IssueList {
                 window.request_animation_frame();
             }
         }
+        let stale = self.stale(window, cx);
+        self.stale_shown = stale;
         self.step_to_top(window, cx);
         let rem_size = window.rem_size();
         let demand = self.demand;
@@ -2878,13 +2886,116 @@ impl Render for IssueList {
                             }),
                         )
                         .track_scroll(&self.scroll)
-                        .flex_1(),
+                        .flex_1()
+                        .opacity(stale.opacity()),
                     )
+                    .when(stale.sweep > 0., |this| {
+                        this.child(render_sweep(stale.sweep, cx))
+                    })
                     .children(self.render_to_top(window, cx))
                     .children(fold)
                     .children(loader),
             )
     }
+}
+
+impl IssueList {
+    /// LLM-625: how the rows show the cache from the last run. They are
+    /// dimmed under a sweep until the live load arrives, then fade back to
+    /// full strength.
+    fn stale(&self, window: &mut Window, cx: &App) -> Stale {
+        let store = self.store.read(cx);
+        let motion = crate::shell::motion::on(cx);
+        if store.cached {
+            return Stale {
+                dim: 1.,
+                sweep: if motion { 1. } else { 0. },
+            };
+        }
+        // The fade runs from when the live load arrived, so a list that
+        // was hidden then does not play it later.
+        let Some(at) = store.refreshed_at.filter(|_| motion) else {
+            return Stale::default();
+        };
+        let t = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(at)
+            .as_secs_f32()
+            / REFRESH_FADE.as_secs_f32();
+        if t >= 1. {
+            return Stale::default();
+        }
+        window.request_animation_frame();
+        let left = 1. - gpui_kit::ease_in_out(t);
+        Stale {
+            dim: left,
+            sweep: left,
+        }
+    }
+}
+
+/// How dim the cached rows are: their opacity while the cache shows.
+const CACHED_OPACITY: f32 = 0.5;
+/// How long the rows take to come back to full strength.
+const REFRESH_FADE: std::time::Duration = std::time::Duration::from_millis(300);
+/// One pass of the sweep, top to bottom.
+const SWEEP: std::time::Duration = std::time::Duration::from_millis(1600);
+
+/// How much of the cached look the rows still show, from 0 to 1.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Stale {
+    /// 1 while the cache shows, down to 0 as the rows fade back in.
+    pub dim: f32,
+    /// The sweep's strength. 0 with Animations off.
+    pub sweep: f32,
+}
+
+impl Stale {
+    /// The rows' opacity.
+    pub fn opacity(self) -> f32 {
+        1. - (1. - CACHED_OPACITY) * self.dim
+    }
+}
+
+/// A soft light band that moves down the list again and again, so the
+/// cached rows read as loading. It sits over the rows and takes no clicks.
+fn render_sweep(strength: f32, cx: &App) -> impl IntoElement + use<> {
+    use gpui_kit::{Animation, AnimationExt as _, linear_color_stop, linear_gradient, relative};
+    let light = cx.theme().foreground.opacity(0.07 * strength);
+    let clear = light.opacity(0.);
+    // The band is as tall as 40% of the list. It starts above the top and
+    // ends below the bottom, so each pass enters and leaves softly.
+    const BAND: f32 = 0.4;
+    let half = |from, to| {
+        div().w_full().h(relative(0.5)).bg(linear_gradient(
+            180.,
+            linear_color_stop(from, 0.),
+            linear_color_stop(to, 1.),
+        ))
+    };
+    div()
+        .id("list-sweep")
+        .test_support()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .child(
+            v_flex()
+                .absolute()
+                .left_0()
+                .w_full()
+                .h(relative(BAND))
+                .child(half(clear, light))
+                .child(half(light, clear))
+                .with_animation(
+                    "list-sweep-band",
+                    Animation::new(SWEEP)
+                        .repeat()
+                        .with_easing(gpui_kit::ease_in_out),
+                    |band, t| band.top(relative(t * (1. + BAND) - BAND)),
+                ),
+        )
 }
 
 /// What the list shows in place of rows.
