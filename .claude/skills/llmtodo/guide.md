@@ -174,6 +174,20 @@ llmtodo issue review answer ABC-12 request-changes -m "The text is too small."
 
 `review wait` listens on the live events, so it does not poll. The answer it prints has `seq`, `key`, `round`, `verdict`, `feedback`, `author`, `status` and `waiting_on`. Pass that `seq` to `--after-seq` on the next wait, so you miss no answer between two waits. `--timeout <seconds>` gives up with exit code 1.
 
+## Review on a branch, with a reviewer agent
+
+A team can put a reviewer agent before the owner. It then has two review statuses, each with a role: the reviewer's, such as In Review, and the owner's, such as User review. `llmtodo status list` shows the role. A ticket's work stays on its branch and PR until the owner approves, so nothing reaches `main` or the owner's installed app before that.
+
+1. Work on a branch named after the ticket, in its own worktree. Commit, push, and open a PR. Run `llmtodo issue update ABC-12 --pr <url>`.
+2. Write the `+++ Review` section and the Agent notes. If the repo has a preview build script, build the branch app, so the owner can try it without a compile.
+3. Move the ticket to the reviewer's status: `llmtodo issue update ABC-12 --status "In Review"`. The move ends your claim and sets `waiting_on reviewer`. Then start the reviewer the way the repo says, often with a script.
+4. The reviewer reads the diff and answers once per round:
+   - **Pass**, with optional notes: the ticket moves to the owner's status and waits on the owner. The notes stay on the ticket.
+   - **Request changes**: act on it as on the owner's Request changes. Claim the ticket, fix or decline each finding with a reason, commit, and push. Write one line per finding in the Agent notes. Then go back to step 3.
+5. The owner approves or requests changes, as in "Act on the owner's answer". After Approve, merge the PR, publish if the repo publishes, and mark the ticket Done.
+
+A reviewer agent never edits code, commits, pushes, claims or approves. `llmtodo issue review queue` lists the tickets that wait on it. It answers with `llmtodo issue review answer ABC-12 pass` or `request-changes`, and the server refuses its `approve` with exit code 6.
+
 ## Dependencies
 
 A dependency is a `blocked-by` relation: "ABC-12 depends on ABC-9" means ABC-12 is blocked by ABC-9. The server refuses a relation that would make a cycle, with exit code 6, and names the cycle in the error.

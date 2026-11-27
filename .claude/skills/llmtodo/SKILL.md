@@ -47,6 +47,7 @@ llmtodo keeps its data in a local SQLite file by default. The owner can instead 
     `llmtodo issue update <KEY> --status "User review" -w owner`
     A review status has the review flag: `llmtodo status list` shows `review: true`. The move hands the ticket to the owner and ends your claim. It fails with exit code 6 without both headings. Use very simple words, one action per line, and no reasons. The owner must not need to read anything twice.
 13. The owner answers with Approve or Request changes. `llmtodo issue review wait` blocks until the next answer and prints it. Approve with an open PR: merge it, then mark the ticket Done. Request changes: read the feedback, fix it, write the section again and send it back to the review status. See "Act on the owner's answer" in the guide.
+14. A team with a reviewer step has two review statuses: one for a reviewer agent, such as In Review, and one for the owner, such as User review. There, review work lives on a branch and a PR, never on `main`, until the owner approves. Build a preview if the repo has a script for it, then move the ticket to the reviewer's status, not the owner's. The move sets `waiting_on reviewer`. The reviewer passes it on to the owner, or requests changes, which you act on as you would on the owner's. Merge and publish only after the owner approves. See "Review on a branch, with a reviewer agent" in the guide.
 
 Pass `--no-input` on every call. Never run `llmtodo prune`.
 
