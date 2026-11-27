@@ -753,14 +753,17 @@ pub fn tiles_over(area: Rect, cover: Rect, natural: (f32, f32), layout: &Layout)
 
 /// How long a panel image takes to reach its new place.
 pub const GLIDE: Duration = Duration::from_millis(500);
-/// How far inside the image's edge the reveal starts to fade, so an
-/// image that ends there has no hard edge. It shrinks with the room left
-/// to reveal, so the image shows in full when the glide lands.
-pub const GLIDE_INSET: f32 = 48.;
+/// How long the reveal holds still after a toggle before it slides out.
+pub const REVEAL_DELAY: Duration = Duration::from_millis(250);
+/// How long the reveal takes to slide out once it starts.
+pub const REVEAL: Duration = Duration::from_millis(500);
+/// The narrowest the reveal's gradient gets, so a small change still
+/// fades softly.
+pub const REVEAL_MIN_SOFT: f32 = 160.;
 /// The reveal draws as this many strips, each a step fainter: a GPUI image
-/// has no mask. The reveal can span a whole panel's width, so the steps
+/// has no mask. The gradient can span a whole panel's width, so the steps
 /// stay small enough to read as one gradient.
-pub const GLIDE_STRIPS: usize = 24;
+pub const GLIDE_STRIPS: usize = 32;
 /// How long after a toggle a change of a panel's size glides. It covers
 /// the panel's own slide, so a window resize or a divider drag later
 /// still moves the image at once.
@@ -791,13 +794,34 @@ impl Rect {
     }
 }
 
+/// Ease-in-out cubic: the reveal starts from rest after its hold.
+fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    if t < 0.5 {
+        4. * t * t * t
+    } else {
+        1. - (-2. * t + 2.).powi(3) / 2.
+    }
+}
+
 /// Where a panel image lays out: on its way from `from` to `to`, the
-/// panel's own rect, since `start`.
+/// panel's own rect, since `start`. And the reveal over the room the image
+/// grows into: its rect, at full strength inside, holds at `mask_from` for
+/// [`REVEAL_DELAY`], then slides out past the panel's edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glide {
     pub from: Rect,
     pub to: Rect,
     pub start: Instant,
+    pub mask_from: Rect,
+}
+
+/// A reveal at one moment: the rect the image draws in at full strength,
+/// and how wide the gradient past its edges is, per axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reveal {
+    pub full: Rect,
+    pub soft: (f32, f32),
 }
 
 impl Glide {
@@ -807,16 +831,17 @@ impl Glide {
             from: at,
             to: at,
             start: now,
+            mask_from: at,
         }
     }
 
-    fn progress(&self, now: Instant) -> f32 {
-        now.saturating_duration_since(self.start).as_secs_f32() / GLIDE.as_secs_f32()
+    fn elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.start)
     }
 
     /// Where the image lays out at `now`.
     pub fn at(&self, now: Instant) -> Rect {
-        let t = self.progress(now);
+        let t = self.elapsed(now).as_secs_f32() / GLIDE.as_secs_f32();
         if t >= 1. {
             self.to
         } else {
@@ -824,28 +849,62 @@ impl Glide {
         }
     }
 
+    /// The gradient's width: the room revealed, and at least
+    /// [`REVEAL_MIN_SOFT`].
+    fn soft(&self) -> (f32, f32) {
+        (
+            (self.to.w - self.mask_from.w).abs().max(REVEAL_MIN_SOFT),
+            (self.to.h - self.mask_from.h).abs().max(REVEAL_MIN_SOFT),
+        )
+    }
+
+    /// The reveal at `now`. It ends with its full rect on `to`, which puts
+    /// the gradient past the panel's edges, so the image shows in full. The
+    /// gradient keeps its width as it slides, so it stays soft to the end.
+    pub fn reveal(&self, now: Instant) -> Reveal {
+        let soft = self.soft();
+        let end = self.to;
+        let t = self.elapsed(now).saturating_sub(REVEAL_DELAY).as_secs_f32() / REVEAL.as_secs_f32();
+        let full = if self.from == self.to || t >= 1. {
+            end
+        } else {
+            self.mask_from.lerp(end, ease_in_out(t))
+        };
+        Reveal { full, soft }
+    }
+
     pub fn running(&self, now: Instant) -> bool {
-        self.from != self.to && self.progress(now) < 1.
+        self.from != self.to && self.elapsed(now) < GLIDE.max(REVEAL_DELAY + REVEAL)
     }
 
     /// The panel now lays out in `to`. With `glide`, a new size glides
-    /// there from where the image is now, so a second toggle never jumps.
-    /// A panel that only moves takes its image along at once, as a panel
-    /// that slides in does. Without `glide`, the image is there at once.
+    /// there from where the image is now, so a second toggle never jumps,
+    /// and the reveal holds again from where it is. A panel that only moves
+    /// takes its image along at once, as a panel that slides in does.
+    /// Without `glide`, the image is there at once.
     pub fn retarget(&mut self, to: Rect, glide: bool, now: Instant) {
         if to == self.to {
             return;
         }
         let resized = to.w != self.to.w || to.h != self.to.h;
         if glide && resized {
+            let mask_from = if self.running(now) {
+                self.reveal(now).full
+            } else {
+                self.to
+            };
             *self = Self {
                 from: self.at(now),
                 to,
                 start: now,
+                mask_from,
             };
         } else if glide && self.running(now) {
-            self.from.x += to.x - self.to.x;
-            self.from.y += to.y - self.to.y;
+            let (dx, dy) = (to.x - self.to.x, to.y - self.to.y);
+            self.from.x += dx;
+            self.from.y += dy;
+            self.mask_from.x += dx;
+            self.mask_from.y += dy;
             self.to = to;
         } else {
             *self = Self::new(to, now);
@@ -853,48 +912,40 @@ impl Glide {
     }
 }
 
-/// How an image laid out in `area` draws in `clip` while it glides: the
-/// rect it draws at full strength, and per strip, from the faintest at
-/// the panel's edge inwards, the rects it draws at that strength.
+/// How an image draws in `clip` under `reveal`: the rect it draws at full
+/// strength, and per strip, from the faintest inwards, the rects
+/// it draws at that strength.
 ///
-/// Where `area` stops short of the panel's edge, the room between was just
-/// revealed, such as where the task view was. A gradient spans that room,
-/// from full strength a little inside the image's edge to nothing at the
-/// panel's edge, so the rest of the image shows through it softly. As the
-/// image glides out, the room shrinks and the gradient with it. Where two
-/// such sides meet, the corner stays clear; a toggle changes one side at a
-/// time.
+/// Where the reveal's full rect stops short of the panel's edge, the room
+/// past it was just revealed, such as where the task view was. A gradient
+/// runs from full strength at that edge to nothing `soft` further out, so
+/// the rest of the image shows through it. Where two such sides meet, the
+/// corner stays clear; a toggle changes one side at a time.
 ///
 /// Every cut between two masks falls on a whole device pixel at `scale`.
 /// GPUI widens a mask to whole pixels, so a cut between pixels would draw
 /// that line twice, as a seam.
-pub fn soft_edges(area: Rect, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) {
+pub fn soft_edges(reveal: Reveal, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) {
     const SLACK: f32 = 0.5;
+    let Reveal { full, soft } = reveal;
     let scale = if scale > 0. { scale } else { 1. };
     let snap = |v: f32| (v * scale).round() / scale;
     let n = GLIDE_STRIPS;
     let (clip_r, clip_b) = (clip.x + clip.w, clip.y + clip.h);
-    let gaps = [
-        area.x - clip.x,
-        clip_r - (area.x + area.w),
-        area.y - clip.y,
-        clip_b - (area.y + area.h),
-    ];
-    let [left, right, top, bottom] = gaps.map(|g| g > SLACK);
-    let inset = |gap: f32, len: f32| GLIDE_INSET.min(gap).min(len / 2.).max(0.);
-    // Where each gradient reaches full strength.
-    let full_l = area.x + inset(gaps[0], area.w);
-    let full_r = area.x + area.w - inset(gaps[1], area.w);
-    let full_t = area.y + inset(gaps[2], area.h);
-    let full_b = area.y + area.h - inset(gaps[3], area.h);
-    // The cuts from the panel's edge inwards: cut `k` is `k` strips in.
-    let cuts = |outer: f32, inner: f32| -> Vec<f32> {
+    let (full_r, full_b) = (full.x + full.w, full.y + full.h);
+    let left = full.x > clip.x + SLACK;
+    let right = full_r < clip_r - SLACK;
+    let top = full.y > clip.y + SLACK;
+    let bottom = full_b < clip_b - SLACK;
+    // The cuts from the gradient's faint end inwards: cut `k` is `k`
+    // strips in, and cut `n` is the full rect's edge.
+    let cuts = |inner: f32, out: f32| -> Vec<f32> {
         (0..=n)
-            .map(|k| snap(outer + (inner - outer) * k as f32 / n as f32))
+            .map(|k| snap(inner + out * (n - k) as f32 / n as f32))
             .collect()
     };
-    let (cl, cr) = (cuts(clip.x, full_l), cuts(clip_r, full_r));
-    let (ct, cb) = (cuts(clip.y, full_t), cuts(clip_b, full_b));
+    let (cl, cr) = (cuts(full.x, -soft.0), cuts(full_r, soft.0));
+    let (ct, cb) = (cuts(full.y, -soft.1), cuts(full_b, soft.1));
     let x0 = if left { cl[n] } else { clip.x };
     let x1 = if right { cr[n] } else { clip_r };
     let y0 = if top { ct[n] } else { clip.y };
@@ -929,9 +980,11 @@ pub fn soft_edges(area: Rect, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) 
     (edges(x0, y0, x1, y1).intersect(clip), strips)
 }
 
-/// How strong strip `i` of a soft edge draws, from the edge inwards.
+/// How strong strip `i` of the gradient draws, from its faint end inwards:
+/// a smoothstep, so neither end shows a crease.
 pub fn strip_strength(i: usize) -> f32 {
-    (i as f32 + 0.5) / GLIDE_STRIPS as f32
+    let u = (i as f32 + 0.5) / GLIDE_STRIPS as f32;
+    u * u * (3. - 2. * u)
 }
 
 /// Notes which panels show. A change lets panel images glide for a
@@ -1001,9 +1054,9 @@ struct Loads {
     /// Whether the sidebar and the task panel show. The filter panel
     /// sits inside the list's layer, so it moves no panel image.
     panels: Option<(bool, bool)>,
-    /// The rect each gliding image drew in this frame's main pass, which
-    /// its strips draw in too.
-    gliding: HashMap<Slot, Rect>,
+    /// Where each gliding image drew in this frame's main pass, and its
+    /// reveal, which its strips draw with too.
+    gliding: HashMap<Slot, (Rect, Reveal)>,
 }
 
 impl gpui_kit::Global for Loads {}
@@ -1579,20 +1632,20 @@ fn paint(
     };
     let loads = cx.default_global::<Loads>();
     // Where the image lays out, and whether it glides there.
-    let (laid, gliding) = if strip.is_some() {
+    let (laid, reveal) = if strip.is_some() {
         // A strip draws only while the main pass found a glide this
         // frame, and in the same rect.
-        let Some(laid) = loads.gliding.get(&slot).copied() else {
+        let Some((laid, reveal)) = loads.gliding.get(&slot).copied() else {
             return false;
         };
-        (laid, true)
+        (laid, Some(reveal))
     } else if over {
-        (loads.areas.get(&slot).copied().unwrap_or(own), false)
+        (loads.areas.get(&slot).copied().unwrap_or(own), None)
     } else if slot == Slot::Window || b.shader.is_some() {
         loads.areas.insert(slot, own);
         loads.glides.remove(&slot);
         loads.gliding.remove(&slot);
-        (own, false)
+        (own, None)
     } else {
         // LLM-584: a panel's new size glides only just after a toggle.
         let armed = animate && loads.armed.is_some_and(|a| now < a);
@@ -1604,14 +1657,14 @@ fn paint(
         if !animate {
             *g = Glide::new(own, now);
         }
-        let (at, running) = (g.at(now), g.running(now));
+        let at = g.at(now);
+        let reveal = g.running(now).then(|| g.reveal(now));
         loads.areas.insert(slot, at);
-        if running {
-            loads.gliding.insert(slot, at);
-        } else {
-            loads.gliding.remove(&slot);
-        }
-        (at, running)
+        match reveal {
+            Some(r) => loads.gliding.insert(slot, (at, r)),
+            None => loads.gliding.remove(&slot),
+        };
+        (at, reveal)
     };
     if strip.is_none() {
         let retired = std::mem::take(&mut cx.default_global::<Loads>().retired);
@@ -1645,7 +1698,7 @@ fn paint(
                     loads.ready.entry(ident(b)).or_insert(now);
                 }
             }
-            return gliding;
+            return reveal.is_some();
         }
     };
     let loads = cx.default_global::<Loads>();
@@ -1656,8 +1709,8 @@ fn paint(
     // While it glides, the image draws in full up to the room just
     // revealed, and each strip draws its part of the gradient over that
     // room, where the rest of the image shows through.
-    let mask = if gliding {
-        let (inner, strips) = soft_edges(laid, clip, window.scale_factor());
+    let mask = if let Some(reveal) = reveal {
+        let (inner, strips) = soft_edges(reveal, clip, window.scale_factor());
         match strip {
             None => vec![inner],
             Some(i) => strips.into_iter().nth(i).unwrap_or_default(),
@@ -1709,7 +1762,7 @@ fn paint(
             }
         });
     }
-    gliding
+    reveal.is_some()
 }
 
 fn bounds_of(r: Rect) -> Bounds<Pixels> {

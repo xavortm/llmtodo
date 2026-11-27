@@ -764,7 +764,8 @@ fn a_new_size_glides_with_ease_out_and_lands_on_time() {
     let mid = g.at(t0 + GLIDE / 2);
     assert!(mid.w < 680. && mid.w > 560., "{mid:?}");
     assert_eq!(g.at(t0 + GLIDE), rect(240., 560.));
-    assert!(!g.running(t0 + GLIDE));
+    assert!(g.running(t0 + GLIDE), "the reveal still slides");
+    assert!(!g.running(t0 + REVEAL_DELAY + REVEAL));
 }
 
 #[test]
@@ -802,59 +803,106 @@ fn a_change_with_no_toggle_lands_at_once() {
     assert!(!g.running(t0));
 }
 
-/// The rects of every strip, from the panel's edge inwards.
-fn strip_rects(strips: &[Vec<Rect>]) -> Vec<Rect> {
-    strips.iter().map(|s| s[0]).collect()
+fn reveal(full: Rect, soft: f32) -> Reveal {
+    Reveal {
+        full,
+        soft: (soft, soft),
+    }
 }
 
 #[test]
 fn the_gradient_spans_the_room_just_revealed() {
-    // The task view closed: the list grew from 600 to 800, and the image
-    // still lays out in the old 600.
-    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.), 1.);
+    // The task view closed: the list grew from 600 to 800, and the reveal
+    // still holds at the old 600, with a gradient as wide as the room.
+    let (inner, strips) = soft_edges(reveal(rect(0., 600.), 200.), rect(0., 800.), 1.);
     assert_eq!(strips.len(), GLIDE_STRIPS);
-    // Full strength up to a little inside the image's old edge.
-    assert_eq!(inner, rect(0., 600. - GLIDE_INSET));
-    let s = strip_rects(&strips);
-    // The faintest strip sits at the panel's edge, where the task view
+    assert_eq!(inner, rect(0., 600.));
+    let s: Vec<Rect> = strips.iter().map(|s| s[0]).collect();
+    // The faintest strip ends at the panel's edge, where the task view
     // ended, and the last meets the full-strength rect.
     assert_eq!(s[0].x + s[0].w, 800.);
-    assert_eq!(s[GLIDE_STRIPS - 1].x, 600. - GLIDE_INSET);
+    assert_eq!(s[GLIDE_STRIPS - 1].x, 600.);
     for pair in s.windows(2) {
         assert_eq!(pair[1].x + pair[1].w, pair[0].x, "{pair:?}");
     }
-    assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
-    assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
 }
 
 #[test]
-fn the_gradient_shrinks_away_as_the_image_lands() {
-    // Nearly there: the fade starts no further in than the room left.
-    let (inner, strips) = soft_edges(rect(0., 790.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 780.));
-    // Strips thinner than a pixel drop out; the rest still reach the edge.
-    let edge = strips[0][0];
-    assert_eq!(edge.x + edge.w, 800.);
-    // Landed, or wider than the panel: no gradient, the panel clips it.
-    for area in [rect(0., 800.), rect(-100., 1000.)] {
-        let (inner, strips) = soft_edges(area, rect(0., 800.), 1.);
-        assert_eq!(inner, rect(0., 800.));
-        assert!(strips.iter().all(Vec::is_empty));
+fn the_gradient_eases_in_and_out() {
+    let strengths: Vec<f32> = (0..GLIDE_STRIPS).map(strip_strength).collect();
+    assert!(strengths.windows(2).all(|w| w[0] < w[1]));
+    assert!(strengths[0] < 0.01 && strengths[GLIDE_STRIPS - 1] > 0.99);
+    // Smoothstep: flat at both ends, steepest in the middle.
+    let step = |i: usize| strengths[i + 1] - strengths[i];
+    assert!(step(0) < step(GLIDE_STRIPS / 2));
+    assert!(step(GLIDE_STRIPS - 2) < step(GLIDE_STRIPS / 2));
+}
+
+#[test]
+fn the_reveal_holds_then_slides_out_at_full_width() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 600.), t0);
+    g.retarget(rect(0., 800.), true, t0);
+    // It holds where the task view's edge was.
+    let held = g.reveal(t0 + REVEAL_DELAY - std::time::Duration::from_millis(10));
+    assert_eq!(held.full, rect(0., 600.));
+    assert_eq!(held.soft.0, 200.);
+    // Mid-slide, the gradient keeps its width: still soft.
+    let mid = g.reveal(t0 + REVEAL_DELAY + REVEAL / 2);
+    assert_eq!(mid.soft, (200., REVEAL_MIN_SOFT));
+    let edge = mid.full.x + mid.full.w;
+    assert!(edge > 600. && edge < 800., "{mid:?}");
+    // At the end the gradient lies past the panel's edge: no strips.
+    let end = g.reveal(t0 + REVEAL_DELAY + REVEAL);
+    let (inner, strips) = soft_edges(end, rect(0., 800.), 1.);
+    assert_eq!(inner, rect(0., 800.));
+    assert!(strips.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn a_small_change_still_fades_softly() {
+    let t0 = std::time::Instant::now();
+    let mut g = Glide::new(rect(0., 780.), t0);
+    g.retarget(rect(0., 800.), true, t0);
+    assert_eq!(g.reveal(t0).soft.0, REVEAL_MIN_SOFT);
+}
+
+#[test]
+fn the_reveal_holds_through_the_sidebar_slide() {
+    // The sidebar slides out over several frames, and each one widens the
+    // list. The reveal stays where the sidebar's edge was until the slide
+    // ends, then holds for its own delay.
+    let t0 = std::time::Instant::now();
+    let ms = std::time::Duration::from_millis;
+    let mut g = Glide::new(
+        Rect {
+            x: 240.,
+            ..rect(0., 560.)
+        },
+        t0,
+    );
+    for (i, x) in [180., 100., 40., 0.].into_iter().enumerate() {
+        g.retarget(
+            Rect {
+                x,
+                ..rect(0., 800. - x)
+            },
+            true,
+            t0 + ms(50 * i as u64),
+        );
     }
+    let last = t0 + ms(150);
+    let r = g.reveal(last + REVEAL_DELAY - ms(10));
+    assert_eq!(r.full.x, 240.);
+    assert_eq!(r.soft.0, 240.);
 }
 
 #[test]
 fn a_panel_growing_left_reveals_from_the_left() {
     // The sidebar closed: the list starts 200 px further left.
-    let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(200. + GLIDE_INSET, 600. - GLIDE_INSET));
-    assert_eq!(
-        strips[0],
-        vec![Rect {
-            w: strips[0][0].w,
-            ..rect(0., 0.)
-        }]
-    );
+    let (inner, strips) = soft_edges(reveal(rect(200., 600.), 200.), rect(0., 800.), 1.);
+    assert_eq!(inner, rect(200., 600.));
+    assert_eq!(strips[0][0].x, 0.);
 }
 
 #[gpui_kit::test]
@@ -958,18 +1006,18 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
 
 #[test]
 fn soft_edge_cuts_fall_on_whole_device_pixels() {
-    // A mid-glide rect, nowhere near a whole pixel.
-    let area = Rect {
+    // A mid-slide reveal, nowhere near a whole pixel.
+    let full = Rect {
         x: 0.,
         y: 0.,
         w: 613.37,
         h: 100.,
     };
     let scale = 2.;
-    let (inner, strips) = soft_edges(area, rect(0., 800.), scale);
+    let (inner, strips) = soft_edges(reveal(full, 187.13), rect(0., 800.), scale);
     let whole = |v: f32| (v * scale).fract() == 0.;
-    // From the edge inwards: each strip ends where the next one starts,
-    // and the last meets the full-strength rect.
+    // From the faint end inwards: each strip ends where the next one
+    // starts, and the last meets the full-strength rect.
     let mut at = strips[0][0].x + strips[0][0].w;
     for s in &strips[..] {
         let r = s[0];
