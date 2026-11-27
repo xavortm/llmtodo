@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::store::backend::Conn;
-use llmtodo_api_types::{Actor, ReviewAnswer, ReviewVerdict};
+use llmtodo_api_types::{Actor, ReviewAnswer, ReviewSummary, ReviewVerdict};
 
 use crate::db::{new_id, now, parse_ts};
 use crate::error::ApiResult;
@@ -58,6 +58,35 @@ fn answers(rows: Vec<Row>, all: &HashMap<String, Actor>) -> Vec<ReviewAnswer> {
             created_at: parse_ts(&r.created_at),
         })
         .collect()
+}
+
+/// The newest answer of each issue in `ids` that has one, by issue ID.
+pub async fn last_by_issue(
+    c: &mut Conn,
+    ids: &[String],
+    all: &HashMap<String, Actor>,
+) -> ApiResult<HashMap<String, ReviewSummary>> {
+    let rows: Vec<(String, i64, String, String, Option<String>, String)> = backend::query_as(
+        "SELECT r.issue_id, r.round, r.verdict, r.feedback, r.author_id, r.created_at FROM reviews r
+         WHERE r.issue_id IN (SELECT value FROM json_each(?))
+           AND r.round = (SELECT max(m.round) FROM reviews m WHERE m.issue_id = r.issue_id)",
+    )
+    .bind(serde_json::to_string(ids)?)
+    .fetch_all(&mut *c)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(issue, round, verdict, feedback, author, created)| {
+            let summary = ReviewSummary {
+                round,
+                verdict: verdict.parse().unwrap_or(ReviewVerdict::Approved),
+                notes: llmtodo_core::review_notes(&feedback).len() as u32,
+                author: author.and_then(|a| all.get(&a).cloned()),
+                created_at: parse_ts(&created),
+            };
+            (issue, summary)
+        })
+        .collect())
 }
 
 /// The highest round of an issue, or 0.
