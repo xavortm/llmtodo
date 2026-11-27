@@ -69,6 +69,7 @@ fn main() {
                 data_dir: tracker.data_dir.clone(),
                 spawn: target.spawn.clone(),
                 read_only: tracker.read_only,
+                cache: !tracker.read_only,
             })
         });
         gpui_kit::open_window(options, cx, move |window, cx| {

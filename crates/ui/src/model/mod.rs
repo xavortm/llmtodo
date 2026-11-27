@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod backend;
+pub mod cache;
 pub mod data;
 #[cfg(any(test, feature = "bench-support"))]
 pub mod demo;
@@ -24,6 +25,7 @@ mod boundary {
         let sources = [
             ("activity.rs", include_str!("activity.rs")),
             ("backend.rs", include_str!("backend.rs")),
+            ("cache.rs", include_str!("cache.rs")),
             ("data.rs", include_str!("data.rs")),
             ("drafts.rs", include_str!("drafts.rs")),
             ("demo.rs", include_str!("demo.rs")),

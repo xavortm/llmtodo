@@ -293,6 +293,9 @@ pub struct Workspace {
     restore_task: Option<String>,
     /// LLM-347: the open issues of a partial snapshot, as the server sent
     /// them, until its closed and trashed issues arrive.
+    /// LLM-625: a live snapshot arrived since the last connect, so a
+    /// cache that comes late is dropped.
+    live_loaded: bool,
     partial_snapshot: Option<Vec<Issue>>,
     /// The task open at the last save, so a save happens only on a change.
     last_open: Option<IssueId>,
@@ -754,6 +757,7 @@ impl Workspace {
             open_last_view: true,
             restore_task: None,
             partial_snapshot: None,
+            live_loaded: false,
             last_open: None,
             answers,
             review_batch: None,
@@ -863,6 +867,8 @@ impl Workspace {
     ) {
         use futures::StreamExt as _;
         self.backend = Some(backend);
+        self.live_loaded = false;
+        self.store.update(cx, |store, _| store.cached = false);
         self.set_connection(Connection::Connecting, cx);
         self.message = events::CONNECTING_MESSAGE.into();
         self.start_activity(cx);
@@ -944,6 +950,11 @@ impl Workspace {
     /// Why the open tracker takes no changes, if it does not.
     pub(super) fn read_only_reason(&self, cx: &App) -> Option<String> {
         let store = self.store.read(cx);
+        // LLM-625: the cache from the last run may be out of date. Edits
+        // wait for the live load.
+        if store.cached {
+            return Some("Still loading the latest data, so nothing changed".into());
+        }
         store
             .trackers
             .get(store.tracker)

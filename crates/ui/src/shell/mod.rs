@@ -41,6 +41,8 @@ mod sidebar_tests;
 #[cfg(test)]
 mod slow_db_tests;
 #[cfg(test)]
+mod start_cache_tests;
+#[cfg(test)]
 pub mod tests;
 #[cfg(test)]
 mod title_bar_tests;

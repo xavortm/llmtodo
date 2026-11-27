@@ -123,6 +123,7 @@ impl Live {
             data_dir: self.dir.path().to_path_buf(),
             spawn: None,
             read_only,
+            cache: false,
             slow_flush,
         })
     }
@@ -2266,4 +2267,48 @@ fn backend_sends_review_answers_in_one_request() {
         "{results:?}"
     );
     assert_eq!(results[2], ("LLM-3".into(), WriteKind::Review, None));
+}
+
+/// LLM-625: a full load is saved to the cache file, and the next start
+/// sends it before the live snapshot.
+#[test]
+fn a_full_load_is_cached_and_the_next_start_sends_it_first() {
+    let live = Live::new();
+    let target = || Target {
+        data_dir: live.dir.path().to_path_buf(),
+        spawn: None,
+        read_only: false,
+        cache: true,
+        slow_flush: Duration::ZERO,
+    };
+    let path = crate::model::cache::path(live.dir.path());
+    {
+        let (_backend, mut events) = Backend::start(target());
+        live.wait(&mut events, "the rest of the snapshot", |e| {
+            matches!(e, Event::SnapshotRest(_)).then_some(())
+        });
+        live.rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while crate::model::cache::read(&path).is_none() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the cache file is written")
+        });
+    }
+    let cached = crate::model::cache::read(&path).unwrap();
+    assert_eq!(cached.catalog.teams[0].key.to_string(), "LLM");
+    assert!(cached.issues.iter().any(|i| i.key.to_string() == "LLM-1"));
+
+    let (_backend, mut events) = Backend::start(target());
+    let first = live.wait(&mut events, "a load", |e| match e {
+        Event::Cached(c) => Some(Some(c.issues.len())),
+        Event::Snapshot(_) => Some(None),
+        _ => None,
+    });
+    assert_eq!(first, Some(1), "the cache comes before the live snapshot");
+    live.wait(&mut events, "the live snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
 }

@@ -92,6 +92,10 @@ pub struct IssueStore {
     /// The app has connected for a second or more without an answer. The
     /// empty list shows a loader then.
     pub slow_connect: bool,
+    /// LLM-625: the issues and the catalog are the cache from the last
+    /// run, until the live load replaces them. The list shows them dimmed,
+    /// and edits wait.
+    pub cached: bool,
     /// The trackers the sidebar lists, and which one is open. The workspace
     /// switches between them.
     pub trackers: Vec<Tracker>,
@@ -198,6 +202,7 @@ impl IssueStore {
             saving: Default::default(),
             loading: None,
             slow_connect: false,
+            cached: false,
             trackers: Vec::new(),
             tracker: 0,
             revision: 0,
