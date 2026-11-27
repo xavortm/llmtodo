@@ -213,6 +213,30 @@ user_review=$(key issue create -t "Inbox buttons invert on hover" -p medium --pr
 owner issue review set "$user_review" --step "Open the inbox." --step "Hover an answer button." \
   --check "The button turns black and its text turns white." --check "The letter square stays readable."
 owner issue update "$user_review" --status "User review"
+# LLM-593: agy reviews in In Review before the owner, so ticket rows get a
+# verdict badge. One ticket waits on agy, one passed with notes (agy · 2
+# notes), one passed with none (agy ✓) and one got changes (agy · changes).
+in_review_id=$(LLMTODO_ACTOR=human "$bin" --json --no-input status list --team DEMO | tr '{' '\n' | grep '"name":"In Review"' | sed -E 's/.*"id":"([^"]+)".*/\1/')
+owner status update "$in_review_id" --review-role agent
+agy=agent:antigravity/gemini-4-neon/high
+# `to_agy <key>`: a coding agent claims the ticket and sends it to agy.
+to_agy() {
+  owner issue update "$1" --estimate-minutes 20 --estimate-cost 1
+  owner issue review set "$1" --step "Open the list." --step "Look at the ticket's row." --check "The row shows the badge."
+  as_agent agent:claude-code/opus-5.5/high demo-session-4 w1:p5 wt-docs issue claim "$1"
+  as_agent agent:claude-code/opus-5.5/high demo-session-4 w1:p5 wt-docs issue update "$1" --status "In Review"
+}
+agy_wait=$(key issue create -t "Undo for bulk status changes" -p medium --project demo-app --parent "$map" -l frontend)
+to_agy "$agy_wait"
+agy_notes=$(key issue create -t "Status bar shows the sync state" -p medium --project demo-app --parent "$map" -l frontend)
+to_agy "$agy_notes"
+as_agent "$agy" agy-review-1 w1:p6 wt-docs issue review answer "$agy_notes" pass -m "$(printf '1. nit: crates/ui/src/status.rs:40: the tooltip repeats the label.\n2. should-fix: crates/ui/src/status.rs:88: no test covers the offline state.')"
+agy_clean=$(key issue create -t "Copy a ticket link from the menu" -p low --project demo-app --parent "$map" -l ux)
+to_agy "$agy_clean"
+as_agent "$agy" agy-review-2 w1:p6 wt-docs issue review answer "$agy_clean" pass
+agy_changes=$(key issue create -t "Remember the window size" -p low --project demo-app --parent "$map" -l frontend)
+to_agy "$agy_changes"
+as_agent "$agy" agy-review-3 w1:p6 wt-docs issue review answer "$agy_changes" request-changes -m "1. blocking: the size is saved before the window moves to its screen."
 canceled=$(key issue create -t "Electron prototype" -s Canceled --project demo-app -l frontend)
 dup=$(key issue create -t "Sign in with an email link" --project demo-app -l backend)
 owner issue relation add "$dup" duplicate "$todo"
@@ -298,3 +322,4 @@ done
 
 echo "demo data ready in $dir"
 echo "rich Markdown ticket: $rich, map: $map, claimed: $progress and $review, blocked: $blocked, trash: $trash, ordered epic: $epic"
+echo "agy reviews: waiting $agy_wait, notes $agy_notes, pass $agy_clean, changes $agy_changes"

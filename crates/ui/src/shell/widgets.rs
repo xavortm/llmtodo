@@ -270,6 +270,34 @@ pub fn waiting_on(
     )
 }
 
+/// The verdict badge of the newest review answer, such as `agy · 3 notes`
+/// (LLM-593). A neutral tag: the words carry the verdict. Its card says who
+/// answered what, in which round. Nothing without a badge: see
+/// `Issue::review_badge`.
+pub fn review_badge(
+    id: ElementId,
+    badge: Option<crate::model::data::ReviewBadge>,
+    cx: &App,
+) -> Option<AnyElement> {
+    let badge = badge?;
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    Some(
+        div()
+            .id(id)
+            .test_support()
+            .flex_none()
+            .px_1p5()
+            .rounded(theme.radius)
+            .text_xs()
+            .text_color(muted)
+            .bg(muted.opacity(0.12))
+            .child(badge.text)
+            .tooltip(crate::shell::tooltip::Card::text(badge.tip).builder())
+            .into_any_element(),
+    )
+}
+
 /// The app's standard action button: a filled button at the small size.
 /// A selected one turns primary, as the Edit / Preview toggle does, so the
 /// choice reads at a glance. Hover and pressed states come from GPUI Kit.

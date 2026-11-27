@@ -373,6 +373,7 @@ pub fn issues(catalog: &Catalog) -> Vec<Issue> {
                 },
                 estimate_minutes: (ix < 3).then_some(60),
                 estimate_cost: (ix < 3).then_some(2.5),
+                last_review: None,
                 claim: match ix {
                     1 => Some(claim(claude(), &key)),
                     2 => Some(claim(local(), &key)),

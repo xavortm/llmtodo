@@ -528,12 +528,19 @@ pub struct InboxView {
 }
 
 /// What the inbox lists: its questions, and the tickets waiting for review
-/// as (ID, key, title).
+/// as (ID, key, title, verdict badge).
 #[derive(Clone)]
 struct InboxData {
     entries: std::rc::Rc<Vec<Entry>>,
-    reviews: std::rc::Rc<Vec<(IssueId, SharedString, SharedString)>>,
+    reviews: std::rc::Rc<Vec<ReviewRow>>,
 }
+
+type ReviewRow = (
+    IssueId,
+    SharedString,
+    SharedString,
+    Option<crate::model::data::ReviewBadge>,
+);
 
 impl InboxView {
     pub fn new(
@@ -575,7 +582,7 @@ impl InboxView {
                 store
                     .waiting_for_review()
                     .into_iter()
-                    .map(|i| (i.id, i.key.clone(), i.title.clone()))
+                    .map(|i| (i.id, i.key.clone(), i.title.clone(), i.review_badge()))
                     .collect(),
             ),
         };
@@ -852,7 +859,7 @@ impl Render for InboxView {
                     .into_any_element(),
             );
         }
-        for (id, key, title) in reviews.iter().cloned() {
+        for (id, key, title, badge) in reviews.iter().cloned() {
             let events = self.events.clone();
             let open = key.clone();
             rows.push(
@@ -885,7 +892,13 @@ impl Render for InboxView {
                             .text_color(muted)
                             .child(key.clone()),
                     )
-                    .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
+                    .child(div().min_w_0().truncate().text_sm().child(title))
+                    .children(crate::shell::widgets::review_badge(
+                        crate::shell::widgets::issue_part("inbox-review-badge", id),
+                        badge,
+                        cx,
+                    ))
+                    .child(div().flex_1())
                     .into_any_element(),
             );
         }

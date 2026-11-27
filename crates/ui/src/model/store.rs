@@ -486,14 +486,18 @@ impl IssueStore {
         self.reviews.get(&id).map_or(&[], Vec::as_slice)
     }
 
-    /// The open issues in a review status that wait on the owner, oldest first.
+    /// The open issues in a review status that wait on the owner, oldest
+    /// first. A ticket that a reviewer agent reviews first, in a status
+    /// such as In Review, is not the owner's yet (LLM-593).
     pub fn waiting_for_review(&self) -> Vec<&Issue> {
+        use crate::model::data::WaitingOn;
         let mut out: Vec<&Issue> = self
             .iter()
             .filter(|i| {
                 !i.deleted
                     && i.status.review
-                    && i.waiting_on != Some(crate::model::data::WaitingOn::Agent)
+                    && !i.status.agent_review
+                    && !matches!(i.waiting_on, Some(WaitingOn::Agent | WaitingOn::Reviewer))
             })
             .collect();
         out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.key.cmp(&b.key)));

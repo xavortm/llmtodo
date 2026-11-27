@@ -830,3 +830,163 @@ fn a_batch_with_no_panel_moves_only_the_selection(cx: &mut TestAppContext) {
     assert_eq!(selected(&view, cx), Some(id_of(&view, "LLM-108", cx)));
     assert_eq!(open_task(&view, cx), None, "no task panel opens");
 }
+
+fn agy() -> llmtodo_api_types::Actor {
+    llmtodo_api_types::Actor {
+        id: llmtodo_core::ActorId::from_u128(7),
+        kind: llmtodo_api_types::ActorKind::Agent,
+        name: "antigravity/gemini-4-neon/high".into(),
+        harness: Some("antigravity".into()),
+        model: Some("gemini-4-neon".into()),
+        effort: Some("high".into()),
+        is_owner: false,
+    }
+}
+
+fn the_owner() -> llmtodo_api_types::Actor {
+    llmtodo_api_types::Actor {
+        id: llmtodo_core::ActorId::from_u128(1),
+        kind: llmtodo_api_types::ActorKind::Human,
+        name: "owner".into(),
+        harness: None,
+        model: None,
+        effort: None,
+        is_owner: true,
+    }
+}
+
+fn answer_by(
+    round: i64,
+    verdict: ReviewVerdict,
+    feedback: &str,
+    author: llmtodo_api_types::Actor,
+) -> llmtodo_api_types::ReviewAnswer {
+    llmtodo_api_types::ReviewAnswer {
+        round,
+        verdict,
+        feedback: feedback.into(),
+        author: Some(author),
+        created_at: jiff::Timestamp::from_second(1_790_000_000 + round).unwrap(),
+    }
+}
+
+/// Gives `id` the review answers of a fetch.
+fn set_reviews(
+    view: &Entity<Workspace>,
+    id: IssueId,
+    reviews: Vec<llmtodo_api_types::ReviewAnswer>,
+    cx: &mut TestAppContext,
+) {
+    view.update(cx, |this, cx| {
+        this.store().update(cx, |store, _| {
+            store.set_detail(id, Vec::new(), reviews, Default::default(), Vec::new());
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// LLM-593: agy's notes from this round sit above the buttons, marked with
+/// its name. Earlier rounds follow, oldest first.
+#[gpui_kit::test]
+fn agy_notes_sit_above_the_buttons(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx);
+    let id = in_review(handle, &view, SECTION, cx);
+    set_reviews(
+        &view,
+        id,
+        vec![
+            answer_by(1, ReviewVerdict::ChangesRequested, "1. blocking: x.", agy()),
+            answer_by(
+                2,
+                ReviewVerdict::ChangesRequested,
+                "Bigger text.",
+                the_owner(),
+            ),
+            answer_by(
+                3,
+                ReviewVerdict::Passed,
+                "1. nit: a name.\n2. should-fix: a test.",
+                agy(),
+            ),
+        ],
+        cx,
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let notes = window.find("review-agent-notes");
+        let approve = window.find("review-approve");
+        assert!(notes.bounds().bottom() <= approve.bounds().top());
+        window.find(("review-agent-note", 0usize));
+        window.find(("review-agent-note", 1usize));
+        assert!(window.try_find(("review-agent-note", 2usize)).is_none());
+        // The pass shows once: above the buttons, not in the rounds.
+        assert!(window.try_find(("review-round", 3usize)).is_none());
+        let first = window.find(("review-round", 1usize));
+        let second = window.find(("review-round", 2usize));
+        assert!(approve.bounds().bottom() <= first.bounds().top());
+        assert!(first.bounds().bottom() <= second.bounds().top());
+    })
+    .unwrap();
+}
+
+/// A pass with no notes says so, and there is nothing to number.
+#[gpui_kit::test]
+fn a_pass_without_notes_says_so(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx);
+    let id = in_review(handle, &view, SECTION, cx);
+    set_reviews(
+        &view,
+        id,
+        vec![answer_by(1, ReviewVerdict::Passed, "", agy())],
+        cx,
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find("review-agent-notes");
+        assert!(window.try_find(("review-agent-note", 0usize)).is_none());
+        assert!(window.try_find(("review-round", 1usize)).is_none());
+    })
+    .unwrap();
+}
+
+/// LLM-593: a ticket that agy reviews first, in In Review, is not in the
+/// owner's inbox. A ticket agy passed on shows its badge there and on its
+/// row in the list.
+#[gpui_kit::test]
+fn in_review_stays_out_of_the_inbox_and_rows_show_the_badge(cx: &mut TestAppContext) {
+    use crate::model::data::LastReview;
+    let (handle, view, _) = open(cx);
+    let id = in_review(handle, &view, SECTION, cx);
+    let other = cx.read(|cx| view.read(cx).store().read(cx).by_key("LLM-106").unwrap().id);
+    view.update(cx, |this, cx| {
+        this.store().update(cx, |store, _| {
+            store.modify(id, |i| {
+                i.last_review = Some(LastReview {
+                    round: 1,
+                    verdict: ReviewVerdict::Passed,
+                    notes: 3,
+                    agent: Some("agy".into()),
+                });
+            });
+            store.modify(other, |i| {
+                i.status = Status::new("In Review", StatusType::Started, 8)
+                    .with_role(true, Some(llmtodo_api_types::ReviewRole::Agent));
+                i.description = SECTION.into();
+                i.waiting_on = Some(WaitingOn::Reviewer);
+                i.claim = None;
+            });
+        });
+    });
+    cx.run_until_parked();
+    let row_badge = crate::shell::widgets::issue_part("row-review", id);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(row_badge.clone()).is_some());
+        view.update(cx, |this, cx| this.run_command("inbox", window, cx));
+        window.render_frame(cx);
+        window.find(format!("inbox-review-{id}"));
+        window.find(crate::shell::widgets::issue_part("inbox-review-badge", id));
+        assert!(window.try_find(format!("inbox-review-{other}")).is_none());
+    })
+    .unwrap();
+}

@@ -23,6 +23,9 @@ pub struct Status {
     pub position: i64,
     /// A review status: tickets here wait for the owner's review.
     pub review: bool,
+    /// A review status where a reviewer agent, such as agy, reviews first
+    /// (LLM-588). Its tickets are not the owner's to review yet.
+    pub agent_review: bool,
 }
 
 impl PartialEq for Status {
@@ -38,12 +41,20 @@ impl Status {
             kind,
             position,
             review: false,
+            agent_review: false,
         }
     }
 
     /// The same status, with the review flag set to `review`.
     pub fn with_review(mut self, review: bool) -> Self {
         self.review = review;
+        self
+    }
+
+    /// The same status, with the reviewer from the server's `role`.
+    pub fn with_role(mut self, review: bool, role: Option<api::ReviewRole>) -> Self {
+        self.review = review;
+        self.agent_review = review && role == Some(api::ReviewRole::Agent);
         self
     }
 
@@ -471,6 +482,99 @@ pub struct Issue {
     pub estimate_minutes: Option<u32>,
     /// The cost estimate in dollars, set before work starts.
     pub estimate_cost: Option<f64>,
+    /// The newest review answer. The verdict badge reads it (LLM-593).
+    pub last_review: Option<LastReview>,
+}
+
+/// The newest answer to a review round, as a ticket's row shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastReview {
+    pub round: i64,
+    pub verdict: api::ReviewVerdict,
+    /// How many notes the feedback holds.
+    pub notes: u32,
+    /// The reviewer agent's short name, such as `agy`. None for a person.
+    pub agent: Option<SharedString>,
+}
+
+impl LastReview {
+    pub fn from_api(r: &api::ReviewSummary) -> Self {
+        let agent = r
+            .author
+            .as_ref()
+            .filter(|a| a.kind == api::ActorKind::Agent)
+            .map(|a| reviewer_name(a).into());
+        Self {
+            round: r.round,
+            verdict: r.verdict,
+            notes: r.notes,
+            agent,
+        }
+    }
+}
+
+/// A reviewer agent's short name: `agy` for Antigravity, `Claude` for
+/// Claude Code, else its harness or the first part of its name.
+pub fn reviewer_name(actor: &api::Actor) -> String {
+    let harness = actor
+        .harness
+        .clone()
+        .unwrap_or_else(|| actor.name.split('/').next().unwrap_or_default().to_string());
+    let lower = harness.to_ascii_lowercase();
+    if lower == "antigravity" || lower == "agy" {
+        "agy".into()
+    } else if lower.contains("claude") {
+        "Claude".into()
+    } else {
+        harness
+    }
+}
+
+/// The verdict badge on a ticket's row: its text and its tooltip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewBadge {
+    pub text: SharedString,
+    pub tip: SharedString,
+}
+
+impl Issue {
+    /// The badge for the newest review answer, such as `agy ✓`,
+    /// `agy · 3 notes` or `agy · changes`. None while a reviewer agent
+    /// reviews the ticket, since its status says so, and after the
+    /// owner's approval.
+    pub fn review_badge(&self) -> Option<ReviewBadge> {
+        let last = self.last_review.as_ref()?;
+        if self.status.agent_review {
+            return None;
+        }
+        let who = last.agent.clone().unwrap_or_else(|| "you".into());
+        // The tooltip starts a sentence.
+        let subject = last.agent.clone().unwrap_or_else(|| "You".into());
+        let round = last.round;
+        let notes = match last.notes {
+            1 => "1 note".to_string(),
+            n => format!("{n} notes"),
+        };
+        let (text, tip) = match last.verdict {
+            api::ReviewVerdict::Approved => return None,
+            api::ReviewVerdict::Passed if last.notes == 0 => (
+                format!("{who} ✓"),
+                format!("{subject} passed it with no notes in round {round}"),
+            ),
+            api::ReviewVerdict::Passed => (
+                format!("{who} · {notes}"),
+                format!("{subject} passed it with {notes} in round {round}"),
+            ),
+            api::ReviewVerdict::ChangesRequested => (
+                format!("{who} · changes"),
+                format!("{subject} asked for changes in round {round}"),
+            ),
+        };
+        Some(ReviewBadge {
+            text: text.into(),
+            tip: tip.into(),
+        })
+    }
 }
 
 /// The name the app shows for a priority level, such as `High`. It is
@@ -649,6 +753,7 @@ impl Issue {
             active_seconds: issue.active_seconds,
             estimate_minutes: issue.estimate_minutes,
             estimate_cost: issue.estimate_cost_usd,
+            last_review: issue.last_review.as_ref().map(LastReview::from_api),
         }
     }
 }
@@ -837,7 +942,10 @@ impl Catalog {
                 let mut statuses: Vec<Status> = t
                     .statuses
                     .iter()
-                    .map(|s| Status::new(s.name.clone(), s.kind, s.position).with_review(s.review))
+                    .map(|s| {
+                        Status::new(s.name.clone(), s.kind, s.position)
+                            .with_role(s.review, s.review_role)
+                    })
                     .collect();
                 statuses.sort_by_key(Status::rank);
                 (t.key.clone().into(), statuses)
@@ -967,7 +1075,7 @@ impl Catalog {
 
     pub fn status(&self, team: &str, s: &api::StatusRef) -> Status {
         self.status_named(team, &s.name, s.kind)
-            .with_review(s.review)
+            .with_role(s.review, s.review_role)
     }
 
     /// The team's status called `name`. An unknown name keeps `kind`.
@@ -1043,6 +1151,89 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn actor(kind: api::ActorKind, harness: Option<&str>, owner: bool) -> api::Actor {
+        api::Actor {
+            id: llmtodo_core::ActorId::nil(),
+            kind,
+            name: harness.map_or("owner".into(), |h| format!("{h}/m/high")),
+            harness: harness.map(Into::into),
+            model: None,
+            effort: None,
+            is_owner: owner,
+        }
+    }
+
+    /// LLM-593: the verdict badge reads the newest answer.
+    #[test]
+    fn the_review_badge_reads_the_last_answer() {
+        use api::ReviewVerdict::*;
+        let catalog = crate::model::demo::catalog();
+        let mut issue = crate::model::demo::issues(&catalog).remove(0);
+        let agy = Some("agy".into());
+        let badge = |issue: &Issue| issue.review_badge().map(|b| b.text.to_string());
+        assert_eq!(badge(&issue), None);
+        for (verdict, notes, agent, text) in [
+            (Passed, 0, agy.clone(), Some("agy ✓")),
+            (Passed, 1, agy.clone(), Some("agy · 1 note")),
+            (Passed, 3, agy.clone(), Some("agy · 3 notes")),
+            (ChangesRequested, 2, agy.clone(), Some("agy · changes")),
+            (ChangesRequested, 1, None, Some("you · changes")),
+            (Approved, 0, None, None),
+        ] {
+            issue.last_review = Some(LastReview {
+                round: 2,
+                verdict,
+                notes,
+                agent,
+            });
+            assert_eq!(badge(&issue).as_deref(), text, "{verdict:?} {notes}");
+        }
+        let tip = issue_with(Passed, 3).review_badge().unwrap().tip;
+        assert_eq!(tip, "agy passed it with 3 notes in round 2");
+        // While agy reviews the ticket, its status says so.
+        let mut reviewing = issue_with(ChangesRequested, 1);
+        reviewing.status = Status::new("In Review", StatusType::Started, 0)
+            .with_role(true, Some(api::ReviewRole::Agent));
+        assert_eq!(badge(&reviewing), None);
+
+        fn issue_with(verdict: api::ReviewVerdict, notes: u32) -> Issue {
+            let catalog = crate::model::demo::catalog();
+            let mut issue = crate::model::demo::issues(&catalog).remove(0);
+            issue.last_review = Some(LastReview {
+                round: 2,
+                verdict,
+                notes,
+                agent: Some("agy".into()),
+            });
+            issue
+        }
+    }
+
+    #[test]
+    fn reviewers_get_short_names() {
+        use api::ActorKind::*;
+        assert_eq!(
+            reviewer_name(&actor(Agent, Some("antigravity"), false)),
+            "agy"
+        );
+        assert_eq!(
+            reviewer_name(&actor(Agent, Some("claude-code"), false)),
+            "Claude"
+        );
+        assert_eq!(
+            reviewer_name(&actor(Agent, Some("ollama"), false)),
+            "ollama"
+        );
+        let summary = api::ReviewSummary {
+            round: 1,
+            verdict: api::ReviewVerdict::Passed,
+            notes: 0,
+            author: Some(actor(Human, None, true)),
+            created_at: jiff::Timestamp::now(),
+        };
+        assert_eq!(LastReview::from_api(&summary).agent, None);
+    }
 
     #[test]
     fn models_get_short_names() {

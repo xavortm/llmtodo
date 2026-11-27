@@ -129,6 +129,35 @@ fn strip_marker(line: &str) -> &str {
     line
 }
 
+/// The notes in a reviewer's feedback, one per finding. A line that starts
+/// with a list marker, such as `1.` or `-`, starts a note, without its
+/// marker; the lines under it belong to it. Feedback without markers is one
+/// note. Empty feedback has none.
+pub fn review_notes(feedback: &str) -> Vec<String> {
+    let mut notes: Vec<String> = Vec::new();
+    let mut marked = false;
+    for line in feedback.lines() {
+        let item = strip_marker(line);
+        let starts = item.len() != line.len() && !line.starts_with(char::is_whitespace);
+        if starts {
+            marked = true;
+            notes.push(item.to_string());
+        } else if !line.trim().is_empty() {
+            match notes.last_mut() {
+                Some(last) => {
+                    last.push('\n');
+                    last.push_str(line.trim());
+                }
+                None => notes.push(line.trim().to_string()),
+            }
+        }
+    }
+    if !marked && !notes.is_empty() {
+        return vec![feedback.trim().to_string()];
+    }
+    notes
+}
+
 /// The body of a review section, for `+++ Review`. Steps get numbers and
 /// checks get dashes.
 pub fn render_review(steps: &[String], checks: &[String]) -> String {
@@ -183,6 +212,24 @@ mod tests {
         assert_eq!(strip_marker("- Go"), "Go");
         assert_eq!(strip_marker("2026 is a year"), "2026 is a year");
         assert_eq!(strip_marker("-not a marker"), "-not a marker");
+    }
+
+    #[test]
+    fn notes_split_on_markers() {
+        assert!(review_notes("").is_empty());
+        assert!(review_notes("  \n").is_empty());
+        assert_eq!(review_notes("Looks fine."), ["Looks fine."]);
+        assert_eq!(review_notes("One.\n\nTwo."), ["One.\n\nTwo."]);
+        let feedback = "1. a.rs:3: blocking. Fix it.\n   More on it.\n2. nit: a name.\n\n- should-fix: a test.";
+        assert_eq!(
+            review_notes(feedback),
+            [
+                "a.rs:3: blocking. Fix it.\nMore on it.",
+                "nit: a name.",
+                "should-fix: a test."
+            ]
+        );
+        assert_eq!(review_notes("Intro.\n1. One."), ["Intro.", "One."]);
     }
 
     #[test]

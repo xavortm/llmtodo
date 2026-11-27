@@ -1,8 +1,10 @@
 //! The review panel at the top of the task view.
 //!
 //! A ticket in a review status shows its `+++ Review` section: the steps as a
-//! numbered list and the checks as a list. Under them sit a feedback field
-//! and the Approve and Request changes buttons. Earlier rounds show below.
+//! numbered list and the checks as a list. Under them sit the reviewer
+//! agent's notes from this round, when it passed the ticket on (LLM-593),
+//! then a feedback field and the Approve and Request changes buttons.
+//! Earlier rounds show below, oldest first.
 //! A ticket that left its review status shows only its rounds, so an answer
 //! changes the panel at once.
 //!
@@ -20,7 +22,7 @@ use gpui_kit::{
 };
 use llmtodo_api_types::{ReviewAnswer, ReviewVerdict};
 
-use crate::model::data::{Issue, WaitingOn};
+use crate::model::data::{Issue, WaitingOn, reviewer_name};
 use crate::shell::tooltip::{Card, with_card};
 use crate::shell::view_events::{ViewEvent, ViewEvents};
 use crate::shell::widgets::{filled_button, inbox_button};
@@ -130,6 +132,15 @@ pub fn panel(
                     .into_any_element(),
             ),
         }
+        // A pass moves the ticket into the owner's status, so a pass as the
+        // newest answer belongs to this round.
+        let passed = state
+            .answers
+            .last()
+            .filter(|a| a.verdict == ReviewVerdict::Passed && !approved_waiting);
+        if let Some(pass) = passed {
+            body.push(agent_notes(pass, cx));
+        }
         if approved_waiting {
             body.push(
                 div()
@@ -153,7 +164,12 @@ pub fn panel(
                 .into_any_element(),
         );
     }
-    let rounds = rounds(state.answers, cx);
+    // The pass of this round shows above the buttons, not again below.
+    let earlier = match state.answers.split_last() {
+        Some((last, rest)) if in_review && last.verdict == ReviewVerdict::Passed => rest,
+        _ => state.answers,
+    };
+    let rounds = rounds(earlier, cx);
     let title = if in_review { "Review" } else { "Review rounds" };
     let round_now = state.answers.len() + 1;
     Some(
@@ -255,24 +271,78 @@ fn controls(issue: &Issue, state: &PanelState<'_>, events: ViewEvents, cx: &App)
         .into_any_element()
 }
 
-/// The earlier rounds, newest first.
+/// Who answered: `you` for the owner, `agy` for a reviewer agent.
+fn author_name(a: &ReviewAnswer) -> String {
+    match &a.author {
+        None => "someone".to_string(),
+        Some(actor) if actor.is_owner => "you".to_string(),
+        Some(actor) if actor.kind == llmtodo_api_types::ActorKind::Agent => reviewer_name(actor),
+        Some(actor) => actor.name.clone(),
+    }
+}
+
+/// The reviewer agent's notes from this round, marked with its name. Each
+/// note is one numbered line, as the agent wrote it.
+fn agent_notes(pass: &ReviewAnswer, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let who = author_name(pass);
+    let notes = llmtodo_core::review_notes(&pass.feedback);
+    let heading = if notes.is_empty() {
+        format!("{who} passed it with no notes")
+    } else {
+        format!("{who}'s notes")
+    };
+    v_flex()
+        .id("review-agent-notes")
+        .test_support()
+        .w_full()
+        .gap_1()
+        .pt_1()
+        .child(
+            h_flex()
+                .gap_2()
+                .text_xs()
+                .child(Icon::new(IconName::Bot).xsmall().text_color(muted))
+                .child(
+                    div()
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(muted)
+                        .child(heading),
+                )
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(format!("round {}", pass.round)),
+                ),
+        )
+        .children(notes.into_iter().enumerate().map(|(ix, note)| {
+            h_flex()
+                .id(("review-agent-note", ix))
+                .test_support()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .w_5()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(muted)
+                        .child(format!("{}.", ix + 1)),
+                )
+                .child(div().flex_1().min_w_0().child(note))
+        }))
+        .into_any_element()
+}
+
+/// The earlier rounds, oldest first, so they read in order.
 fn rounds(answers: &[ReviewAnswer], cx: &App) -> Vec<AnyElement> {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     answers
         .iter()
-        .rev()
         .map(|a| {
-            let who = a.author.as_ref().map_or_else(
-                || "someone".to_string(),
-                |actor| {
-                    if actor.is_owner {
-                        "you".to_string()
-                    } else {
-                        actor.name.clone()
-                    }
-                },
-            );
+            let who = author_name(a);
             let when = a
                 .created_at
                 .to_zoned(jiff::tz::TimeZone::system())

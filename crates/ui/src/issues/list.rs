@@ -2069,22 +2069,31 @@ impl IssueList {
                         this
                     })
                     .child(issue.title.clone());
+                // The verdict badge follows the title (LLM-593).
+                let badge = widgets::review_badge(
+                    widgets::issue_part("row-review", issue.id),
+                    issue.review_badge(),
+                    cx,
+                );
                 // A write that waits past its delay marks its row, quietly
                 // (LLM-470). The status bar says "Saving…" beside it.
-                if saving {
+                if saving || badge.is_some() {
                     h_flex()
                         .w_full()
                         .min_w_0()
                         .gap_1()
                         .child(title.w_auto().min_w_0())
-                        .child(
-                            div()
-                                .id("row-saving")
-                                .test_support()
-                                .flex_none()
-                                .text_color(muted)
-                                .child(Icon::new(IconName::CloudUpload).xsmall()),
-                        )
+                        .children(badge)
+                        .when(saving, |this| {
+                            this.child(
+                                div()
+                                    .id("row-saving")
+                                    .test_support()
+                                    .flex_none()
+                                    .text_color(muted)
+                                    .child(Icon::new(IconName::CloudUpload).xsmall()),
+                            )
+                        })
                         .into_any_element()
                 } else {
                     title.into_any_element()

@@ -956,6 +956,45 @@ async fn the_reviewer_passes_a_ticket_on_to_the_owner() {
     t.stop().await;
 }
 
+/// LLM-593: an issue's list copy carries its newest answer, with the
+/// number of notes in it, for the verdict badge on the app's rows.
+#[tokio::test]
+async fn the_list_copy_carries_the_last_review() {
+    let t = T::new().await;
+    t.agent_review().await;
+    let k = t.in_agent_review().await;
+    let row = |page: &Value| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["key"] == k.as_str())
+            .cloned()
+            .unwrap()
+    };
+    let page = t.ok(&owner(), "POST", "/v1/issues/query", json!({})).await;
+    assert_eq!(row(&page).get("last_review"), None, "{page}");
+
+    let (s, v) = t
+        .reviewer_answer(&k, "pass", "1. nit: a name.\n2. should-fix: a test.")
+        .await;
+    assert!(s < 300, "{v}");
+    let page = t.ok(&owner(), "POST", "/v1/issues/query", json!({})).await;
+    let last = &row(&page)["last_review"];
+    assert_eq!(last["round"], 1, "{page}");
+    assert_eq!(last["verdict"], "passed");
+    assert_eq!(last["notes"], 2);
+    assert_eq!(last["author"]["kind"], "agent");
+
+    let (s, v) = t.answer(&k, "approved", "").await;
+    assert!(s < 300, "{v}");
+    assert_eq!(v["last_review"]["round"], 2, "{v}");
+    assert_eq!(v["last_review"]["verdict"], "approved");
+    assert_eq!(v["last_review"]["notes"], 0);
+    assert_eq!(v["last_review"]["author"]["is_owner"], true);
+    t.stop().await;
+}
+
 /// LLM-603: a team with no work status sends a ticket with requested
 /// changes to its first unstarted status instead.
 #[tokio::test]
