@@ -131,8 +131,10 @@ fn strip_marker(line: &str) -> &str {
 
 /// The notes in a reviewer's feedback, one per finding. A line that starts
 /// with a list marker, such as `1.` or `-`, starts a note, without its
-/// marker; the lines under it belong to it. Feedback without markers is one
-/// note. Empty feedback has none.
+/// marker; the lines under it belong to it. Text before the first marker,
+/// such as the reviewer's `Base: … · Head: … · Checks: …` line, is not a
+/// note. Feedback without markers is one note, unless it is only that
+/// line and `No findings.` Empty feedback has none.
 pub fn review_notes(feedback: &str) -> Vec<String> {
     let mut notes: Vec<String> = Vec::new();
     let mut marked = false;
@@ -142,20 +144,37 @@ pub fn review_notes(feedback: &str) -> Vec<String> {
         if starts {
             marked = true;
             notes.push(item.to_string());
-        } else if !line.trim().is_empty() {
-            match notes.last_mut() {
-                Some(last) => {
-                    last.push('\n');
-                    last.push_str(line.trim());
-                }
-                None => notes.push(line.trim().to_string()),
-            }
+        } else if let Some(last) = notes.last_mut().filter(|_| !line.trim().is_empty()) {
+            last.push('\n');
+            last.push_str(line.trim());
         }
     }
-    if !marked && !notes.is_empty() {
-        return vec![feedback.trim().to_string()];
+    if marked {
+        return notes;
     }
-    notes
+    // No markers: drop the checks line and a "No findings." answer.
+    let rest: Vec<&str> = feedback
+        .trim()
+        .lines()
+        .skip_while(|l| l.trim().is_empty() || is_checks_line(l))
+        .collect();
+    let rest = rest.join("\n");
+    let rest = rest.trim();
+    let none = rest
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("no findings");
+    if rest.is_empty() || none {
+        Vec::new()
+    } else {
+        vec![rest.to_string()]
+    }
+}
+
+/// The first line of the reviewer's answer format, such as `Base: 94857f6 ·
+/// Head: 0dd37c5 · Checks: fmt ok`.
+fn is_checks_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("Base:") || line.starts_with("Checks:")
 }
 
 /// The body of a review section, for `+++ Review`. Steps get numbers and
@@ -229,7 +248,24 @@ mod tests {
                 "should-fix: a test."
             ]
         );
-        assert_eq!(review_notes("Intro.\n1. One."), ["Intro.", "One."]);
+        assert_eq!(review_notes("Intro.\n1. One."), ["One."]);
+    }
+
+    /// The reviewer's answer format, from the llmtodo-review skill.
+    #[test]
+    fn notes_skip_the_checks_line() {
+        let head = "Base: 94857f6 · Head: 0dd37c5 · Checks: fmt ok, test ok";
+        assert!(review_notes(&format!("{head}\n\nNo findings.")).is_empty());
+        assert!(review_notes(&format!("{head}\n")).is_empty());
+        assert!(review_notes("no findings").is_empty());
+        assert_eq!(
+            review_notes(&format!("{head}\n\n1. [nit] a.rs:3: a name.")),
+            ["[nit] a.rs:3: a name."]
+        );
+        assert_eq!(
+            review_notes(&format!("{head}\n\nThe test name could be shorter.")),
+            ["The test name could be shorter."]
+        );
     }
 
     #[test]

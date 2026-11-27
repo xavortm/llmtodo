@@ -541,10 +541,10 @@ impl Issue {
     /// The badge for the newest review answer, such as `agy ✓`,
     /// `agy · 3 notes` or `agy · changes`. None while a reviewer agent
     /// reviews the ticket, since its status says so, and after the
-    /// owner's approval.
+    /// owner's approval or on a closed ticket.
     pub fn review_badge(&self) -> Option<ReviewBadge> {
         let last = self.last_review.as_ref()?;
-        if self.status.agent_review {
+        if self.status.agent_review || self.status.is_closed() {
             return None;
         }
         let who = last.agent.clone().unwrap_or_else(|| "you".into());
@@ -1196,6 +1196,10 @@ mod tests {
         reviewing.status = Status::new("In Review", StatusType::Started, 0)
             .with_role(true, Some(api::ReviewRole::Agent));
         assert_eq!(badge(&reviewing), None);
+        // A ticket closed without an approval shows none either.
+        let mut done = issue_with(Passed, 0);
+        done.status = Status::new("Done", StatusType::Completed, 0);
+        assert_eq!(badge(&done), None);
 
         fn issue_with(verdict: api::ReviewVerdict, notes: u32) -> Issue {
             let catalog = crate::model::demo::catalog();

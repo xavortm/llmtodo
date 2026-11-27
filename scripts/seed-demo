@@ -230,13 +230,13 @@ agy_wait=$(key issue create -t "Undo for bulk status changes" -p medium --projec
 to_agy "$agy_wait"
 agy_notes=$(key issue create -t "Status bar shows the sync state" -p medium --project demo-app --parent "$map" -l frontend)
 to_agy "$agy_notes"
-as_agent "$agy" agy-review-1 w1:p6 wt-docs issue review answer "$agy_notes" pass -m "$(printf '1. nit: crates/ui/src/status.rs:40: the tooltip repeats the label.\n2. should-fix: crates/ui/src/status.rs:88: no test covers the offline state.')"
+as_agent "$agy" agy-review-1 w1:p6 wt-docs issue review answer "$agy_notes" pass -m "$(printf 'Base: 94857f6 · Head: 0dd37c5 · Checks: fmt ok, clippy ok, test ok\n\n1. [nit] crates/ui/src/status.rs:40: the tooltip repeats the label.\n2. [nit] crates/ui/src/status.rs:88: the offline test could name the state.')"
 agy_clean=$(key issue create -t "Copy a ticket link from the menu" -p low --project demo-app --parent "$map" -l ux)
 to_agy "$agy_clean"
-as_agent "$agy" agy-review-2 w1:p6 wt-docs issue review answer "$agy_clean" pass
+as_agent "$agy" agy-review-2 w1:p6 wt-docs issue review answer "$agy_clean" pass -m "$(printf 'Base: 94857f6 · Head: 1a2b3c4 · Checks: fmt ok, clippy ok, test ok\n\nNo findings.')"
 agy_changes=$(key issue create -t "Remember the window size" -p low --project demo-app --parent "$map" -l frontend)
 to_agy "$agy_changes"
-as_agent "$agy" agy-review-3 w1:p6 wt-docs issue review answer "$agy_changes" request-changes -m "1. blocking: the size is saved before the window moves to its screen."
+as_agent "$agy" agy-review-3 w1:p6 wt-docs issue review answer "$agy_changes" request-changes -m "$(printf 'Base: 94857f6 · Head: 5d6e7f8 · Checks: fmt ok, clippy ok, test ok\n\n1. [blocking] crates/ui/src/window.rs:12: the size is saved before the window moves to its screen.')"
 canceled=$(key issue create -t "Electron prototype" -s Canceled --project demo-app -l frontend)
 dup=$(key issue create -t "Sign in with an email link" --project demo-app -l backend)
 owner issue relation add "$dup" duplicate "$todo"
