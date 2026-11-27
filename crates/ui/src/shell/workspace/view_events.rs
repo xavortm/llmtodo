@@ -73,6 +73,7 @@ impl Workspace {
                     self.answer_review(issue, verdict, window, cx);
                 }
             }
+            ViewEvent::TryIt { issue } => self.try_it(issue, cx),
             ViewEvent::EditDocument => self.edit_document(window, cx),
             ViewEvent::LeaveDocEditor => self.leave_doc_editor(window, cx),
             ViewEvent::SetHideClosed(on) => self.set_hide_closed(on, cx),

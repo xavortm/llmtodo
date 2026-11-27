@@ -14,6 +14,7 @@ pub mod preview;
 pub mod scope;
 pub mod store;
 pub mod trackers;
+pub mod try_it;
 pub mod update;
 
 /// The model must stay movable into a library crate that has no GPUI: no
@@ -36,6 +37,7 @@ mod boundary {
             ("scope.rs", include_str!("scope.rs")),
             ("store.rs", include_str!("store.rs")),
             ("trackers.rs", include_str!("trackers.rs")),
+            ("try_it.rs", include_str!("try_it.rs")),
             ("update.rs", include_str!("update.rs")),
         ];
         for (name, source) in sources {

@@ -73,6 +73,9 @@ pub struct IssueStore {
     /// The agent sessions per issue, with their commits. Like the git
     /// panel, only a single-issue fetch carries them.
     sessions: HashMap<IssueId, Vec<WorkSession>>,
+    /// The preview build per issue, for Try it (LLM-591). Only a
+    /// single-issue fetch carries it.
+    preview_builds: HashMap<IssueId, llmtodo_api_types::PreviewBuild>,
     pub catalog: Catalog,
     pub connection: Connection,
     /// Offline mode on a shared database: offline, syncing, and the changes
@@ -197,6 +200,7 @@ impl IssueStore {
             reviews: HashMap::new(),
             stale_detail: Default::default(),
             sessions: HashMap::new(),
+            preview_builds: HashMap::new(),
             catalog: Catalog::default(),
             connection: Connection::Connecting,
             sync: Default::default(),
@@ -475,6 +479,23 @@ impl IssueStore {
         self.stale_detail.remove(&id);
     }
 
+    /// Puts in the preview build of one fetch (LLM-591).
+    pub fn set_preview_build(
+        &mut self,
+        id: IssueId,
+        build: Option<llmtodo_api_types::PreviewBuild>,
+    ) {
+        match build {
+            Some(build) => self.preview_builds.insert(id, build),
+            None => self.preview_builds.remove(&id),
+        };
+    }
+
+    /// The preview build recorded on an issue, once a fetch brought it.
+    pub fn preview_build(&self, id: IssueId) -> Option<&llmtodo_api_types::PreviewBuild> {
+        self.preview_builds.get(&id)
+    }
+
     /// The agent sessions of an issue, once a fetch brought them.
     pub fn sessions(&self, id: IssueId) -> Option<&[WorkSession]> {
         self.sessions.get(&id).map(Vec::as_slice)
@@ -567,6 +588,7 @@ impl IssueStore {
         self.git.retain(|id, _| index.contains_key(id));
         self.relations.retain(|id, _| index.contains_key(id));
         self.reviews.retain(|id, _| index.contains_key(id));
+        self.preview_builds.retain(|id, _| index.contains_key(id));
         self.sessions.retain(|id, _| index.contains_key(id));
         self.stale_detail.retain(|id| index.contains_key(id));
         // The same keys keep the old revision, so prepared text stays.

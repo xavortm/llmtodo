@@ -99,6 +99,11 @@ pub enum ViewEvent {
         issue: crate::model::data::IssueId,
         verdict: llmtodo_api_types::ReviewVerdict,
     },
+    /// Try it in the review panel: open the ticket's preview build on demo
+    /// data, or bring its open preview forward (LLM-591).
+    TryIt {
+        issue: crate::model::data::IssueId,
+    },
     // Documents.
     EditDocument,
     LeaveDocEditor,

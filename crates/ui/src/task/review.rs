@@ -8,6 +8,9 @@
 //!
 //! The panel sends nothing itself. A button emits `AnswerReview`, and the
 //! workspace sends it with the feedback field's text.
+//!
+//! A ticket with a recorded preview build shows Try it above the steps
+//! (LLM-591). It emits `TryIt`, and the workspace starts the preview.
 
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
@@ -21,6 +24,8 @@ use gpui_kit::{
 use llmtodo_api_types::{ReviewAnswer, ReviewVerdict};
 
 use crate::model::data::{Issue, WaitingOn};
+use crate::model::store::IssueStore;
+use crate::model::try_it::{Previews, RunState};
 use crate::shell::tooltip::{Card, with_card};
 use crate::shell::view_events::{ViewEvent, ViewEvents};
 use crate::shell::widgets::{filled_button, inbox_button};
@@ -35,6 +40,29 @@ pub struct PanelState<'a> {
     /// The owner dragged the panel to a height, so it fills its wrapper
     /// instead of following its content.
     pub fill: bool,
+    /// The Try it button, or None when the ticket has no preview build.
+    pub try_it: Option<TryIt>,
+}
+
+/// The Try it button's state (LLM-591).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TryIt {
+    /// The build can run. The state is where its preview is, if one ran.
+    Ready(Option<RunState>),
+    /// The build cannot run, with a short reason.
+    Off(&'static str),
+}
+
+/// Try it for `issue`, from its recorded build and the running previews.
+pub fn try_it_state(issue: &Issue, store: &IssueStore, previews: &Previews) -> Option<TryIt> {
+    let build = store.preview_build(issue.id)?;
+    let host = crate::model::backend::local_host();
+    Some(
+        match crate::model::try_it::check(&issue.key, build, host.as_deref()) {
+            Ok(_) => TryIt::Ready(previews.state(&issue.key)),
+            Err(reason) => TryIt::Off(reason),
+        },
+    )
 }
 
 /// The tallest the panel gets, in rem. Past it, the panel scrolls.
@@ -78,6 +106,9 @@ pub fn panel(
             .answers
             .last()
             .is_some_and(|a| a.verdict == ReviewVerdict::Approved);
+    if in_review && let Some(try_it) = &state.try_it {
+        body.push(try_it_row(issue, try_it, events.clone(), cx));
+    }
     if in_review {
         match llmtodo_core::review(&issue.description) {
             Some(r) if !r.steps.is_empty() || !r.checks.is_empty() => {
@@ -252,6 +283,67 @@ fn controls(issue: &Issue, state: &PanelState<'_>, events: ViewEvents, cx: &App)
                     "Send the feedback to an agent. The ticket goes back to In Progress",
                 )),
         )
+        .into_any_element()
+}
+
+/// The Try it button, with the reason it is off or the last run's error.
+fn try_it_row(issue: &Issue, try_it: &TryIt, events: ViewEvents, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let id = issue.id;
+    let (label, tip, disabled, note) = match try_it {
+        TryIt::Ready(Some(RunState::Starting)) => (
+            "Starting…",
+            "The preview opens once its demo data is ready",
+            true,
+            None,
+        ),
+        TryIt::Ready(Some(RunState::Running)) => (
+            "Show preview",
+            "Bring the open preview to the front",
+            false,
+            None,
+        ),
+        TryIt::Ready(Some(RunState::Failed(error))) => (
+            "Try it",
+            "Open this ticket's build on demo data",
+            false,
+            Some((SharedString::from(error.clone()), theme.danger)),
+        ),
+        TryIt::Ready(None) => (
+            "Try it",
+            "Open this ticket's build on demo data",
+            false,
+            None,
+        ),
+        TryIt::Off(reason) => (
+            "Try it",
+            "Open this ticket's build on demo data",
+            true,
+            Some((SharedString::from(*reason), theme.muted_foreground)),
+        ),
+    };
+    let button = inbox_button("review-try-it", false, cx)
+        .icon(Icon::new(IconName::Play).xsmall())
+        .label(label)
+        .disabled(disabled)
+        .on_click(move |_, window, cx| {
+            events.emit(ViewEvent::TryIt { issue: id }, window, cx);
+        });
+    h_flex()
+        .id("review-try-it-row")
+        .test_support()
+        .gap_2()
+        .pb_1()
+        .child(with_card("review-try-it-tip", button, Card::text(tip)))
+        .children(note.map(|(text, color)| {
+            div()
+                .id("review-try-it-note")
+                .test_support()
+                .min_w_0()
+                .text_xs()
+                .text_color(color)
+                .child(text)
+        }))
         .into_any_element()
 }
 

@@ -25,3 +25,6 @@ mod tab_bar_tests;
 
 #[cfg(test)]
 mod panel_motion_tests;
+
+#[cfg(test)]
+mod try_it_tests;
