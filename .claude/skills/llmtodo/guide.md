@@ -183,7 +183,7 @@ A team can put a reviewer agent before the owner. It then has two review statuse
 3. Move the ticket to the reviewer's status: `llmtodo issue update ABC-12 --status "In Review"`. The move ends your claim and sets `waiting_on reviewer`. Then start the reviewer the way the repo says, often with a script.
 4. The reviewer reads the diff and answers once per round:
    - **Pass**, with optional notes: the ticket moves to the owner's status and waits on the owner. The notes stay on the ticket.
-   - **Request changes**: act on it as on the owner's Request changes. Claim the ticket, fix or decline each finding with a reason, commit, and push. Write one line per finding in the Agent notes. Then go back to step 3.
+   - **Request changes**: act on it as on the owner's Request changes. Claim the ticket, fix or decline each finding with a reason, commit, and push. Write one line per finding in the Agent notes. Then go back to step 2: update the review section if the fixes changed it, and rebuild the preview, since the new commit makes the old one stale.
 5. The owner approves or requests changes, as in "Act on the owner's answer". After Approve, merge the PR, publish if the repo publishes, and mark the ticket Done.
 
 A reviewer agent never edits code, commits, pushes, claims or approves. `llmtodo issue review queue` lists the tickets that wait on it. It answers with `llmtodo issue review answer ABC-12 pass` or `request-changes`, and the server refuses its `approve` with exit code 6.
