@@ -107,24 +107,62 @@ run_claude() {
     return 1
   fi
   echo "Claude ($model, $effort) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
-  # dontAsk denies every tool that is not allowed here, so the reviewer
-  # cannot edit files. Only project settings load: the owner's own
-  # permissions and hooks stay out. As with agy, the clone is the guard.
+  # Claude gets read-only tools and returns its verdict as structured
+  # output; this script posts the answer. dontAsk denies every tool that is
+  # not allowed here, and a heredoc `review answer` would be one of them.
+  # Only project settings load: the owner's own permissions and hooks stay
+  # out. As with agy, the clone is the guard.
   local allow=(Read Grep Glob
-    "Bash(llmtodo issue view:*)" "Bash(llmtodo issue review show:*)" "Bash(llmtodo issue review answer:*)"
+    "Bash(llmtodo issue view:*)" "Bash(llmtodo issue review show:*)"
     "Bash(git log:*)" "Bash(git diff:*)" "Bash(git show:*)" "Bash(git status:*)" "Bash(git rev-parse:*)"
     "Bash(cargo fmt:*)" "Bash(cargo clippy:*)" "Bash(cargo test:*)" "Bash(cargo check:*)"
     "Bash(ls:*)" "Bash(cat:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(sed -n:*)")
+  local schema='{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","request-changes"]},"feedback":{"type":"string","description":"The whole review answer: the Base/Head/Checks line, then the numbered findings, or No findings."}},"required":["verdict","feedback"]}'
+  local claude_prompt="$prompt Do not run llmtodo issue review answer yourself: you cannot. Return the verdict and the full feedback text as the structured output, and this script posts it for you."
+  local out="$work/claude.json"
   (
     cd "$clone"
     env -i "${envs[@]}" \
       LLMTODO_ACTOR="agent:claude-code/$model/$effort" \
       LLMTODO_SESSION="claude-review-$key-$round-$short_head" \
-      claude -p "$prompt" --model "$model" --effort "$effort" \
+      claude -p "$claude_prompt" --model "$model" --effort "$effort" \
         --permission-mode dontAsk --allowedTools "${allow[@]}" \
         --disallowedTools Edit Write NotebookEdit \
-        --setting-sources project --strict-mcp-config
-  ) >&2 || echo "claude exited with $?; checking for an answer anyway" >&2
+        --setting-sources project --strict-mcp-config \
+        --output-format json --json-schema "$schema" </dev/null >"$out"
+  ) || echo "claude exited with $?" >&2
+
+  # verdict, model, session, then the feedback.
+  local parsed
+  parsed=$(python3 -c '
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.stderr.write((d.get("result") or "") + "\n")
+s = d.get("structured_output") or {}
+if s.get("verdict") not in ("pass", "request-changes") or not (s.get("feedback") or "").strip():
+    sys.exit(1)
+# The model that did the most work, as a short name: claude-opus-5-5 is opus-5.5.
+models = sorted((d.get("modelUsage") or {}).items(), key=lambda kv: -(kv[1].get("outputTokens") or 0))
+m = models[0][0] if models else ""
+m = re.sub(r"^claude-", "", m.split("[")[0])
+m = re.sub(r"-(\d+)-(\d{1,2})$", r"-\1.\2", m)
+print(s["verdict"]); print(m); print(d.get("session_id") or "")
+print(s["feedback"])
+' "$out") || { echo "Claude returned no verdict" >&2; return 1; }
+  local verdict ran session
+  { read -r verdict; read -r ran; read -r session; } <<<"$parsed"
+  # The session lets llmtodo read Claude's transcript for the usage.
+  (
+    cd "$clone"
+    tail -n +4 <<<"$parsed" | env -i "${envs[@]}" \
+      LLMTODO_ACTOR="agent:claude-code/${ran:-$model}/$effort" \
+      LLMTODO_SESSION="claude-review-$key-$round-$short_head" \
+      CLAUDE_CODE_SESSION_ID="$session" \
+      llmtodo issue review answer "$key" "$verdict" --feedback-file - --no-input >/dev/null
+  ) || echo "posting Claude's answer failed" >&2
 }
 
 case $reviewer in
