@@ -96,4 +96,4 @@ The `ui` crate groups its files into feature folders: `shell`, `issues`, `task`,
 
 ## What checks these rules
 
-CI runs `cargo fmt --check`, clippy with warnings as errors, and the tests, on macOS. It runs on every push to `main` and on every pull request.
+`scripts/check` runs `cargo fmt --check`, clippy with warnings as errors, and the tests, on SQLite and on Postgres. It runs on this machine. The repo has no GitHub Actions CI (LLM-624).
