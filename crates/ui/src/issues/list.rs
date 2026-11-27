@@ -304,10 +304,6 @@ pub struct IssueList {
     pub strike_done: bool,
     /// The list animation that runs now, with animations on (LLM-195).
     motion: Option<ListMotion>,
-    /// LLM-625: the store held the cache at the last frame.
-    was_cached: bool,
-    /// When the live load replaced the cache, while the rows fade back in.
-    refreshed_at: Option<std::time::Instant>,
     /// What the last frame drew of the cached look, for tests.
     pub(crate) stale_shown: Stale,
     /// The first row the list drew in the last frame, where a sort's wave
@@ -445,8 +441,6 @@ impl IssueList {
             strike_done: true,
             draft_kept: false,
             motion: None,
-            was_cached: false,
-            refreshed_at: None,
             stale_shown: Stale::default(),
             fill_layer: cx.new(|_| Default::default()),
             store_seen: 0,
@@ -1309,6 +1303,9 @@ impl IssueList {
         }
         let store = self.store.read(cx);
         Some(Empty::Note(match (&store.connection, &self.scope) {
+            // The cache shows while the live load runs (LLM-625). A scope
+            // it leaves empty says nothing until that arrives.
+            _ if store.cached => return None,
             (Connection::Connecting, _) if store.is_empty() => {
                 return store
                     .slow_connect
@@ -1321,9 +1318,6 @@ impl IssueList {
                 Some(host) => format!("Shared database unreachable at {host}. Retrying").into(),
                 None => "Shared database unreachable. Retrying".into(),
             },
-            // The cache shows while the live load runs (LLM-625). A scope
-            // it leaves empty says nothing until that arrives.
-            _ if store.cached => return None,
             // The first load fills the list in pages (LLM-470).
             (_, _) if store.is_empty() && store.loading.is_some() => {
                 let (loaded, total) = store.loading.unwrap_or_default();
@@ -2909,23 +2903,18 @@ impl IssueList {
     /// LLM-625: how the rows show the cache from the last run. They are
     /// dimmed under a sweep until the live load arrives, then fade back to
     /// full strength.
-    fn stale(&mut self, window: &mut Window, cx: &App) -> Stale {
-        let cached = self.store.read(cx).cached;
+    fn stale(&self, window: &mut Window, cx: &App) -> Stale {
+        let store = self.store.read(cx);
         let motion = crate::shell::motion::on(cx);
-        if self.was_cached && !cached && motion {
-            self.refreshed_at = Some(cx.background_executor().now());
-        }
-        if cached {
-            self.refreshed_at = None;
-        }
-        self.was_cached = cached;
-        if cached {
+        if store.cached {
             return Stale {
                 dim: 1.,
                 sweep: if motion { 1. } else { 0. },
             };
         }
-        let Some(at) = self.refreshed_at else {
+        // The fade runs from when the live load arrived, so a list that
+        // was hidden then does not play it later.
+        let Some(at) = store.refreshed_at.filter(|_| motion) else {
             return Stale::default();
         };
         let t = cx
@@ -2935,7 +2924,6 @@ impl IssueList {
             .as_secs_f32()
             / REFRESH_FADE.as_secs_f32();
         if t >= 1. {
-            self.refreshed_at = None;
             return Stale::default();
         }
         window.request_animation_frame();

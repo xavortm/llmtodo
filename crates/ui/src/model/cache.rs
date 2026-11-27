@@ -36,16 +36,22 @@ pub fn read(path: &Path) -> Option<Snapshot> {
 }
 
 /// Saves `snapshot`. It writes a temporary file first and renames it, so a
-/// reader never sees half a file.
+/// reader never sees half a file. Each write has its own temporary file,
+/// so two at once, from two loads or two windows, never share one.
 pub fn write(path: &Path, snapshot: Snapshot) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let saved = Saved {
         format: FORMAT,
         snapshot,
     };
     let bytes = serde_json::to_vec(&saved).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
+    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -60,7 +66,15 @@ mod tests {
         write(&path, Snapshot::default()).unwrap();
         let back = read(&path).expect("the file reads back");
         assert!(back.issues.is_empty());
-        assert!(!dir.path().join("app-cache.json.tmp").exists());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            vec![std::ffi::OsString::from(FILE)],
+            "no temporary file stays"
+        );
     }
 
     #[test]

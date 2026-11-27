@@ -293,10 +293,10 @@ pub struct Workspace {
     restore_task: Option<String>,
     /// LLM-347: the open issues of a partial snapshot, as the server sent
     /// them, until its closed and trashed issues arrive.
+    partial_snapshot: Option<Vec<Issue>>,
     /// LLM-625: a live snapshot arrived since the last connect, so a
     /// cache that comes late is dropped.
     live_loaded: bool,
-    partial_snapshot: Option<Vec<Issue>>,
     /// The task open at the last save, so a save happens only on a change.
     last_open: Option<IssueId>,
     /// The answer fields of owner questions, shared by the inbox
@@ -868,7 +868,10 @@ impl Workspace {
         use futures::StreamExt as _;
         self.backend = Some(backend);
         self.live_loaded = false;
-        self.store.update(cx, |store, _| store.cached = false);
+        self.store.update(cx, |store, _| {
+            store.cached = false;
+            store.refreshed_at = None;
+        });
         self.set_connection(Connection::Connecting, cx);
         self.message = events::CONNECTING_MESSAGE.into();
         self.start_activity(cx);
@@ -1066,7 +1069,7 @@ impl Workspace {
     /// that sent the app here. While the closed and trashed issues are on
     /// their way, a key the store lacks waits for them (LLM-347).
     fn loaded_tracker(&mut self, cx: &mut Context<Self>) {
-        let partial = self.partial_snapshot.is_some();
+        let partial = self.provisional(cx);
         self.store.update(cx, |store, cx| {
             cx.notify();
             let teams = store
@@ -1083,7 +1086,14 @@ impl Workspace {
         });
         // Back on a tracker: open the view it showed when the owner left.
         let open = self.store.read(cx).tracker;
-        if let Some(scope) = self.tracker_scopes.remove(&open)
+        // The cache may lack a view made since. It waits for the live load.
+        let wait = partial
+            && self
+                .tracker_scopes
+                .get(&open)
+                .is_some_and(|s| !s.exists(&self.store.read(cx).catalog));
+        if !wait
+            && let Some(scope) = self.tracker_scopes.remove(&open)
             && scope != Scope::Settings
             && scope != self.list.read(cx).scope
             && scope.exists(&self.store.read(cx).catalog)
@@ -1259,6 +1269,13 @@ impl Workspace {
         out
     }
 
+    /// The store may lack issues and views the server has: it holds a
+    /// partial snapshot (LLM-347), or the cache from the last run
+    /// (LLM-625). Nothing is dropped or reset for a missing one then.
+    fn provisional(&self, cx: &App) -> bool {
+        self.partial_snapshot.is_some() || self.store.read(cx).cached
+    }
+
     /// Replaces every issue and the catalog, and keeps the selection and the
     /// open task by issue ID.
     pub fn load(&mut self, catalog: Catalog, issues: Vec<Issue>, cx: &mut Context<Self>) {
@@ -1375,15 +1392,17 @@ impl Workspace {
     ) {
         self.rebuild_commands(cx);
         // A partial snapshot lacks the closed and trashed issues, so it
-        // drops no tabs and closes no task.
-        let partial = self.partial_snapshot.is_some();
+        // drops no tabs and closes no task. The cache from the last run may
+        // lack newer ones (LLM-625).
+        let partial = self.provisional(cx);
         if !partial {
             self.prune_tabs(cx);
         }
         // A team or project that went away leaves the list on every issue.
+        // The cache may lack one made since, so only live data says so.
         let scope = self.list.read(cx).scope.clone();
         let catalog = &self.store.read(cx).catalog;
-        if !catalog.teams.is_empty() && !scope.exists(catalog) {
+        if !self.store.read(cx).cached && !catalog.teams.is_empty() && !scope.exists(catalog) {
             self.message = format!("{} is gone. Showing all issues", scope.name(catalog)).into();
             self.list.update(cx, |list, cx| {
                 list.scope = Scope::All;

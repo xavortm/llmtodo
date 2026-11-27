@@ -48,8 +48,6 @@ impl Workspace {
             .and_then(|i| i.project.clone())
     }
 
-    /// Colors a project in the app at once, and asks the server to save it.
-    /// Returns the message to show.
     /// Moves project `slug` to the place of project `onto`, as a drop in
     /// the sidebar does. The sidebar shows the new order at once, and the
     /// server stores it (LLM-524). Returns the status message.
@@ -59,6 +57,9 @@ impl Workspace {
         onto: &str,
         cx: &mut Context<Self>,
     ) -> String {
+        if let Some(reason) = self.read_only_reason(cx) {
+            return reason;
+        }
         let projects = &self.store.read(cx).catalog.projects;
         let from = projects.iter().position(|p| p.key.as_ref() == slug);
         let to = projects.iter().position(|p| p.key.as_ref() == onto);
@@ -85,12 +86,17 @@ impl Workspace {
         format!("Moved {name}")
     }
 
+    /// Colors a project in the app at once, and asks the server to save it.
+    /// Returns the message to show.
     pub(crate) fn set_project_color(
         &mut self,
         slug: &str,
         color: Option<String>,
         cx: &mut Context<Self>,
     ) -> String {
+        if let Some(reason) = self.read_only_reason(cx) {
+            return reason;
+        }
         let Some(name) = self
             .store
             .read(cx)

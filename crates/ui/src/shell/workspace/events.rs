@@ -94,8 +94,15 @@ impl Workspace {
             backend::Event::Cached(cached) => self.on_cached(*cached, cx),
             backend::Event::Snapshot(snapshot) => {
                 // The live data replaces the cache, and edits work again.
+                // The list fades back in from now.
                 self.live_loaded = true;
-                self.store.update(cx, |store, _| store.cached = false);
+                let now = cx.background_executor().now();
+                self.store.update(cx, |store, _| {
+                    if store.cached {
+                        store.refreshed_at = Some(now);
+                    }
+                    store.cached = false;
+                });
                 // The API thread already mapped the issues.
                 let backend::Loaded {
                     catalog,
@@ -224,13 +231,10 @@ impl Workspace {
             questions,
             ..
         } = cached;
+        // Marked first, so the load keeps what the cache lacks.
+        self.store.update(cx, |store, _| store.cached = true);
         self.load_questions(&issues, &questions, cx);
         self.load(catalog, issues, cx);
-        self.store.update(cx, |store, cx| {
-            store.cached = true;
-            store.touch_all();
-            cx.notify();
-        });
         self.loaded_tracker(cx);
     }
 

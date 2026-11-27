@@ -19,12 +19,22 @@ fn open(
     Entity<Workspace>,
     tokio::sync::mpsc::UnboundedReceiver<Request>,
 ) {
+    open_with(UiSettings::default(), cx)
+}
+
+/// The same, from saved settings.
+fn open_with(
+    settings: UiSettings,
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    Entity<Workspace>,
+    tokio::sync::mpsc::UnboundedReceiver<Request>,
+) {
     cx.update(crate::init);
     let (handle, view) = cx.update(|cx| {
         gpui_kit::open_window(Default::default(), cx, |window, cx| {
-            cx.new(|cx| {
-                Workspace::with_settings(UiSettings::default(), SettingsStore::memory(), window, cx)
-            })
+            cx.new(|cx| Workspace::with_settings(settings, SettingsStore::memory(), window, cx))
         })
         .expect("open test window")
     });
@@ -36,11 +46,16 @@ fn open(
 }
 
 fn team() -> Team {
+    team_named("ALX", 0)
+}
+
+/// Team `key`. Each `n` gives it its own IDs.
+fn team_named(key: &str, n: u32) -> Team {
     serde_json::from_value(serde_json::json!({
-        "id": "01a1c453-1260-7779-be1c-619faeb9d420", "key": "ALX", "name": "alx",
+        "id": format!("01a1c453-1260-7779-be1c-619faeb9d4{n}0"), "key": key, "name": key.to_lowercase(),
         "created_at": "2026-11-01T10:00:00Z",
         "statuses": [
-            {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "team": "ALX", "name": "Todo", "type": "unstarted", "color": "#fff", "position": 1}
+            {"id": format!("01a1c453-1260-7779-be1c-619faeb9d4{n}1"), "team": key, "name": "Todo", "type": "unstarted", "color": "#fff", "position": 1}
         ]
     }))
     .unwrap()
@@ -210,4 +225,103 @@ fn with_animations_off_the_cache_is_dimmed_without_a_sweep(cx: &mut TestAppConte
     });
     let (stale, _) = frame(handle, &view, cx);
     assert_eq!(stale, Stale::default(), "the rows come back at once");
+}
+
+/// The cache may be older than the server. The saved view and the last
+/// task, made since, stay saved and open once the live load has them.
+#[gpui_kit::test]
+fn a_cache_without_the_saved_view_and_task_keeps_them_for_the_live_load(cx: &mut TestAppContext) {
+    use crate::model::scope::Scope;
+    let settings = UiSettings {
+        open_last_view: true,
+        sidebar_scope: "team:NEW".into(),
+        last_task: Some("NEW-1".into()),
+        ..Default::default()
+    };
+    let (_, view, _requests) = open_with(settings, cx);
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            Event::Cached(Box::new(snapshot(vec![issue(1, "Old")]).load())),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let scope = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).list().read(cx).scope.clone());
+    assert_eq!(
+        scope(cx),
+        Scope::Team("NEW".into()),
+        "the cache resets no view"
+    );
+
+    let mut new: Issue = issue(2, "Made since");
+    new.key = "NEW-1".parse().unwrap();
+    new.team = "NEW".into();
+    new.status.id = team_named("NEW", 1).statuses[0].id;
+    let mut live = snapshot(vec![issue(1, "Old"), new]);
+    live.catalog.teams.push(team_named("NEW", 1));
+    view.update(cx, |this, cx| {
+        this.apply_event(Event::Snapshot(Box::new(live.load())), cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(scope(cx), Scope::Team("NEW".into()));
+    cx.read(|cx| {
+        assert_eq!(
+            view.read(cx).open_task_key(cx).as_deref(),
+            Some("NEW-1"),
+            "the last task opens from the live load"
+        );
+    });
+}
+
+/// Moving or coloring a project waits for the live data too.
+#[gpui_kit::test]
+fn project_edits_wait_while_the_cache_shows(cx: &mut TestAppContext) {
+    let (_, view, mut requests) = open(cx);
+    let project = |slug: &str, n: u32| -> llmtodo_client::types::Project {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("01a1c453-1260-7779-be1c-619faeb9d6{n:02}"), "slug": slug, "name": slug,
+            "description": "", "state": "started", "teams": ["ALX"], "repos": [],
+            "position": n, "created_at": "2026-11-01T10:00:00Z",
+            "updated_at": "2026-11-01T10:00:00Z", "deleted_at": null
+        }))
+        .unwrap()
+    };
+    let mut cached = snapshot(vec![issue(1, "Old")]);
+    cached.catalog.projects = vec![project("one", 1), project("two", 2)];
+    view.update(cx, |this, cx| {
+        this.apply_event(Event::Cached(Box::new(cached.load())), cx);
+    });
+    while requests.try_recv().is_ok() {}
+    view.update(cx, |this, cx| {
+        let moved = this.move_project("one", "two", cx);
+        assert!(moved.starts_with("Still loading"), "{moved}");
+        let colored = this.set_project_color("one", Some("#eb5757".into()), cx);
+        assert!(colored.starts_with("Still loading"), "{colored}");
+        let projects = &this.store().read(cx).catalog.projects;
+        assert_eq!(projects[0].key.as_ref(), "one", "the order stays");
+    });
+    assert!(
+        std::iter::from_fn(|| requests.try_recv().ok())
+            .next()
+            .is_none(),
+        "nothing goes out"
+    );
+}
+
+/// A tracker switch while the cache shows plays no fade on the new one.
+#[gpui_kit::test]
+fn a_new_connection_plays_no_fade(cx: &mut TestAppContext) {
+    let (handle, view, _requests) = open(cx);
+    view.update(cx, |this, cx| {
+        this.apply_event(
+            Event::Cached(Box::new(snapshot(vec![issue(1, "Old")]).load())),
+            cx,
+        );
+        let (backend, _) = Backend::detached();
+        let (_, events) = futures::channel::mpsc::unbounded();
+        this.connect(backend, events, cx);
+    });
+    let (stale, sweep) = frame(handle, &view, cx);
+    assert_eq!(stale, Stale::default());
+    assert!(!sweep);
 }

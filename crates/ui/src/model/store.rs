@@ -96,6 +96,9 @@ pub struct IssueStore {
     /// run, until the live load replaces them. The list shows them dimmed,
     /// and edits wait.
     pub cached: bool,
+    /// When the live load replaced the cache. The list fades back in from
+    /// then.
+    pub refreshed_at: Option<std::time::Instant>,
     /// The trackers the sidebar lists, and which one is open. The workspace
     /// switches between them.
     pub trackers: Vec<Tracker>,
@@ -203,6 +206,7 @@ impl IssueStore {
             loading: None,
             slow_connect: false,
             cached: false,
+            refreshed_at: None,
             trackers: Vec::new(),
             tracker: 0,
             revision: 0,
