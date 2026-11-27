@@ -276,35 +276,44 @@ pub async fn load_with(
     let actors = &lookup.actors;
     // Each part reads only by `ids`. On Postgres, outside a transaction,
     // they run at once on their own connections, so a page costs about
-    // one round trip instead of eight (LLM-465).
-    let (rows, claims, analyzing, blockers, mut costs, open_questions, mut times, label_rows) =
-        match conn.read_pool() {
-            Some(pool) => {
-                let c = || async { pool.acquire().await.map_err(ApiError::from) };
-                tokio::try_join!(
-                    async { rows(&mut c().await?, ids, with_description).await },
-                    async { live_claims(&mut c().await?, ids, actors).await },
-                    async { live_analyzing(&mut c().await?, ids, actors).await },
-                    async { deps::Blockers::load(&mut c().await?, ids, statuses).await },
-                    async { crate::store::usage::cost_by_issue(&mut c().await?, ids).await },
-                    async { crate::store::questions::open_counts(&mut c().await?, ids).await },
-                    async {
-                        crate::store::usage::active_seconds_by_issue(&mut c().await?, ids).await
-                    },
-                    async { label_rows(&mut c().await?, ids).await },
-                )?
-            }
-            None => (
-                rows(conn, ids, with_description).await?,
-                live_claims(conn, ids, actors).await?,
-                live_analyzing(conn, ids, actors).await?,
-                deps::Blockers::load(conn, ids, statuses).await?,
-                crate::store::usage::cost_by_issue(conn, ids).await?,
-                crate::store::questions::open_counts(conn, ids).await?,
-                crate::store::usage::active_seconds_by_issue(conn, ids).await?,
-                label_rows(conn, ids).await?,
-            ),
-        };
+    // one round trip instead of nine (LLM-465).
+    let (
+        rows,
+        claims,
+        analyzing,
+        blockers,
+        mut costs,
+        open_questions,
+        mut times,
+        label_rows,
+        mut reviews,
+    ) = match conn.read_pool() {
+        Some(pool) => {
+            let c = || async { pool.acquire().await.map_err(ApiError::from) };
+            tokio::try_join!(
+                async { rows(&mut c().await?, ids, with_description).await },
+                async { live_claims(&mut c().await?, ids, actors).await },
+                async { live_analyzing(&mut c().await?, ids, actors).await },
+                async { deps::Blockers::load(&mut c().await?, ids, statuses).await },
+                async { crate::store::usage::cost_by_issue(&mut c().await?, ids).await },
+                async { crate::store::questions::open_counts(&mut c().await?, ids).await },
+                async { crate::store::usage::active_seconds_by_issue(&mut c().await?, ids).await },
+                async { label_rows(&mut c().await?, ids).await },
+                async { crate::store::reviews::last_by_issue(&mut c().await?, ids, actors).await },
+            )?
+        }
+        None => (
+            rows(conn, ids, with_description).await?,
+            live_claims(conn, ids, actors).await?,
+            live_analyzing(conn, ids, actors).await?,
+            deps::Blockers::load(conn, ids, statuses).await?,
+            crate::store::usage::cost_by_issue(conn, ids).await?,
+            crate::store::questions::open_counts(conn, ids).await?,
+            crate::store::usage::active_seconds_by_issue(conn, ids).await?,
+            label_rows(conn, ids).await?,
+            crate::store::reviews::last_by_issue(conn, ids, actors).await?,
+        ),
+    };
     // A lookup loaded earlier, such as by the write that just committed,
     // may miss a status or an actor added since. Load it again then.
     let missing = rows.iter().any(|r| {
@@ -358,6 +367,7 @@ pub async fn load_with(
             has_open_dependents: blockers.has_open_dependents(&r.id),
             cost_usd: costs.remove(&r.id),
             open_questions: open_questions.get(&r.id).copied().unwrap_or(0),
+            last_review: reviews.remove(&r.id),
             active_seconds: times.remove(&r.id),
             estimate_minutes: r.estimate_minutes.map(|m| m as u32),
             estimate_cost_usd: r.estimate_cost_usd,

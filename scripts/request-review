@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Ask agy to review a ticket's branch. The ticket must wait on the reviewer
-# (move it to In Review first). agy answers with `llmtodo issue review answer`;
-# this script then prints that answer for the builder to apply.
+# Ask a reviewer agent to review a ticket's branch. The ticket must wait on
+# the reviewer (move it to In Review first). The reviewer answers with
+# `llmtodo issue review answer`; this script then prints that answer for the
+# builder to apply.
 #
 #   scripts/request-review LLM-589          # reviews main...HEAD
 #   scripts/request-review LLM-589 abc1234  # reviews abc1234...HEAD
 #
+# agy reviews first. When agy cannot (it hits its quota, is not installed,
+# or writes no answer), Claude Code reviews headless in the same clone.
+# REVIEWER=agy or REVIEWER=claude forces one of them, with no fallback.
 # AGY_MODEL picks the agy model (`agy models` lists them), default
-# gemini-4-neon-high. Ported from llmvid's scripts/request-review.
+# gemini-4-neon-high. CLAUDE_REVIEW_MODEL and CLAUDE_REVIEW_EFFORT pick
+# Claude's, default opus and high. Ported from llmvid's scripts/request-review.
 # Exit: 0 pass, 3 changes requested, 1 no answer written, 2 bad input.
 set -euo pipefail
 
@@ -57,30 +62,125 @@ short_base=$(git rev-parse --short "$base")
 short_head=$(git rev-parse --short "$head")
 prompt="Review llmtodo ticket $key as the reviewer, following the llmtodo-review skill in .claude/skills/llmtodo-review/SKILL.md. Base: $short_base. Head: $short_head. This is round $round. Do not edit any file. Answer with llmtodo issue review answer, once."
 
-settings='{"permissions":{"allow":["command(llmtodo)","command(git)","command(cargo)","command(ls)","command(cat)","command(grep)","command(rg)","command(find)","command(head)","command(tail)","command(wc)","command(sed)"]}}'
+reviewer=${REVIEWER:-auto}
+case $reviewer in auto|agy|claude) ;; *) echo "REVIEWER must be agy or claude, not $reviewer" >&2; exit 2 ;; esac
 
-model=${AGY_MODEL:-gemini-4-neon-high}
-effort=${model##*-}
-case $effort in low|medium|high|xhigh|max) family=${model%-*} ;; *) family=$model effort= ;; esac
-
-# A clean environment with only what the tools need. Nothing from Claude Code
-# reaches agy. llmtodo does not detect agy (it sets ANTIGRAVITY_*, not
-# AI_AGENT), so without LLMTODO_ACTOR it would act as the owner, who may
-# approve. The actor makes it the reviewer agent.
+# A clean environment with only what the tools need. Nothing from this
+# shell's harness reaches the reviewer. llmtodo detects agy and Claude Code
+# as agents by themselves; LLMTODO_ACTOR also names the model and effort.
 keep=(HOME PATH USER LOGNAME SHELL TERM LANG LC_ALL TMPDIR
       CARGO_HOME RUSTUP_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME
       LLMTODO_DATA_DIR LLMTODO_CONFIG_DIR)
 envs=()
 for v in "${keep[@]}"; do [[ -n "${!v:-}" ]] && envs+=("$v=${!v}"); done
 
-echo "agy ($model) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
-(
-  cd "$clone"
-  env -i "${envs[@]}" \
-    LLMTODO_ACTOR="agent:antigravity/$family/$effort" \
-    LLMTODO_SESSION="agy-review-$key-$round-$short_head" \
-    agy -p "$prompt" --model "$model" --settings "$settings" --print-timeout 1800s >&2
-) || echo "agy exited with $?; checking for an answer anyway" >&2
+# The number of answers on the ticket now. A reviewer wrote one when it grew.
+count() { reviews | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["answers"]))'; }
+
+# agy's output, kept to tell a quota stop from other failures.
+agy_log="$work/agy.log"
+run_agy() {
+  local model=${AGY_MODEL:-gemini-4-neon-high} family effort
+  effort=${model##*-}
+  case $effort in low|medium|high|xhigh|max) family=${model%-*} ;; *) family=$model effort= ;; esac
+  if ! command -v agy >/dev/null; then
+    echo "agy is not installed" >&2
+    return 1
+  fi
+  local settings='{"permissions":{"allow":["command(llmtodo)","command(git)","command(cargo)","command(ls)","command(cat)","command(grep)","command(rg)","command(find)","command(head)","command(tail)","command(wc)","command(sed)"]}}'
+  echo "agy ($model) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
+  # agy sets ANTIGRAVITY_* for its shell commands, so llmtodo records an
+  # agent with harness antigravity; LLMTODO_ACTOR adds the model and effort.
+  (
+    cd "$clone"
+    env -i "${envs[@]}" \
+      LLMTODO_ACTOR="agent:antigravity/$family/$effort" \
+      LLMTODO_SESSION="agy-review-$key-$round-$short_head" \
+      agy -p "$prompt" --model "$model" --settings "$settings" --print-timeout 1800s
+  ) 2>&1 | tee "$agy_log" >&2 || echo "agy exited with ${PIPESTATUS[0]}; checking for an answer anyway" >&2
+}
+
+run_claude() {
+  local model=${CLAUDE_REVIEW_MODEL:-opus} effort=${CLAUDE_REVIEW_EFFORT:-high}
+  if ! command -v claude >/dev/null; then
+    echo "claude is not installed" >&2
+    return 1
+  fi
+  echo "Claude ($model, $effort) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
+  # Claude gets read-only tools and returns its verdict as structured
+  # output; this script posts the answer. dontAsk denies every tool that is
+  # not allowed here, and a heredoc `review answer` would be one of them.
+  # Only project settings load: the owner's own permissions and hooks stay
+  # out. As with agy, the clone is the guard.
+  local allow=(Read Grep Glob
+    "Bash(llmtodo issue view:*)" "Bash(llmtodo issue review show:*)"
+    "Bash(git log:*)" "Bash(git diff:*)" "Bash(git show:*)" "Bash(git status:*)" "Bash(git rev-parse:*)"
+    "Bash(cargo fmt:*)" "Bash(cargo clippy:*)" "Bash(cargo test:*)" "Bash(cargo check:*)"
+    "Bash(ls:*)" "Bash(cat:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(sed -n:*)")
+  local schema='{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","request-changes"]},"feedback":{"type":"string","description":"The whole review answer: the Base/Head/Checks line, then the numbered findings, or No findings."}},"required":["verdict","feedback"]}'
+  local claude_prompt="$prompt Do not run llmtodo issue review answer yourself: you cannot. Return the verdict and the full feedback text as the structured output, and this script posts it for you."
+  local out="$work/claude.json"
+  (
+    cd "$clone"
+    env -i "${envs[@]}" \
+      LLMTODO_ACTOR="agent:claude-code/$model/$effort" \
+      LLMTODO_SESSION="claude-review-$key-$round-$short_head" \
+      claude -p "$claude_prompt" --model "$model" --effort "$effort" \
+        --permission-mode dontAsk --allowedTools "${allow[@]}" \
+        --disallowedTools Edit Write NotebookEdit \
+        --setting-sources project --strict-mcp-config \
+        --output-format json --json-schema "$schema" </dev/null >"$out"
+  ) || echo "claude exited with $?" >&2
+
+  # verdict, model, session, then the feedback.
+  local parsed
+  parsed=$(python3 -c '
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.stderr.write((d.get("result") or "") + "\n")
+s = d.get("structured_output") or {}
+if s.get("verdict") not in ("pass", "request-changes") or not (s.get("feedback") or "").strip():
+    sys.exit(1)
+# The model that did the most work, as a short name: claude-opus-5-5 is opus-5.5.
+models = sorted((d.get("modelUsage") or {}).items(), key=lambda kv: -(kv[1].get("outputTokens") or 0))
+m = models[0][0] if models else ""
+m = re.sub(r"^claude-", "", m.split("[")[0])
+m = re.sub(r"-(\d+)-(\d{1,2})$", r"-\1.\2", m)
+print(s["verdict"]); print(m); print(d.get("session_id") or "")
+print(s["feedback"])
+' "$out") || { echo "Claude returned no verdict" >&2; return 1; }
+  local verdict ran session
+  { read -r verdict; read -r ran; read -r session; } <<<"$parsed"
+  # The session lets llmtodo read Claude's transcript for the usage.
+  (
+    cd "$clone"
+    tail -n +4 <<<"$parsed" | env -i "${envs[@]}" \
+      LLMTODO_ACTOR="agent:claude-code/${ran:-$model}/$effort" \
+      LLMTODO_SESSION="claude-review-$key-$round-$short_head" \
+      CLAUDE_CODE_SESSION_ID="$session" \
+      llmtodo issue review answer "$key" "$verdict" --feedback-file - --no-input >/dev/null
+  ) || echo "posting Claude's answer failed" >&2
+}
+
+case $reviewer in
+  agy) run_agy || true ;;
+  claude) run_claude || true ;;
+  auto)
+    if run_agy && [[ $(count) -gt $before ]]; then
+      :
+    else
+      if grep -qiE 'RESOURCE_EXHAUSTED|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)' "$agy_log" 2>/dev/null; then
+        echo "agy hit its usage limit; Claude reviews instead" >&2
+      else
+        echo "agy wrote no review answer; Claude reviews instead" >&2
+      fi
+      run_claude || true
+    fi
+    ;;
+esac
 
 answer=$(reviews | python3 -c '
 import json, sys
@@ -94,7 +194,7 @@ if new:
     print(a.get("feedback") or "(no feedback)")
 ' "$before")
 if [[ -z "$answer" ]]; then
-  echo "agy finished but wrote no review answer on $key" >&2
+  echo "no reviewer wrote a review answer on $key" >&2
   exit 1
 fi
 verdict=$(head -n1 <<<"$answer")

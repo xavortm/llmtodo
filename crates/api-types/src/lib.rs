@@ -723,6 +723,10 @@ pub struct Issue {
     /// How many owner questions in the description have no answer.
     #[serde(default)]
     pub open_questions: u32,
+    /// The newest review answer, for the verdict badge on a row (LLM-593).
+    /// Missing when the issue has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_review: Option<ReviewSummary>,
     /// Active agent working time so far, added up over all sessions. Missing
     /// when the issue has no time data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -813,6 +817,17 @@ pub struct ReviewAnswer {
     pub verdict: ReviewVerdict,
     /// Empty when none was given.
     pub feedback: String,
+    pub author: Option<Actor>,
+    pub created_at: Timestamp,
+}
+
+/// The newest answer of an issue, as its list copy carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewSummary {
+    pub round: i64,
+    pub verdict: ReviewVerdict,
+    /// How many notes the feedback holds, by `llmtodo_core::review_notes`.
+    pub notes: u32,
     pub author: Option<Actor>,
     pub created_at: Timestamp,
 }

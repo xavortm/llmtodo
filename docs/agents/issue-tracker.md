@@ -6,9 +6,18 @@ The guide to the CLI is in the `llmtodo` skill: [SKILL.md](../../.claude/skills/
 
 The map issue of this repo is LLM-1. The rest of this page holds the steps that apply only to this repo.
 
-## Publish after a round of work
+## Review before anything lands
 
-The owner runs the installed app, not a build from this repo. After a round of work lands on `main`, publish it from the main checkout. From a worktree, `git worktree list` prints that folder first.
+Every ticket that ends in a commit is reviewed on its branch, by agy first and then by the owner. `CLAUDE.md` ("Build and review") has the steps. In short:
+
+- Work on a branch and a PR. Nothing goes to `main`, and nothing is published, before the owner approves.
+- For a ticket with UI work, run `scripts/preview-build <KEY>`, so the owner's **Try it** opens the branch app on demo data without a compile.
+- Move the ticket to In Review and run `scripts/request-review <KEY>`. agy reviews in a throwaway clone. When agy is out of quota, the script has Claude Code review instead. A pass moves the ticket to User review, with the reviewer's notes kept.
+- After the owner approves: merge the PR, publish as below, and mark the ticket Done.
+
+## Publish after an approved merge
+
+The owner runs the installed app, not a build from this repo. Publish only after the owner approved a ticket and its PR is merged to `main`, never from a branch. Publish from the main checkout. From a worktree, `git worktree list` prints that folder first.
 
 ```sh
 main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')

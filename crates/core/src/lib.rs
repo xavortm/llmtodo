@@ -22,4 +22,6 @@ pub use ids::{
 pub use key::{IssueKey, KeyError, find_keys, find_keys_any_case, normalize_team_key};
 pub use markdown::{Patch, PatchError, Section, SectionKind, apply_patch, sections};
 pub use questions::{Question, QuestionOption, open_questions, questions};
-pub use review::{Review, is_default_review_status, render_review, review, review_missing};
+pub use review::{
+    Review, is_default_review_status, render_review, review, review_missing, review_notes,
+};
