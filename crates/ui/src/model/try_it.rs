@@ -20,7 +20,6 @@
 //! brings that window forward instead of starting another.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -126,11 +125,14 @@ impl std::fmt::Debug for Previews {
 
 /// The shell line around `scripts/preview`: `$1` is the script, `$2` the
 /// run's folder. The script stops its server when it ends, and then the
-/// folder goes.
-const WRAPPER: &str = r#"exec 2>&1; "$1"; code=$?; rm -rf "$2"; exit "$code""#;
+/// folder goes. The script writes to a file, never to this app's pipe: a
+/// script left writing to the pipe of an app that quit could hang before
+/// it stops its server. The shell line hands back the file's last lines.
+const WRAPPER: &str = r#""$1" >"$2/preview.out" 2>&1; code=$?; tail -n 5 "$2/preview.out" 2>/dev/null; rm -rf "$2"; exit "$code""#;
 
-/// The last lines of the script's output that a failure shows.
-const TAIL_LINES: usize = 5;
+/// How often a starting run's output is read for the line that says the
+/// app opened.
+const START_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Previews {
     /// `changed` runs on a background thread each time a preview starts,
@@ -202,28 +204,32 @@ impl Previews {
         std::thread::Builder::new()
             .name(format!("try-it-{key}"))
             .spawn(move || {
-                let mut tail: VecDeque<String> = VecDeque::new();
+                // Until the app opens, read the script's output for the
+                // line that says so. After that, only its end matters.
+                let out = folder.join("preview.out");
                 let mut opened = false;
-                for line in stdout
-                    .map(BufReader::new)
-                    .into_iter()
-                    .flat_map(|r| r.lines())
-                    .map_while(Result::ok)
-                {
-                    if !opened && line.starts_with("PREVIEW_DATA=") {
+                loop {
+                    if std::fs::read_to_string(&out).is_ok_and(|t| t.contains("PREVIEW_DATA=")) {
                         opened = true;
                         set_state(&runs, &key, RunState::Running);
                         changed();
+                        break;
                     }
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        if tail.len() == TAIL_LINES {
-                            tail.pop_front();
-                        }
-                        tail.push_back(line.to_string());
+                    match child.try_wait() {
+                        Ok(None) => std::thread::sleep(START_POLL),
+                        Ok(Some(_)) | Err(_) => break,
                     }
                 }
                 let status = child.wait();
+                let mut text = String::new();
+                if let Some(mut stdout) = stdout {
+                    let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+                }
+                let tail: VecDeque<&str> = text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect();
                 // The shell line deletes it too. This covers a shell that
                 // was killed.
                 let _ = std::fs::remove_dir_all(&folder);
@@ -238,8 +244,7 @@ impl Previews {
                             .iter()
                             .rev()
                             .find(|l| !l.starts_with("PREVIEW_"))
-                            .cloned()
-                            .unwrap_or_else(|| "no output".to_string());
+                            .map_or_else(|| "no output".to_string(), |l| l.to_string());
                         format!("The preview did not start: {last}")
                     };
                     set_state(&runs, &key, RunState::Failed(reason));
@@ -323,23 +328,48 @@ pub fn command(launch: &Launch, folder: &Path) -> Command {
     cmd
 }
 
+/// The processes that run the binary at `app`, from `ps`. A preview build
+/// starts with its path as its command, as `exec` in `scripts/preview` runs
+/// it.
+fn pids_running(app: &Path) -> Vec<i32> {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let want = canonical(app);
+    let Ok(out) = Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=,comm="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (pid, comm) = line.trim_start().split_once(' ')?;
+            let comm = Path::new(comm.trim());
+            (comm == app || canonical(comm) == want)
+                .then(|| pid.parse().ok())
+                .flatten()
+        })
+        .collect()
+}
+
 /// Brings the running app at `app` to the front. False when none runs.
+///
+/// It looks the process up by its ID each time. `NSWorkspace`'s list of
+/// running apps changes only while the main run loop runs, so it can miss
+/// a preview that just opened.
 #[cfg(target_os = "macos")]
 pub fn bring_forward(app: &Path) -> bool {
     use objc2::MainThreadMarker;
     use objc2::runtime::NSObjectProtocol as _;
     use objc2::sel;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSWorkspace};
+    use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
 
-    let canonical = |p: PathBuf| p.canonicalize().unwrap_or(p);
-    let want = canonical(app.to_path_buf());
-    let apps = NSWorkspace::sharedWorkspace().runningApplications();
-    let Some(found) = apps.iter().find(|running| {
-        running
-            .executableURL()
-            .and_then(|url| url.to_file_path())
-            .is_some_and(|path| canonical(path) == want)
-    }) else {
+    let Some(found) = pids_running(app)
+        .into_iter()
+        .find_map(NSRunningApplication::runningApplicationWithProcessIdentifier)
+    else {
         return false;
     };
     // Since macOS 14 an app comes forward only when the active app yields
@@ -354,8 +384,8 @@ pub fn bring_forward(app: &Path) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn bring_forward(_app: &Path) -> bool {
-    false
+pub fn bring_forward(app: &Path) -> bool {
+    !pids_running(app).is_empty()
 }
 
 #[cfg(test)]
