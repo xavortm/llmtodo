@@ -753,12 +753,14 @@ pub fn tiles_over(area: Rect, cover: Rect, natural: (f32, f32), layout: &Layout)
 
 /// How long a panel image takes to reach its new place.
 pub const GLIDE: Duration = Duration::from_millis(500);
-/// How wide the soft edge is that reveals the room an image grows into.
-pub const GLIDE_EDGE: f32 = 120.;
-/// The soft edge draws as this many strips, each a step fainter: a GPUI
-/// image has no mask. A step is far below what the eye sees at a
-/// background's opacity.
-pub const GLIDE_STRIPS: usize = 8;
+/// How far inside the image's edge the reveal starts to fade, so an
+/// image that ends there has no hard edge. It shrinks with the room left
+/// to reveal, so the image shows in full when the glide lands.
+pub const GLIDE_INSET: f32 = 48.;
+/// The reveal draws as this many strips, each a step fainter: a GPUI image
+/// has no mask. The reveal can span a whole panel's width, so the steps
+/// stay small enough to read as one gradient.
+pub const GLIDE_STRIPS: usize = 24;
 /// How long after a toggle a change of a panel's size glides. It covers
 /// the panel's own slide, so a window resize or a divider drag later
 /// still moves the image at once.
@@ -853,10 +855,15 @@ impl Glide {
 
 /// How an image laid out in `area` draws in `clip` while it glides: the
 /// rect it draws at full strength, and per strip, from the faintest at
-/// the image's edge inwards, the rects it draws at that strength. Only an
-/// edge of `area` inside `clip` is soft: there the image has not yet
-/// reached the panel's edge. Where two soft edges meet, the corner stays
-/// clear; a toggle changes one side at a time.
+/// the panel's edge inwards, the rects it draws at that strength.
+///
+/// Where `area` stops short of the panel's edge, the room between was just
+/// revealed, such as where the task view was. A gradient spans that room,
+/// from full strength a little inside the image's edge to nothing at the
+/// panel's edge, so the rest of the image shows through it softly. As the
+/// image glides out, the room shrinks and the gradient with it. Where two
+/// such sides meet, the corner stays clear; a toggle changes one side at a
+/// time.
 ///
 /// Every cut between two masks falls on a whole device pixel at `scale`.
 /// GPUI widens a mask to whole pixels, so a cut between pixels would draw
@@ -865,26 +872,33 @@ pub fn soft_edges(area: Rect, clip: Rect, scale: f32) -> (Rect, Vec<Vec<Rect>>) 
     const SLACK: f32 = 0.5;
     let scale = if scale > 0. { scale } else { 1. };
     let snap = |v: f32| (v * scale).round() / scale;
-    let (right_edge, bottom_edge) = (area.x + area.w, area.y + area.h);
-    let left = area.x > clip.x + SLACK;
-    let right = right_edge < clip.x + clip.w - SLACK;
-    let top = area.y > clip.y + SLACK;
-    let bottom = bottom_edge < clip.y + clip.h - SLACK;
     let n = GLIDE_STRIPS;
-    let (sx, sy) = (
-        GLIDE_EDGE.min(area.w / 2.) / n as f32,
-        GLIDE_EDGE.min(area.h / 2.) / n as f32,
-    );
-    // The cuts from each edge inwards: cut `k` is `k` strips in.
-    let cuts = |from: f32, step: f32| -> Vec<f32> {
-        (0..=n).map(|k| snap(from + step * k as f32)).collect()
+    let (clip_r, clip_b) = (clip.x + clip.w, clip.y + clip.h);
+    let gaps = [
+        area.x - clip.x,
+        clip_r - (area.x + area.w),
+        area.y - clip.y,
+        clip_b - (area.y + area.h),
+    ];
+    let [left, right, top, bottom] = gaps.map(|g| g > SLACK);
+    let inset = |gap: f32, len: f32| GLIDE_INSET.min(gap).min(len / 2.).max(0.);
+    // Where each gradient reaches full strength.
+    let full_l = area.x + inset(gaps[0], area.w);
+    let full_r = area.x + area.w - inset(gaps[1], area.w);
+    let full_t = area.y + inset(gaps[2], area.h);
+    let full_b = area.y + area.h - inset(gaps[3], area.h);
+    // The cuts from the panel's edge inwards: cut `k` is `k` strips in.
+    let cuts = |outer: f32, inner: f32| -> Vec<f32> {
+        (0..=n)
+            .map(|k| snap(outer + (inner - outer) * k as f32 / n as f32))
+            .collect()
     };
-    let (cl, cr) = (cuts(area.x, sx), cuts(right_edge, -sx));
-    let (ct, cb) = (cuts(area.y, sy), cuts(bottom_edge, -sy));
-    let x0 = if left { cl[n] } else { area.x };
-    let x1 = if right { cr[n] } else { right_edge };
-    let y0 = if top { ct[n] } else { area.y };
-    let y1 = if bottom { cb[n] } else { bottom_edge };
+    let (cl, cr) = (cuts(clip.x, full_l), cuts(clip_r, full_r));
+    let (ct, cb) = (cuts(clip.y, full_t), cuts(clip_b, full_b));
+    let x0 = if left { cl[n] } else { clip.x };
+    let x1 = if right { cr[n] } else { clip_r };
+    let y0 = if top { ct[n] } else { clip.y };
+    let y1 = if bottom { cb[n] } else { clip_b };
     let edges = |l: f32, t: f32, r: f32, b: f32| Rect {
         x: l,
         y: t,
@@ -1639,19 +1653,19 @@ fn paint(
     let ready = *loads.ready.entry(ident(b)).or_insert(now);
     let frame = animation_frame(&loaded.image, ready, now, window, cx);
     let clip = rect_of(bounds);
-    // While it glides, the image draws in full inside its soft edges, and
-    // each strip draws its part of them. Its repeats fill only the room it
-    // has reached.
-    let (mask, cover) = if gliding {
+    // While it glides, the image draws in full up to the room just
+    // revealed, and each strip draws its part of the gradient over that
+    // room, where the rest of the image shows through.
+    let mask = if gliding {
         let (inner, strips) = soft_edges(laid, clip, window.scale_factor());
-        let mask = match strip {
+        match strip {
             None => vec![inner],
             Some(i) => strips.into_iter().nth(i).unwrap_or_default(),
-        };
-        (mask, laid.intersect(clip))
+        }
     } else {
-        (vec![clip], clip)
+        vec![clip]
     };
+    let cover = clip;
     // The window image lines up with the window, so it runs on across
     // panels. A panel image lines up with its panel.
     let area = if slot == Slot::Window {

@@ -802,30 +802,59 @@ fn a_change_with_no_toggle_lands_at_once() {
     assert!(!g.running(t0));
 }
 
-#[test]
-fn only_the_edge_inside_the_panel_is_soft() {
-    // The panel grew to the right; the image has not caught up yet.
-    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 600. - GLIDE_EDGE));
-    assert_eq!(strips.len(), GLIDE_STRIPS);
-    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
-    // The faintest strip sits at the image's edge.
-    assert_eq!(strips[0], vec![rect(600. - w, w)]);
-    assert_eq!(strips[GLIDE_STRIPS - 1], vec![rect(600. - GLIDE_EDGE, w)]);
-    assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
-    assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
-    // Wider than the panel: no soft edge, the panel clips it.
-    let (inner, strips) = soft_edges(rect(-100., 1000.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 800.));
-    assert!(strips.iter().all(Vec::is_empty));
+/// The rects of every strip, from the panel's edge inwards.
+fn strip_rects(strips: &[Vec<Rect>]) -> Vec<Rect> {
+    strips.iter().map(|s| s[0]).collect()
 }
 
 #[test]
-fn a_panel_growing_left_softens_the_left_edge() {
+fn the_gradient_spans_the_room_just_revealed() {
+    // The task view closed: the list grew from 600 to 800, and the image
+    // still lays out in the old 600.
+    let (inner, strips) = soft_edges(rect(0., 600.), rect(0., 800.), 1.);
+    assert_eq!(strips.len(), GLIDE_STRIPS);
+    // Full strength up to a little inside the image's old edge.
+    assert_eq!(inner, rect(0., 600. - GLIDE_INSET));
+    let s = strip_rects(&strips);
+    // The faintest strip sits at the panel's edge, where the task view
+    // ended, and the last meets the full-strength rect.
+    assert_eq!(s[0].x + s[0].w, 800.);
+    assert_eq!(s[GLIDE_STRIPS - 1].x, 600. - GLIDE_INSET);
+    for pair in s.windows(2) {
+        assert_eq!(pair[1].x + pair[1].w, pair[0].x, "{pair:?}");
+    }
+    assert!(strip_strength(0) < strip_strength(GLIDE_STRIPS - 1));
+    assert!(strip_strength(GLIDE_STRIPS - 1) < 1.);
+}
+
+#[test]
+fn the_gradient_shrinks_away_as_the_image_lands() {
+    // Nearly there: the fade starts no further in than the room left.
+    let (inner, strips) = soft_edges(rect(0., 790.), rect(0., 800.), 1.);
+    assert_eq!(inner, rect(0., 780.));
+    // Strips thinner than a pixel drop out; the rest still reach the edge.
+    let edge = strips[0][0];
+    assert_eq!(edge.x + edge.w, 800.);
+    // Landed, or wider than the panel: no gradient, the panel clips it.
+    for area in [rect(0., 800.), rect(-100., 1000.)] {
+        let (inner, strips) = soft_edges(area, rect(0., 800.), 1.);
+        assert_eq!(inner, rect(0., 800.));
+        assert!(strips.iter().all(Vec::is_empty));
+    }
+}
+
+#[test]
+fn a_panel_growing_left_reveals_from_the_left() {
+    // The sidebar closed: the list starts 200 px further left.
     let (inner, strips) = soft_edges(rect(200., 600.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(200. + GLIDE_EDGE, 600. - GLIDE_EDGE));
-    let w = GLIDE_EDGE / GLIDE_STRIPS as f32;
-    assert_eq!(strips[0], vec![rect(200., w)]);
+    assert_eq!(inner, rect(200. + GLIDE_INSET, 600. - GLIDE_INSET));
+    assert_eq!(
+        strips[0],
+        vec![Rect {
+            w: strips[0][0].w,
+            ..rect(0., 0.)
+        }]
+    );
 }
 
 #[gpui_kit::test]
