@@ -764,8 +764,7 @@ fn a_new_size_glides_with_ease_out_and_lands_on_time() {
     let mid = g.at(t0 + GLIDE / 2);
     assert!(mid.w < 680. && mid.w > 560., "{mid:?}");
     assert_eq!(g.at(t0 + GLIDE), rect(240., 560.));
-    assert!(g.running(t0 + GLIDE), "the reveal still slides");
-    assert!(!g.running(t0 + REVEAL_DELAY + REVEAL));
+    assert!(!g.running(t0 + GLIDE));
 }
 
 #[test]
@@ -803,110 +802,10 @@ fn a_change_with_no_toggle_lands_at_once() {
     assert!(!g.running(t0));
 }
 
-fn reveal(full: Rect, soft: f32) -> Reveal {
-    Reveal {
-        full,
-        soft: (soft, soft),
-    }
-}
-
-#[test]
-fn the_gradient_spans_the_room_just_revealed() {
-    // The task view closed: the list grew from 600 to 800, and the reveal
-    // still holds at the old 600, with a gradient as wide as the room.
-    let (inner, strips) = soft_edges(reveal(rect(0., 600.), 200.), rect(0., 800.), 1.);
-    assert_eq!(strips.len(), GLIDE_STRIPS);
-    assert_eq!(inner, rect(0., 600.));
-    let s: Vec<Rect> = strips.iter().map(|s| s[0]).collect();
-    // The faintest strip ends at the panel's edge, where the task view
-    // ended, and the last meets the full-strength rect.
-    assert_eq!(s[0].x + s[0].w, 800.);
-    assert_eq!(s[GLIDE_STRIPS - 1].x, 600.);
-    for pair in s.windows(2) {
-        assert_eq!(pair[1].x + pair[1].w, pair[0].x, "{pair:?}");
-    }
-}
-
-#[test]
-fn the_gradient_eases_in_and_out() {
-    let strengths: Vec<f32> = (0..GLIDE_STRIPS).map(strip_strength).collect();
-    assert!(strengths.windows(2).all(|w| w[0] < w[1]));
-    assert!(strengths[0] < 0.01 && strengths[GLIDE_STRIPS - 1] > 0.99);
-    // Smoothstep: flat at both ends, steepest in the middle.
-    let step = |i: usize| strengths[i + 1] - strengths[i];
-    assert!(step(0) < step(GLIDE_STRIPS / 2));
-    assert!(step(GLIDE_STRIPS - 2) < step(GLIDE_STRIPS / 2));
-}
-
-#[test]
-fn the_reveal_holds_then_slides_out_at_full_width() {
-    let t0 = std::time::Instant::now();
-    let mut g = Glide::new(rect(0., 600.), t0);
-    g.retarget(rect(0., 800.), true, t0);
-    // It holds where the task view's edge was.
-    let held = g.reveal(t0 + REVEAL_DELAY - std::time::Duration::from_millis(10));
-    assert_eq!(held.full, rect(0., 600.));
-    assert_eq!(held.soft.0, 200.);
-    // Mid-slide, the gradient keeps its width: still soft.
-    let mid = g.reveal(t0 + REVEAL_DELAY + REVEAL / 2);
-    assert_eq!(mid.soft, (200., REVEAL_MIN_SOFT));
-    let edge = mid.full.x + mid.full.w;
-    assert!(edge > 600. && edge < 800., "{mid:?}");
-    // At the end the gradient lies past the panel's edge: no strips.
-    let end = g.reveal(t0 + REVEAL_DELAY + REVEAL);
-    let (inner, strips) = soft_edges(end, rect(0., 800.), 1.);
-    assert_eq!(inner, rect(0., 800.));
-    assert!(strips.iter().all(Vec::is_empty));
-}
-
-#[test]
-fn a_small_change_still_fades_softly() {
-    let t0 = std::time::Instant::now();
-    let mut g = Glide::new(rect(0., 780.), t0);
-    g.retarget(rect(0., 800.), true, t0);
-    assert_eq!(g.reveal(t0).soft.0, REVEAL_MIN_SOFT);
-}
-
-#[test]
-fn the_reveal_holds_through_the_sidebar_slide() {
-    // The sidebar slides out over several frames, and each one widens the
-    // list. The reveal stays where the sidebar's edge was until the slide
-    // ends, then holds for its own delay.
-    let t0 = std::time::Instant::now();
-    let ms = std::time::Duration::from_millis;
-    let mut g = Glide::new(
-        Rect {
-            x: 240.,
-            ..rect(0., 560.)
-        },
-        t0,
-    );
-    for (i, x) in [180., 100., 40., 0.].into_iter().enumerate() {
-        g.retarget(
-            Rect {
-                x,
-                ..rect(0., 800. - x)
-            },
-            true,
-            t0 + ms(50 * i as u64),
-        );
-    }
-    let last = t0 + ms(150);
-    let r = g.reveal(last + REVEAL_DELAY - ms(10));
-    assert_eq!(r.full.x, 240.);
-    assert_eq!(r.soft.0, 240.);
-}
-
-#[test]
-fn a_panel_growing_left_reveals_from_the_left() {
-    // The sidebar closed: the list starts 200 px further left.
-    let (inner, strips) = soft_edges(reveal(rect(200., 600.), 200.), rect(0., 800.), 1.);
-    assert_eq!(inner, rect(200., 600.));
-    assert_eq!(strips[0][0].x, 0.);
-}
-
 #[gpui_kit::test]
-fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::TestAppContext) {
+fn a_contained_list_image_glides_when_the_sidebar_toggles_then_rests(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
     cx.update(crate::init);
@@ -924,10 +823,9 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
         )
         .unwrap()
     });
-    let list = Backdrop {
-        image: "list.png".into(),
-        ..backdrop("list.png")
-    };
+    // `contain` glides. `cover` would follow the panel at once.
+    let mut list = backdrop("list.png");
+    list.layout.size = BgSize::Contain;
     cx.update(|cx| {
         crate::shell::motion::set(true, cx);
         let mode = Backdrops {
@@ -1004,26 +902,70 @@ fn a_list_image_glides_when_the_sidebar_toggles_then_rests(cx: &mut gpui_kit::Te
     assert_eq!(g.to.w, before.w);
 }
 
-#[test]
-fn soft_edge_cuts_fall_on_whole_device_pixels() {
-    // A mid-slide reveal, nowhere near a whole pixel.
-    let full = Rect {
-        x: 0.,
-        y: 0.,
-        w: 613.37,
-        h: 100.,
+#[gpui_kit::test]
+fn a_cover_image_follows_its_panel_frame_by_frame(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+    cx.update(crate::init);
+    let (handle, _view) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1400.), px(900.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| cx.new(|cx| crate::shell::workspace::Workspace::new(window, cx)),
+        )
+        .unwrap()
+    });
+    cx.update(|cx| {
+        crate::shell::motion::set(true, cx);
+        let mode = Backdrops {
+            list: Some(backdrop("list.png")),
+            ..Default::default()
+        };
+        set(
+            Shown {
+                light: mode.clone(),
+                dark: mode,
+            },
+            cx,
+        );
+    });
+    let draw = |cx: &mut gpui_kit::TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap()
     };
-    let scale = 2.;
-    let (inner, strips) = soft_edges(reveal(full, 187.13), rect(0., 800.), scale);
-    let whole = |v: f32| (v * scale).fract() == 0.;
-    // From the faint end inwards: each strip ends where the next one
-    // starts, and the last meets the full-strength rect.
-    let mut at = strips[0][0].x + strips[0][0].w;
-    for s in &strips[..] {
-        let r = s[0];
-        assert!(whole(r.x) && whole(r.x + r.w), "{r:?}");
-        assert_eq!(r.x + r.w, at, "{r:?} meets the strip before it");
-        at = r.x;
+    draw(cx);
+    cx.update_window(handle, |_, window, cx| window.press("cmd-b", cx))
+        .unwrap();
+    for _ in 0..60 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        let drew = cx
+            .update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        if drew > 0 {
+            draw(cx);
+        }
+        cx.run_until_parked();
+        // It never keeps a glide: it lays out in the panel's rect.
+        assert!(cx.read(|cx| glide_of(Slot::List, cx)).is_none());
     }
-    assert_eq!(inner.x + inner.w, at, "the inner rect meets the last strip");
+}
+
+#[test]
+fn only_sizes_that_leave_room_glide() {
+    let with = |size| Layout {
+        size,
+        ..Layout::default()
+    };
+    assert!(fills_panel(&with(BgSize::Cover)));
+    assert!(fills_panel(&with(BgSize::Fill)));
+    assert!(!fills_panel(&with(BgSize::Contain)));
+    assert!(!fills_panel(&with(BgSize::Scale(1.))));
+    assert!(!fills_panel(&with(BgSize::Width(320.))));
 }
