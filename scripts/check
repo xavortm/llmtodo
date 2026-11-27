@@ -1,0 +1,58 @@
+#!/bin/sh
+# Runs every check the repo has, on this machine. It replaces the GitHub
+# Actions CI, which the owner removed (LLM-624).
+#
+#   scripts/check                 format, bench features, clippy, tests, Postgres tests
+#   scripts/check --no-postgres   everything but the Postgres tests
+#
+# The Postgres tests use the throwaway database in compose.yaml. The script
+# starts it when it is not running and leaves it running.
+set -eu
+cd "$(dirname "$0")/.."
+usage() { echo "usage: scripts/check [--no-postgres]" >&2; exit 2; }
+postgres=1
+case $# in
+  0) ;;
+  1) [ "$1" = "--no-postgres" ] || usage; postgres=0 ;;
+  *) usage ;;
+esac
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/llmtodo-check.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+# macOS /bin/sh skips the EXIT trap on a signal, so exit through it.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+step() { printf '\n== %s\n' "$1"; }
+
+step "Format"
+cargo fmt --all --check
+
+# GPUI's benchmarks refuse its test-support feature. Cargo turns a feature on
+# for every crate in one package, so the check reads the bench package's
+# whole feature graph.
+step "Benchmarks without test-support"
+# Captured first, so a failing `cargo tree` fails the check instead of
+# leaving grep nothing to find.
+tree=$(cargo tree -p llmtodo-ui-bench -e normal,build,dev,features --locked)
+if printf '%s\n' "$tree" | grep -F 'feature "test-support"'; then
+  echo "llmtodo-ui-bench pulls in a test-support feature" >&2
+  exit 1
+fi
+
+step "Clippy"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+
+# An exported LLMTODO_TEST_POSTGRES_URL would move these tests to Postgres.
+step "Test"
+LLMTODO_TEST_POSTGRES_URL= LLMTODO_DATA_DIR="$tmp/data" cargo test --workspace --locked
+
+if [ "$postgres" = 1 ]; then
+  step "Test on Postgres"
+  docker compose up -d --wait postgres
+  url=postgres://llmtodo:llmtodo@127.0.0.1:54329/llmtodo
+  LLMTODO_DATA_DIR="$tmp/data-pg" LLMTODO_TEST_POSTGRES_URL=$url cargo test -p llmtodo-server --locked
+  LLMTODO_DATA_DIR="$tmp/data-pg" LLMTODO_TEST_POSTGRES_URL=$url cargo test -p llmtodo-cli --locked --test db_migrate_restart
+fi
+
+step "All checks passed"

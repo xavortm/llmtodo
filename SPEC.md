@@ -156,7 +156,7 @@ Every record has a UUIDv7 ID. Issues also have a key. Projects, teams and labels
 The owner can pick a shared Postgres database instead of the SQLite file. SQLite stays the default, and a setup that never opts in sees no change. Neon is the first target, and any Postgres 17 with `pg_trgm` and ICU works, such as Supabase.
 
 - **Each laptop keeps its own server.** The CLI, the app and agents still talk only to `127.0.0.1:7878`. Only the server's storage changes. Nothing of ours is hosted.
-- **Every feature works on both backends.** The server tests run on both: `LLMTODO_TEST_POSTGRES_URL` points them at Postgres, `compose.yaml` runs a local one, and CI runs both. `tests/postgres.rs` runs two servers on one database.
+- **Every feature works on both backends.** The server tests run on both: `LLMTODO_TEST_POSTGRES_URL` points them at Postgres, `compose.yaml` runs a local one, and `scripts/check` runs both. `tests/postgres.rs` runs two servers on one database.
 - **One backend layer.** `store/backend.rs` holds our own pool, connection and query types over both sqlx drivers. SQL is written once with `?` placeholders. On Postgres the layer turns them into `$1`, `$2` and so on, and turns `CROSS JOIN ... ON` into `JOIN ... ON`. Values bind as integers, reals, text or blobs, and booleans bind as 0 or 1 (LLM-452).
 - **One schema shape.** `migrations-postgres/0001_init.sql` matches SQLite after `0020`, table by table and column by column, and a test checks it. IDs and timestamps are TEXT, integers and flags BIGINT. The Postgres schema adds a `nocase` ICU collation, and `json_each`, `json_valid`, `json_extract` and `instr` for text, so the queries need no second form. Every later schema change needs a migration in both folders (LLM-453).
 - **Search** uses a generated `tsvector` with a GIN index for full text, ranked with `ts_rank`. Duplicate search matches any word of 3 or more characters with `ILIKE` over a `pg_trgm` index, scored by words found and word similarity. SQLite strips diacritics and Postgres does not (LLM-455).
@@ -614,7 +614,7 @@ The app targets 120 frames a second, so one frame has 8.3 ms. It must hold that 
 
 Two tools measure it:
 
-- `cargo bench -p llmtodo-ui-bench` draws real frames through GPUI's headless Metal renderer. It shapes and rasterizes text, builds the scene and submits it to the GPU. The package is separate from `llmtodo-ui`, because GPUI's benchmarks refuse the `test-support` feature that the app's tests turn on. CI fails when the package pulls that feature in.
+- `cargo bench -p llmtodo-ui-bench` draws real frames through GPUI's headless Metal renderer. It shapes and rasterizes text, builds the scene and submits it to the GPU. The package is separate from `llmtodo-ui`, because GPUI's benchmarks refuse the `test-support` feature that the app's tests turn on. `scripts/check` fails when the package pulls that feature in.
 - The ignored `perf_tests` in `llmtodo-ui` time the main thread in a test window. They leave out rasterizing and presenting.
 
 The benchmark app has no asset source, so icons draw nothing. The real frames cost a little more.
@@ -645,7 +645,7 @@ What the numbers say:
 
 ## Tests
 
-- Server integration tests run against a temporary SQLite file. When `LLMTODO_TEST_POSTGRES_URL` is set, they run against a fresh Postgres database for each data folder instead, and CI runs them both ways (LLM-453, LLM-463). Tests that read SQLite internals return early on Postgres.
+- Server integration tests run against a temporary SQLite file. When `LLMTODO_TEST_POSTGRES_URL` is set, they run against a fresh Postgres database for each data folder instead, and `scripts/check` runs them both ways (LLM-453, LLM-463). Tests that read SQLite internals return early on Postgres.
 - A two-server test runs two servers on one Postgres database. Both claim one task at once and exactly one wins, and a write on one reaches a live client of the other. A round trip from SQLite through Postgres and back keeps every row (LLM-457, LLM-459, LLM-462).
 - CLI tests run against a server started inside the test process.
 - A concurrency test starts 20 claimers on one frontier at once and checks that each issue gets exactly one owner.
@@ -706,7 +706,7 @@ Build decisions, 2026-11-10:
 33. **Dependencies reuse the `blocks` relation.** Depth is computed by the server, in one query per page. See "Dependencies".
 34. **Issue lists carry the token cost** as `cost_usd`, from one grouped query per page. The app shows it in a Cost column that hides first, and in the task view's meta line, with a dash for a missing value.
 35. **`ARCHITECTURE.md` holds the crate and layer rules.** It marks each rule as true today or as a target.
-36. **CI runs on macOS only.** The app needs GPUI's macOS backend, and v1 is macOS only (decision 7). One job runs the format check, clippy with warnings as errors, and the tests.
+36. **Checks run locally, with no hosted CI.** `scripts/check` runs the format check, clippy with warnings as errors, and the tests on both backends. The GitHub Actions job was removed at the owner's request (LLM-624). It ran on macOS only, as the app needs GPUI's macOS backend (decision 7).
 37. **Server rules live in `ops`, and SQL lives in `store`.** Reads with no rule may call `store` from `routes`, and the GitHub sync and Linear import sit at the `ops` level. `crates/server/tests/layers.rs` enforces the layer rules. See `ARCHITECTURE.md`.
 38. **Markdown is the record, and queried structure is a derived copy.** See Storage. The `questions` table is the first case. SQL cannot parse Markdown, so the server fills a new derived table in Rust when it next opens the database, inside one transaction.
 39. **Tasks carry frozen estimates, and active time is measured (LLM-133).** Every task needs an estimated working time and an estimated token cost before a claim, and a claim without them exits with code 6. Tasks already claimed are not affected. A set estimate changes only with a reason that names a spec change, and the activity log records the old value, the new value and the reason. Active time comes from transcript timestamps and reaches the server with each write, the same way as token usage. A gap that ends at an owner prompt, or that is over 10 minutes, does not count. Sessions add up. Past work gets no invented time. See `docs/agents/issue-tracker.md`.
