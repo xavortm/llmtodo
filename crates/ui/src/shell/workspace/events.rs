@@ -142,11 +142,13 @@ impl Workspace {
                     reviews,
                     git,
                     sessions,
+                    preview_build,
                 } = *parts;
                 let issue = Issue::from_api(&issue, &self.store.read(cx).catalog);
                 let id = issue.id;
                 self.store.update(cx, |store, cx| {
                     store.set_detail(id, relations, reviews, git, sessions);
+                    store.set_preview_build(id, preview_build);
                     cx.notify();
                 });
                 self.receive_issue(issue, cx);

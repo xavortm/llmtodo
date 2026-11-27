@@ -366,6 +366,9 @@ pub struct DetailParts {
     pub git: IssueGit,
     /// The agent sessions. Sessions from this machine carry their commits.
     pub sessions: Vec<WorkSession>,
+    /// The recorded preview build, for Try it (LLM-591). A build on this
+    /// machine has its staleness read from the local repo.
+    pub preview_build: Option<llmtodo_api_types::PreviewBuild>,
 }
 
 /// Where the data folder is, and which binary starts a server.
@@ -1909,6 +1912,7 @@ fn detail_parts(detail: IssueDetail) -> DetailParts {
         reviews: detail.reviews,
         git: detail.git,
         sessions: detail.sessions,
+        preview_build: detail.preview_build,
     }
 }
 

@@ -74,6 +74,7 @@ mod events;
 mod keys;
 mod render;
 mod review_batch;
+mod try_it;
 mod update;
 mod view_events;
 

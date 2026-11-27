@@ -156,6 +156,11 @@ pub struct TaskView {
     pub review_error: HashMap<IssueId, SharedString>,
     /// The panels' heights as they change between tasks (LLM-224).
     panel_motion: Rc<RefCell<crate::task::panel_motion::PanelMotion>>,
+    /// The preview builds Try it started (LLM-591). The workspace starts
+    /// them; the view only reads where each one is.
+    pub previews: crate::model::try_it::Previews,
+    /// Draws again each time a preview starts, opens or ends.
+    _previews_watch: gpui_kit::Task<()>,
 }
 
 impl TaskView {
@@ -183,6 +188,7 @@ impl TaskView {
         })
         .detach();
         cx.observe(&answers, |_, _, cx| cx.notify()).detach();
+        let (previews, _previews_watch) = watch_previews(cx);
         Self {
             store,
             events,
@@ -216,6 +222,8 @@ impl TaskView {
             prepared_builds: Default::default(),
             session_costs: None,
             panel_motion: Default::default(),
+            previews,
+            _previews_watch,
         }
     }
 
@@ -685,6 +693,7 @@ impl TaskView {
                 sending: self.review_sending.get(&issue.id).copied(),
                 error: self.review_error.get(&issue.id).cloned(),
                 fill: review_height.is_some(),
+                try_it: crate::task::review::try_it_state(issue, store, &self.previews),
             };
             crate::task::review::panel(issue, state, self.events.clone(), cx).map(|panel| {
                 panel_resize::resizable(
@@ -2376,6 +2385,36 @@ const MISSING: &str = "—";
 /// The line height of the task view's title row, in rems. The items beside
 /// the title are this tall, so they sit on its first line.
 const HEADER_LINE_REM: f32 = 1.25;
+
+/// The Try it previews, and the task that draws the view again each time
+/// one starts, opens or ends (LLM-591). The previews report from their own
+/// threads, which GPUI's test scheduler refuses, so tests get previews that
+/// report nothing and read the state directly.
+fn watch_previews(
+    cx: &mut Context<TaskView>,
+) -> (crate::model::try_it::Previews, gpui_kit::Task<()>) {
+    #[cfg(test)]
+    {
+        let _ = cx;
+        (Default::default(), gpui_kit::Task::ready(()))
+    }
+    #[cfg(not(test))]
+    {
+        use futures::StreamExt as _;
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+        let previews = crate::model::try_it::Previews::new(move || {
+            let _ = tx.unbounded_send(());
+        });
+        let watch = cx.spawn(async move |this, cx| {
+            while rx.next().await.is_some() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
+        (previews, watch)
+    }
+}
 
 /// One group of the meta line. Its items sit close and wrap inside it.
 fn meta_group() -> gpui_kit::Div {
