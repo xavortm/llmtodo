@@ -56,7 +56,8 @@ pub trait Harness: Send + Sync {
 /// Every harness with an implementation, in the order detection tries them.
 /// An inner harness comes first: agy started from a Claude Code shell
 /// inherits `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`, and the call is
-/// still agy's.
+/// still agy's. The reverse, Claude Code started from an agy shell, would
+/// be recorded as agy and send no usage; nothing does that today.
 pub fn harnesses() -> Vec<&'static dyn Harness> {
     vec![&Antigravity, &ClaudeCode]
 }

@@ -66,8 +66,8 @@ reviewer=${REVIEWER:-auto}
 case $reviewer in auto|agy|claude) ;; *) echo "REVIEWER must be agy or claude, not $reviewer" >&2; exit 2 ;; esac
 
 # A clean environment with only what the tools need. Nothing from this
-# shell's harness reaches the reviewer. Each reviewer gets LLMTODO_ACTOR:
-# without it llmtodo could take it for the owner, who may approve.
+# shell's harness reaches the reviewer. llmtodo detects agy and Claude Code
+# as agents by themselves; LLMTODO_ACTOR also names the model and effort.
 keep=(HOME PATH USER LOGNAME SHELL TERM LANG LC_ALL TMPDIR
       CARGO_HOME RUSTUP_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME
       LLMTODO_DATA_DIR LLMTODO_CONFIG_DIR)
@@ -89,8 +89,8 @@ run_agy() {
   fi
   local settings='{"permissions":{"allow":["command(llmtodo)","command(git)","command(cargo)","command(ls)","command(cat)","command(grep)","command(rg)","command(find)","command(head)","command(tail)","command(wc)","command(sed)"]}}'
   echo "agy ($model) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
-  # agy sets ANTIGRAVITY_* for its shell commands; LLMTODO_ACTOR names it
-  # the reviewer agent whatever the client detects.
+  # agy sets ANTIGRAVITY_* for its shell commands, so llmtodo records an
+  # agent with harness antigravity; LLMTODO_ACTOR adds the model and effort.
   (
     cd "$clone"
     env -i "${envs[@]}" \

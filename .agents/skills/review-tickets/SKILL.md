@@ -26,7 +26,7 @@ Its `actor` must have `"kind":"agent"` and `"harness":"antigravity"`. If it show
 1. List the queue: `llmtodo issue review queue --no-input`. Each row has the key, the PR URL, the branch and the round. An empty queue: say so and stop.
 2. For each ticket, oldest first, follow `.claude/skills/llmtodo-review/SKILL.md`: steps, findings and answer. It is the same procedure the review script runs. These rules come on top:
    - You work in the owner's checkout. Do not check out, switch, stash, reset, branch, commit or push. Read the change without touching the working tree: `gh pr diff <PR URL>`, or `git fetch origin <branch>` and `git diff main...origin/<branch>`. Read a changed file with `git show origin/<branch>:<path>`.
-   - Do not run `cargo` builds or tests here: they would build the owner's checkout, not the branch. Start your answer with `Checks: not run (interactive review)`. The review script runs the checks in a throwaway clone.
+   - Do not run `cargo` builds or tests here: they would build the owner's checkout, not the branch. End the first line of your answer with `Checks: not run (interactive review)`, as in `Base: <base> · Head: <short sha> · Checks: not run (interactive review)`. The review script runs the checks in a throwaway clone.
    - `gh`, `git fetch` and `llmtodo` need the network. If the sandbox blocks them, stop and ask the owner to allow network for this project. Do not turn the sandbox off yourself.
 3. Answer with `llmtodo issue review answer <KEY> pass|request-changes --feedback-file - --no-input`, once per ticket. Never `approve`.
 4. When every ticket has an answer, list each key with your verdict and the number of findings, then stop.
