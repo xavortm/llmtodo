@@ -4467,7 +4467,9 @@ fn a_connection_leaves_the_status_message_empty(cx: &mut TestAppContext) {
     cx.read(|cx| assert_eq!(view.read(cx).message(), ""));
 }
 
-/// LLM-238: All issues shows a Project column first. Other scopes do not.
+/// LLM-238: All issues shows a Project column first. LLM-647: so does any
+/// other list that mixes projects, such as a team. A project's own list
+/// does not.
 #[gpui_kit::test]
 fn all_issues_shows_the_project_column_first(cx: &mut TestAppContext) {
     use crate::issues::columns::Column;
@@ -4520,6 +4522,23 @@ fn all_issues_shows_the_project_column_first(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+
+    use crate::model::scope::Scope;
+    for scope in [Scope::Team("LLM".into()), Scope::Trash] {
+        view.update(cx, |this, cx| this.set_scope(scope.clone(), cx));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .within("column-header")
+                    .try_find(Column::Project.id())
+                    .is_some(),
+                "{scope:?} mixes projects, so it shows the project column"
+            );
+        })
+        .unwrap();
+    }
 }
 
 /// LLM-304: a click on the Project cell opens that project, as the sidebar

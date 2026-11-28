@@ -1359,9 +1359,8 @@ impl IssueList {
         if self.group != GroupBy::Parent && !hidden.contains(&Column::Order) {
             hidden.push(Column::Order);
         }
-        // Only All issues mixes projects. The other scopes hold one
-        // project, or name it in the sidebar.
-        if self.scope != Scope::All && !hidden.contains(&Column::Project) {
+        // A project's own list names its project in the sidebar.
+        if !self.scope.mixes_projects() && !hidden.contains(&Column::Project) {
             hidden.push(Column::Project);
         }
         hidden
@@ -2537,14 +2536,14 @@ impl IssueList {
             // A checklist of the columns. It reads the list each time it
             // opens, so the checks are always current.
             .context_menu(move |menu, _, cx| {
-                let (hidden, group, all) = list
+                let (hidden, group, mixed) = list
                     .upgrade()
                     .map(|list| {
                         let list = list.read(cx);
                         (
                             list.hidden_columns.clone(),
                             list.group,
-                            list.scope == Scope::All,
+                            list.scope.mixes_projects(),
                         )
                     })
                     .unwrap_or((Vec::new(), GroupBy::None, false));
@@ -2557,11 +2556,11 @@ impl IssueList {
                         !hidden.contains(&column) && !simplified,
                         Box::new(columns::ToggleColumn(column)),
                         // The order line shows only under "group by parent".
-                        // The project column shows only in All issues.
+                        // A project's own list has no project column.
                         column == Column::Title
                             || simplified
                             || (column == Column::Order && group != GroupBy::Parent)
-                            || (column == Column::Project && !all),
+                            || (column == Column::Project && !mixed),
                     )
                 })
             })
