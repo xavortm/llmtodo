@@ -100,6 +100,8 @@ pub fn resizable(
                 Axis::Vertical,
             )
             .inside(HandleEdge::Trailing)
+            // LLM-646: a grip shows the edge can be dragged.
+            .with_appearance(crate::shell::drag_handle::appearance(gpui_kit::px(1.)))
             .on_drag(ResizePanel(name), |drag, _, _, cx| {
                 cx.stop_propagation();
                 cx.new(|_| drag.clone())

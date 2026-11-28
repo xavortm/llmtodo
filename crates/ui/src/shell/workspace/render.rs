@@ -211,7 +211,7 @@ impl Workspace {
                 )
             });
         group
-            .with_handle_appearance(std::rc::Rc::new(Self::divider))
+            .with_handle_appearance(crate::shell::drag_handle::appearance(gpui_kit::px(2.)))
             .child(list.into_any_element())
             .child(
                 // Fixed: only a drag on the divider changes its size, never
@@ -255,30 +255,6 @@ impl Workspace {
                         ))
                     }),
             )
-    }
-
-    /// The line between the list and the task view. It is 2 px, so the
-    /// owner can see where to drag, and darkens on hover and while dragged.
-    fn divider(
-        handle: &gpui_kit::base::ResizeHandleContext,
-        _: &mut Window,
-        cx: &mut App,
-    ) -> Option<AnyElement> {
-        use gpui_kit::base::ResizeHandleState;
-        let theme = cx.theme();
-        let color = match handle.state() {
-            ResizeHandleState::Idle => theme.border,
-            ResizeHandleState::Hovered => theme.muted_foreground.opacity(0.6),
-            _ => theme.foreground.opacity(0.7),
-        };
-        let line = div().flex_none().bg(color);
-        Some(
-            match handle.axis() {
-                gpui_kit::Axis::Horizontal => line.h_full().w(gpui_kit::px(2.)),
-                gpui_kit::Axis::Vertical => line.w_full().h(gpui_kit::px(2.)),
-            }
-            .into_any_element(),
-        )
     }
 
     fn key_context(&self, window: &Window, cx: &App) -> KeyContext {
