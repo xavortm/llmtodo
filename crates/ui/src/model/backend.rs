@@ -42,9 +42,10 @@ pub struct CatalogData {
     pub views: Vec<SavedView>,
     /// Project documents, without their bodies.
     pub documents: Vec<Document>,
-    /// How many project writes the app had sent when this read began. A
-    /// read from before the app's latest one may lack it, so the app skips
-    /// it, and the write's own events bring a fresh catalog.
+    /// How many of the app's project writes the server had answered, or
+    /// the thread had refused, when this read began. A read from before
+    /// the app's latest one may lack it, so the app skips it. Each project
+    /// write asks for a fresh read after it.
     #[serde(skip)]
     pub project_writes: u64,
 }
@@ -455,7 +456,6 @@ impl Backend {
         let (tx, rx) = tmpsc::unbounded_channel();
         let (etx, erx) = fmpsc::unbounded();
         let project_writes = Arc::new(AtomicU64::new(0));
-        let writes = project_writes.clone();
         std::thread::Builder::new()
             .name("llmtodo-api".into())
             .spawn(move || {
@@ -464,7 +464,7 @@ impl Backend {
                     .enable_all()
                     .build()
                     .expect("tokio runtime for the API client");
-                runtime.block_on(run(target, rx, etx, writes));
+                runtime.block_on(run(target, rx, etx));
             })
             .expect("start the API thread");
         (Self { tx, project_writes }, erx)
@@ -707,15 +707,9 @@ impl Backoff {
     }
 }
 
-async fn run(
-    target: Target,
-    mut requests: tmpsc::UnboundedReceiver<Request>,
-    events: Events,
-    project_writes: Arc<AtomicU64>,
-) {
+async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, events: Events) {
     let mut state = State {
         cache: target.cache_path(),
-        project_writes,
         ..Default::default()
     };
     // The cache shows while the thread connects. It is read first, so it
@@ -871,6 +865,10 @@ fn refuse(request: Request, state: &mut State, events: &Events) {
             );
         }
         Request::SetProjectColor { slug, .. } | Request::SetProjectOrder { moved: slug, .. } => {
+            // The app changed the sidebar already. A fresh read on the
+            // next connect puts it back.
+            state.project_writes_done += 1;
+            state.pending.catalog = true;
             send(
                 events,
                 Event::ProjectFailed {
@@ -905,8 +903,9 @@ struct State {
     flushing: Option<Pending>,
     /// LLM-625: the cache file each full load is saved to.
     cache: Option<PathBuf>,
-    /// The app's count of project writes. Each catalog read notes it.
-    project_writes: Arc<AtomicU64>,
+    /// The project writes the server answered or the thread refused, in
+    /// the order the app sent them. Each catalog read notes it.
+    project_writes_done: u64,
 }
 
 /// A flush running on its own task. Dropping it stops the task.
@@ -1042,7 +1041,7 @@ async fn session(
             open,
             events,
             state.cache.as_deref(),
-            &state.project_writes,
+            state.project_writes_done,
         )
         .await
     };
@@ -1130,13 +1129,13 @@ async fn session(
                 state.flushing = Some(work.clone());
                 let (client, events, open) = (client.clone(), events.clone(), state.open);
                 let cache = state.cache.clone();
-                let writes = state.project_writes.clone();
+                let writes = state.project_writes_done;
                 #[cfg(test)]
                 let slow = target.slow_flush;
                 flushing = Some(FlushTask(tokio::spawn(async move {
                     #[cfg(test)]
                     tokio::time::sleep(slow).await;
-                    flush(&client, &mut work, open, &events, cache.as_deref(), &writes).await
+                    flush(&client, &mut work, open, &events, cache.as_deref(), writes).await
                 })));
             }
         }
@@ -1388,7 +1387,10 @@ async fn handle(
             // The app skips catalog reads from before this write, so one
             // read follows it, even when the write fails or changes nothing.
             state.pending.catalog = true;
-            match client.set_project_order(projects).await {
+            let sent = client.set_project_order(projects).await;
+            state.project_writes_done += 1;
+            *settled = true;
+            match sent {
                 Ok(_) => {}
                 Err(e) if fatal(&e) => return Err(lost(e).into()),
                 Err(e) => {
@@ -1409,7 +1411,10 @@ async fn handle(
             };
             // See SetProjectOrder.
             state.pending.catalog = true;
-            match client.update_project(&slug, &update).await {
+            let sent = client.update_project(&slug, &update).await;
+            state.project_writes_done += 1;
+            *settled = true;
+            match sent {
                 Ok(_) => {}
                 Err(e) if fatal(&e) => return Err(lost(e).into()),
                 Err(e) => {
@@ -1579,7 +1584,7 @@ async fn flush(
     open: Option<IssueId>,
     events: &Events,
     cache: Option<&std::path::Path>,
-    project_writes: &AtomicU64,
+    project_writes: u64,
 ) -> Result<(), String> {
     if pending.reload {
         snapshot(client, events, cache).await?;
@@ -1876,14 +1881,9 @@ fn known_folder(client: &Client, slug: &str) -> Option<Option<String>> {
 }
 
 /// Sends the catalog alone. The app maps the issues it holds again.
-async fn catalog(
-    client: &Client,
-    events: &Events,
-    project_writes: &AtomicU64,
-) -> Result<(), String> {
-    let writes = project_writes.load(Ordering::SeqCst);
+async fn catalog(client: &Client, events: &Events, project_writes: u64) -> Result<(), String> {
     let mut data = catalog_data(client).await.map_err(|e| e.to_string())?;
-    data.project_writes = writes;
+    data.project_writes = project_writes;
     send(events, Event::Catalog(Box::new(data)));
     Ok(())
 }

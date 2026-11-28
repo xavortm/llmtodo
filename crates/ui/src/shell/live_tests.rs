@@ -867,6 +867,60 @@ fn backend_reloads_only_the_catalog_on_a_label_event() {
     assert!(catalog.labels.iter().any(|l| l.full_name == "be"));
 }
 
+/// LLM-639: a catalog read that starts before a project move notes an
+/// older count, so the app skips it, even when it lands after the move.
+/// A read with the move's count and the new order follows.
+#[test]
+fn a_catalog_read_from_before_a_project_move_carries_the_older_count() {
+    let live = Live::new();
+    let owner = live.client(None);
+    live.rt.block_on(async {
+        for slug in ["aa", "bb"] {
+            owner
+                .create_project(
+                    &serde_json::from_value(json!({"name": slug, "slug": slug, "teams": ["LLM"]}))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let (backend, mut events) = live.backend_with(false, Duration::from_millis(500));
+    live.wait(&mut events, "snapshot", |e| {
+        matches!(e, Event::Snapshot(_)).then_some(())
+    });
+    // A label event starts a slow catalog read.
+    live.rt
+        .block_on(owner.create_label(&serde_json::from_value(json!({"name": "be"})).unwrap()))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    backend.request(Request::SetProjectOrder {
+        moved: "bb".into(),
+        projects: vec!["bb".into(), "aa".into()],
+    });
+    let mut older = 0;
+    let order = live.wait(
+        &mut events,
+        "a catalog with the move's count",
+        |e| match e {
+            Event::Catalog(c) if c.project_writes == 0 => {
+                older += 1;
+                None
+            }
+            Event::Catalog(c) => Some((
+                c.project_writes,
+                c.projects
+                    .iter()
+                    .map(|p| p.slug.clone())
+                    .collect::<Vec<_>>(),
+            )),
+            _ => None,
+        },
+    );
+    assert_eq!(older, 1, "the read from before the move came first");
+    assert_eq!(order, (1, vec!["bb".to_string(), "aa".to_string()]));
+}
+
 /// A fetch sends the issue, then its git panel. The panel keeps the branch
 /// and worktree after the agent's claim ends.
 #[test]
