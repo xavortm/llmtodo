@@ -246,7 +246,7 @@ mod tests {
             ..Default::default()
         };
         let owned = Row {
-            assignee: Some(("alex", true)),
+            assignee: Some(("pat", true)),
             ..todo()
         };
         assert!(by("OWNER").matches(&owned));

@@ -262,7 +262,7 @@ The dependency tree of an issue: what it waits for and what waits for it, with t
 
 ### `llmtodo issue relation add`
 
-`issue relation add ALX-1 blocks ALX-2`
+`issue relation add ABC-1 blocks ABC-2`
 
 - `<key>`
 - `<kind>`
@@ -824,7 +824,7 @@ The last poll, and why the sync is paused, if it is
 
 ### `llmtodo import linear`
 
-Copy issues, comments, relations, attachments, labels, projects, documents and milestones from Linear. Keeps keys such as ALX-123. Safe to run again: it updates by Linear ID. Reads LINEAR_API_KEY
+Copy issues, comments, relations, attachments, labels, projects, documents and milestones from Linear. Keeps keys such as ABC-123. Safe to run again: it updates by Linear ID. Reads LINEAR_API_KEY
 
 - `--team <team>` (repeatable): Team key to import. Repeat for several. Default: every team
 - `--dry-run` (one of: true, false): Print counts and mapping problems, and write nothing

@@ -2,7 +2,7 @@
 //!
 //! The import is idempotent. Every imported row stores its Linear ID, and a
 //! second run updates rows instead of adding new ones. Issues keep their
-//! Linear keys, such as `ALX-123`.
+//! Linear keys, such as `ABC-123`.
 //!
 //! It reads everything from Linear first, then downloads images, and only
 //! then opens one write transaction. A dry run makes the same changes and

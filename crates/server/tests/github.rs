@@ -30,9 +30,9 @@ impl GithubApi for Recorded {
             };
             let body = json!([
                 pr(1, "feature/login", "Login page", "open", false, false),
-                pr(2, "alx-2-thing", "Draft work", "open", true, false),
-                pr(3, "fix", "ALX-3 fix", "closed", false, true),
-                pr(4, "x", "Finish ALX-2", "closed", false, true),
+                pr(2, "abc-2-thing", "Draft work", "open", true, false),
+                pr(3, "fix", "ABC-3 fix", "closed", false, true),
+                pr(4, "x", "Finish ABC-2", "closed", false, true),
             ]);
             return Ok(Response {
                 status: 200,
@@ -42,7 +42,7 @@ impl GithubApi for Recorded {
                 next: None,
             });
         }
-        let commits = json!([{ "sha": "abc123", "html_url": "https://github.com/o/r/commit/abc123", "commit": { "message": "feat: ALX-1 part one\n\nmore" } }]);
+        let commits = json!([{ "sha": "abc123", "html_url": "https://github.com/o/r/commit/abc123", "commit": { "message": "feat: ABC-1 part one\n\nmore" } }]);
         Ok(Response {
             status: 200,
             etag: None,
@@ -102,7 +102,7 @@ async fn pull_requests_attach_and_move_issues() {
         &b,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "A" }),
+        json!({ "key": "ABC", "name": "A" }),
         None,
     )
     .await;
@@ -131,12 +131,12 @@ async fn pull_requests_attach_and_move_issues() {
     call(
         &b,
         "PATCH",
-        "/v1/issues/ALX-3",
+        "/v1/issues/ABC-3",
         json!({ "status": "Done" }),
         None,
     )
     .await;
-    call(&b, "POST", "/v1/issues/ALX-1/claim", json!({}), Some("s1")).await;
+    call(&b, "POST", "/v1/issues/ABC-1/claim", json!({}), Some("s1")).await;
 
     let api = Recorded {
         calls: AtomicU32::new(0),
@@ -145,10 +145,10 @@ async fn pull_requests_attach_and_move_issues() {
     assert_eq!(r.pull_requests_seen, 4);
     assert_eq!(
         r.moves,
-        ["ALX-1: In Progress -> In Review", "ALX-2: Todo -> Done"]
+        ["ABC-1: In Progress -> In Review", "ABC-2: Todo -> Done"]
     );
 
-    let one = call(&b, "GET", "/v1/issues/ALX-1", Value::Null, None).await;
+    let one = call(&b, "GET", "/v1/issues/ABC-1", Value::Null, None).await;
     let kinds: Vec<&str> = one["attachments"]
         .as_array()
         .unwrap()
@@ -159,19 +159,19 @@ async fn pull_requests_attach_and_move_issues() {
     assert_eq!(one["attachments"][0]["metadata"]["state"], "open");
     // A team with one review status: In Review is the owner's.
     assert_eq!(one["waiting_on"], "owner", "{one}");
-    let two = call(&b, "GET", "/v1/issues/ALX-2", Value::Null, None).await;
+    let two = call(&b, "GET", "/v1/issues/ABC-2", Value::Null, None).await;
     assert_eq!(
         two["attachments"].as_array().unwrap().len(),
         2,
         "draft and merged PRs both attach"
     );
-    let three = call(&b, "GET", "/v1/issues/ALX-3", Value::Null, None).await;
+    let three = call(&b, "GET", "/v1/issues/ABC-3", Value::Null, None).await;
     assert_eq!(
         three["status"]["name"], "Done",
         "a finished issue never moves"
     );
     assert_eq!(three["attachments"].as_array().unwrap().len(), 1);
-    let history = call(&b, "GET", "/v1/issues/ALX-2/history", Value::Null, None).await;
+    let history = call(&b, "GET", "/v1/issues/ABC-2/history", Value::Null, None).await;
     let moved = history["activity"]
         .as_array()
         .unwrap()
@@ -248,7 +248,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
         &b,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "A" }),
+        json!({ "key": "ABC", "name": "A" }),
         None,
     )
     .await;
@@ -276,7 +276,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
     call_on(
         &b,
         "POST",
-        "/v1/issues/ALX-1/claim",
+        "/v1/issues/ABC-1/claim",
         json!({}),
         Some("s1"),
         "main",
@@ -285,7 +285,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
     call_on(
         &b,
         "POST",
-        "/v1/issues/ALX-2/claim",
+        "/v1/issues/ABC-2/claim",
         json!({}),
         Some("s2"),
         "fix-tests",
@@ -294,7 +294,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
     call_on(
         &b,
         "POST",
-        "/v1/issues/ALX-2/release",
+        "/v1/issues/ABC-2/release",
         json!({}),
         Some("s2"),
         "fix-tests",
@@ -303,7 +303,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
     call_on(
         &b,
         "POST",
-        "/v1/issues/ALX-3/claim",
+        "/v1/issues/ABC-3/claim",
         json!({}),
         Some("s3"),
         "feature/x",
@@ -315,9 +315,9 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
     assert_eq!(r.attached, 0);
     assert!(r.moves.is_empty(), "{:?}", r.moves);
     for (key, status) in [
-        ("ALX-1", "In Progress"),
-        ("ALX-2", "Todo"),
-        ("ALX-3", "In Progress"),
+        ("ABC-1", "In Progress"),
+        ("ABC-2", "Todo"),
+        ("ABC-3", "In Progress"),
     ] {
         let v = call(&b, "GET", &format!("/v1/issues/{key}"), Value::Null, None).await;
         assert_eq!(v["status"]["name"], status, "{key}");
@@ -327,7 +327,7 @@ async fn pull_requests_skip_shared_branches_forks_and_ended_claims() {
 }
 
 /// 70 PRs changed while the server was off. GitHub returns them in pages of
-/// 50, and the oldest one names ALX-1. The first poll hits the rate limit on
+/// 50, and the oldest one names ABC-1. The first poll hits the rate limit on
 /// page 2, so the next poll must read page 2 again.
 struct TwoPages {
     limit_page_two: std::sync::atomic::AtomicBool,
@@ -346,7 +346,7 @@ impl GithubApi for TwoPages {
         }
         let pr = |n: i64| {
             let title = if n == 1 {
-                "ALX-1 old fix".to_string()
+                "ABC-1 old fix".to_string()
             } else {
                 format!("Change {n}")
             };
@@ -411,7 +411,7 @@ async fn poll_reads_every_page_before_moving_the_poll_time() {
         &b,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "A" }),
+        json!({ "key": "ABC", "name": "A" }),
         None,
     )
     .await;
@@ -438,14 +438,14 @@ async fn poll_reads_every_page_before_moving_the_poll_time() {
     };
     let r = poll(&running.state, &api).await.unwrap();
     assert!(r.paused.is_some(), "page 2 hit the rate limit");
-    let one = call(&b, "GET", "/v1/issues/ALX-1", Value::Null, None).await;
+    let one = call(&b, "GET", "/v1/issues/ABC-1", Value::Null, None).await;
     assert_eq!(one["status"]["name"], "Todo");
 
     // The next poll walks both pages again and reaches the oldest PR.
     let r = poll(&running.state, &api).await.unwrap();
     assert!(r.paused.is_none(), "{:?}", r.paused);
     assert_eq!(r.pull_requests_seen, 70);
-    assert_eq!(r.moves, ["ALX-1: Todo -> Done"]);
+    assert_eq!(r.moves, ["ABC-1: Todo -> Done"]);
 
     // Now the walk finished, so the ETag is kept and nothing changes.
     let r = poll(&running.state, &api).await.unwrap();
@@ -473,19 +473,19 @@ async fn an_open_pr_hands_the_issue_to_the_reviewer() {
         &b,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "A" }),
+        json!({ "key": "ABC", "name": "A" }),
         None,
     )
     .await;
     call(
         &b,
         "POST",
-        "/v1/teams/ALX/statuses",
+        "/v1/teams/ABC/statuses",
         json!({ "name": "User review", "type": "started", "review_role": "owner" }),
         None,
     )
     .await;
-    let team = call(&b, "GET", "/v1/teams/ALX", Value::Null, None).await;
+    let team = call(&b, "GET", "/v1/teams/ABC", Value::Null, None).await;
     let in_review = team["statuses"]
         .as_array()
         .unwrap()
@@ -522,7 +522,7 @@ async fn an_open_pr_hands_the_issue_to_the_reviewer() {
         None,
     )
     .await;
-    call(&b, "POST", "/v1/issues/ALX-1/claim", json!({}), Some("s1")).await;
+    call(&b, "POST", "/v1/issues/ABC-1/claim", json!({}), Some("s1")).await;
 
     let api = Recorded {
         calls: AtomicU32::new(0),
@@ -531,11 +531,11 @@ async fn an_open_pr_hands_the_issue_to_the_reviewer() {
     assert!(
         r.moves
             .iter()
-            .any(|m| m == "ALX-1: In Progress -> In Review"),
+            .any(|m| m == "ABC-1: In Progress -> In Review"),
         "{:?}",
         r.moves
     );
-    let one = call(&b, "GET", "/v1/issues/ALX-1", Value::Null, None).await;
+    let one = call(&b, "GET", "/v1/issues/ABC-1", Value::Null, None).await;
     assert_eq!(one["waiting_on"], "reviewer", "{one}");
     assert_eq!(one["claim"], Value::Null, "{one}");
     running.stop().await.unwrap();

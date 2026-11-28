@@ -10,9 +10,9 @@
 # agy reviews first. When agy cannot (it hits its quota, is not installed,
 # or writes no answer), Claude Code reviews headless in the same clone.
 # REVIEWER=agy or REVIEWER=claude forces one of them, with no fallback.
-# AGY_MODEL picks the agy model (`agy models` lists them), default
-# gemini-4-neon-high. CLAUDE_REVIEW_MODEL and CLAUDE_REVIEW_EFFORT pick
-# Claude's, default opus and high. Ported from llmvid's scripts/request-review.
+# AGY_MODEL optionally picks the agy model (`agy models` lists them); when
+# unset, agy uses its configured default. CLAUDE_REVIEW_MODEL and
+# CLAUDE_REVIEW_EFFORT pick Claude's, default opus and high.
 # Exit: 0 pass, 3 changes requested, 1 no answer written, 2 bad input.
 set -euo pipefail
 
@@ -42,9 +42,8 @@ if [[ $waiting != reviewer ]]; then
 fi
 round=$((before + 1))
 
-# agy reviews a throwaway clone, never this checkout. Its permission rules do
-# not hold it to read-only commands (in llmvid a `git log` rule let
-# `git branch` through, and it turned its own sandbox off), so isolation is
+# agy reviews a throwaway clone, never this checkout. Permission allowlists
+# alone do not reliably hold it to read-only commands, so isolation is
 # the guard.
 work=$(mktemp -d "${TMPDIR:-/tmp}/llmtodo-review.XXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -80,23 +79,28 @@ count() { reviews | python3 -c 'import json,sys; print(len(json.load(sys.stdin)[
 # agy's output, kept to tell a quota stop from other failures.
 agy_log="$work/agy.log"
 run_agy() {
-  local model=${AGY_MODEL:-gemini-4-neon-high} family effort
-  effort=${model##*-}
-  case $effort in low|medium|high|xhigh|max) family=${model%-*} ;; *) family=$model effort= ;; esac
+  local model=${AGY_MODEL:-} family= effort=
+  local -a model_args=() actor_env=()
+  if [[ -n "$model" ]]; then
+    effort=${model##*-}
+    case $effort in low|medium|high|xhigh|max) family=${model%-*} ;; *) family=$model effort= ;; esac
+    model_args=(--model "$model")
+    actor_env=(LLMTODO_ACTOR="agent:antigravity/$family/$effort")
+  fi
   if ! command -v agy >/dev/null; then
     echo "agy is not installed" >&2
     return 1
   fi
   local settings='{"permissions":{"allow":["command(llmtodo)","command(git)","command(cargo)","command(ls)","command(cat)","command(grep)","command(rg)","command(find)","command(head)","command(tail)","command(wc)","command(sed)"]}}'
-  echo "agy ($model) is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
+  echo "agy${model:+ ($model)} is reviewing $key (round $round, $short_base...$short_head) in ${clone}…" >&2
   # agy sets ANTIGRAVITY_* for its shell commands, so llmtodo records an
-  # agent with harness antigravity; LLMTODO_ACTOR adds the model and effort.
+  # agent with harness antigravity; LLMTODO_ACTOR adds the model and effort when AGY_MODEL is set.
   (
     cd "$clone"
     env -i "${envs[@]}" \
-      LLMTODO_ACTOR="agent:antigravity/$family/$effort" \
+      ${actor_env[@]+"${actor_env[@]}"} \
       LLMTODO_SESSION="agy-review-$key-$round-$short_head" \
-      agy -p "$prompt" --model "$model" --settings "$settings" --print-timeout 1800s
+      agy -p "$prompt" ${model_args[@]+"${model_args[@]}"} --settings "$settings" --print-timeout 1800s
   ) 2>&1 | tee "$agy_log" >&2 || echo "agy exited with ${PIPESTATUS[0]}; checking for an answer anyway" >&2
 }
 

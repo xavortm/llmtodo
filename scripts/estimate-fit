@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """Tests ways to estimate a ticket's time and cost against measured tickets.
 
-This file holds the Jev rubric and every fit, so one place shows how each
-method works. It reads docs/estimates/tickets.json, which
-scripts/estimate-report writes, and uses only tickets measured in full.
+It reads docs/estimates/tickets.json, which scripts/estimate-report writes,
+and uses only tickets measured in full.
 
     scripts/estimate-fit             print the test results
     scripts/estimate-fit --snapshot  first read each ticket's description as
                                      it was when the agent estimated it, and
                                      write docs/estimates/at-estimate.json
-    scripts/estimate-fit --jev       first ask Jev the rubric about tickets
-                                     with no cached answers. Needs
-                                     TYPESAFE_API_KEY.
 
 Methods:
 
@@ -21,8 +17,6 @@ Methods:
 - median:       the median of the training tickets, the same for every ticket.
 - code:         a ridge fit on log minutes over fields code can count.
 - code+agent:   the code fields plus the log of the agent's estimate.
-- jev:          a ridge fit over Jev's answers to the rubric.
-- jev+agent:    Jev's answers plus the log of the agent's estimate.
 
 Each method is tested two ways. Leave-one-out fits on every ticket but one
 and predicts that one. The time split fits on the older 70% and predicts the
@@ -31,147 +25,14 @@ newest 30%, as a real estimate would.
 Every fit reads the description as it was at the estimate, not the final
 one. Agents add Agent notes during the work, so the final description is
 about 5 times longer, and its length predicts the real time far too well.
-
-Jev sees only llmtodo tickets, because only those keep their text in the
-data set. The script strips `+++` sections, such as Agent notes and Review,
-before it sends a description. Those sections are often written during the
-work, so they would tell the model what the work took. Answers are cached in
-docs/estimates/jev-answers.json, keyed by ticket and rubric version.
 """
-import argparse, concurrent.futures, hashlib, importlib.machinery, json, math, os, pathlib, re, statistics, subprocess, sys, urllib.request
+import argparse, concurrent.futures, importlib.machinery, json, math, pathlib, re, statistics, subprocess, sys
 
 root = pathlib.Path(__file__).resolve().parent.parent
 DATA = root / "docs" / "estimates" / "tickets.json"
-CACHE = root / "docs" / "estimates" / "jev-answers.json"
 SNAPSHOT = root / "docs" / "estimates" / "at-estimate.json"
-JEV_PROJECTS = {"llmtodo"}
+PUBLIC_TEXT_PROJECTS = {"llmtodo"}
 RIDGE = 3.0  # Fixed before testing; the same for every fit.
-
-# ---------------------------------------------------------------------------
-# The Jev rubric. Each question is one judgment about the ticket text. Code
-# turns the answers into minutes. Change a question and bump RUBRIC_VERSION,
-# so the cache asks again.
-
-RUBRIC_VERSION = 1
-RUBRIC = {
-    "app_ui": {
-        "type": "noul",
-        "instructions": "Does `ticket` ask for a change to the desktop app's user interface?",
-        "criteria": {
-            "true": "The ticket changes what the app shows, or how a person uses a view, list, panel or key in the app.",
-            "false": "The ticket changes only the server, the CLI, a script, docs or the data.",
-        },
-    },
-    "server": {
-        "type": "noul",
-        "instructions": "Does `ticket` ask for a change to the API server or its database?",
-    },
-    "cli": {
-        "type": "noul",
-        "instructions": "Does `ticket` ask for a new or changed command or flag in the `llmtodo` CLI?",
-    },
-    "unknown_bug": {
-        "type": "noul",
-        "instructions": "Does `ticket` describe a bug whose cause is not yet known?",
-        "criteria": {
-            "true": "Something behaves wrongly and the ticket does not say why.",
-            "false": "The ticket asks for new behavior, or it names the cause of the bug.",
-        },
-    },
-    "visual": {
-        "type": "noul",
-        "instructions": "Does `ticket` ask for animation, custom drawing, or drag and drop?",
-    },
-    "concrete_list": {
-        "type": "noul",
-        "instructions": "Is the scope of `ticket` written as a list of concrete changes?",
-        "criteria": {
-            "true": "The ticket lists the exact things to change, such as named fields, flags or buttons.",
-            "false": "The ticket states a goal or a problem and leaves the changes to the person who does it.",
-        },
-    },
-    "needs_research": {
-        "type": "noul",
-        "instructions": "Does `ticket` ask the worker to research or choose an approach before writing code?",
-    },
-    "new_data": {
-        "type": "noul",
-        "instructions": "Does `ticket` add a new kind of stored data, such as a new table, field or file format?",
-    },
-    "eye_check": {
-        "type": "noul",
-        "instructions": "Will a person need to look at the running app to check the result of `ticket`?",
-    },
-    "scope": {
-        "type": "score",
-        "instructions": "How much code does `ticket` ask for?",
-        "criteria": [
-            "One small change in one place, such as a label, a default or one condition.",
-            "A few related changes in one area, such as one view or one command.",
-            "Changes across two parts of the system, such as the server and the CLI.",
-            "A feature across the server, the CLI and the app, or a new subsystem.",
-        ],
-    },
-}
-STATE_NOTE = (
-    "llmtodo is a task tracker. It has an API server with a SQLite database, "
-    "a CLI named `llmtodo` for agents, and a desktop app written in Rust with GPUI. "
-    "An AI coding agent does each ticket."
-)
-
-
-def rubric_hash():
-    blob = json.dumps({"v": RUBRIC_VERSION, "q": RUBRIC, "s": STATE_NOTE}, sort_keys=True)
-    return hashlib.sha256(blob.encode()).hexdigest()[:12]
-
-
-def strip_sections(text):
-    return re.sub(r"(?ms)^\+\+\+ .*?^\+\+\+\s*$", "", text or "").strip()
-
-
-def jev_state(t):
-    return {
-        "product": STATE_NOTE,
-        "ticket": {"title": t["title"], "description": strip_sections(SNAP[t["key"]]["description"])},
-    }
-
-
-def ask_jev(t, key):
-    body = json.dumps({"model": "jev-latest", "state": jev_state(t), "questions": RUBRIC}).encode()
-    req = urllib.request.Request(
-        "https://api.typesafe.ai/v1/systemone",
-        data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=60) as r:
-        resp = json.load(r)
-    out = {}
-    for qid, a in resp["answers"].items():
-        out[qid] = a["noul"] if a["type"] == "noul" else a["score"]
-    return out, resp.get("usage", {}), resp.get("model")
-
-
-def load_cache():
-    return json.loads(CACHE.read_text()) if CACHE.exists() else {}
-
-
-def fetch_jev(tickets):
-    key = os.environ.get("TYPESAFE_API_KEY")
-    if not key:
-        sys.exit("TYPESAFE_API_KEY is not set.")
-    cache, h = load_cache(), rubric_hash()
-    tokens = 0
-    for t in tickets:
-        ck = f"{t['key']}@{h}"
-        if ck in cache:
-            continue
-        answers, usage, model = ask_jev(t, key)
-        cache[ck] = {"answers": answers, "model": model}
-        tokens += usage.get("input_tokens", 0)
-        print(f"asked Jev about {t['key']}", file=sys.stderr)
-    CACHE.write_text(json.dumps(dict(sorted(cache.items())), indent=1) + "\n")
-    print(f"Jev input tokens this run: {tokens}, about ${tokens * 0.042 / 1e6:.4f}", file=sys.stderr)
-
 
 # ---------------------------------------------------------------------------
 # The description as it was when the agent estimated the ticket.
@@ -194,7 +55,7 @@ def snapshot_one(t):
         "gpui": "crates/ui" in lower or "gpui" in lower,
         "server_and_app": bool(report_mod.CROSS_WORDS.search(desc)) and bool(re.search(r"\bcli\b", desc, re.I)),
     }
-    if t["project"] in JEV_PROJECTS:
+    if t["project"] in PUBLIC_TEXT_PROJECTS:
         row["description"] = desc
     return t["key"], row
 
@@ -233,11 +94,6 @@ def code_features(t):
 
 def agent_feature(t, target):
     return [math.log(t["estimate_minutes"] if target == "min" else t["estimate_cost_usd"])]
-
-
-def jev_features(t, cache, h):
-    a = cache[f"{t['key']}@{h}"]["answers"]
-    return [a[q] for q in RUBRIC]
 
 
 # ---------------------------------------------------------------------------
@@ -360,24 +216,16 @@ def report(title, methods, tickets):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--snapshot", action="store_true", help="read each description as it was at the estimate")
-    ap.add_argument("--jev", action="store_true", help="ask Jev about tickets that have no cached answers")
-    ap.add_argument("--show-request", metavar="KEY", help="print the Jev request for one ticket and exit")
     args = ap.parse_args()
 
     rows = json.loads(DATA.read_text())["tickets"]
     full = [t for t in rows if not t["interleaved"] and t["unmeasured_sessions"] == 0
             and (t["active_minutes"] or 0) >= 1 and t["estimate_minutes"] and t["estimate_cost_usd"]
             and t["cost_usd"]]
-    text = [t for t in full if t["project"] in JEV_PROJECTS and t.get("title")]
+    text = [t for t in full if t["project"] in PUBLIC_TEXT_PROJECTS and t.get("title")]
     if args.snapshot or not SNAPSHOT.exists():
         write_snapshot(full)
     SNAP.update(json.loads(SNAPSHOT.read_text()))
-    if args.show_request:
-        t = next(t for t in text if t["key"] == args.show_request)
-        print(json.dumps({"model": "jev-latest", "state": jev_state(t), "questions": RUBRIC}, indent=1))
-        return
-    if args.jev:
-        fetch_jev(text)
 
     base = {
         "agent": m_agent,
@@ -387,20 +235,7 @@ def main():
         "code+agent": m_fit(lambda t, g: code_features(t) + agent_feature(t, g)),
     }
     report("Every project", base, full)
-
-    cache, h = load_cache(), rubric_hash()
-    have = [t for t in text if f"{t['key']}@{h}" in cache]
-    sub = dict(base)
-    if len(have) == len(text):
-        sub["jev"] = m_fit(lambda t, g: jev_features(t, cache, h))
-        sub["jev+agent"] = m_fit(lambda t, g: jev_features(t, cache, h) + agent_feature(t, g))
-        # Chosen after reading each question's correlation on all 43 tickets,
-        # so its test result is a best case for Jev.
-        sub["jev-scope+agent"] = m_fit(lambda t, g: [cache[f"{t['key']}@{h}"]["answers"]["scope"]] + agent_feature(t, g))
-        sub["jev+code+agent"] = m_fit(lambda t, g: jev_features(t, cache, h) + code_features(t) + agent_feature(t, g))
-    else:
-        print(f"\nJev answers cached for {len(have)} of {len(text)} llmtodo tickets. Run with --jev.")
-    report("llmtodo tickets, the ones Jev can see", sub, text)
+    report("llmtodo tickets", base, text)
 
 
 if __name__ == "__main__":

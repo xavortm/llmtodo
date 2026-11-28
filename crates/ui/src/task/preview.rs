@@ -287,7 +287,7 @@ mod tests {
             "See [LLM-12](llmtodo://issue/LLM-12), then [LLM-3](llmtodo://issue/LLM-3)."
         );
         // A key the app does not know stays text.
-        assert_eq!(run("ALX-9 is elsewhere"), "ALX-9 is elsewhere");
+        assert_eq!(run("ABC-9 is elsewhere"), "ABC-9 is elsewhere");
     }
 
     #[test]

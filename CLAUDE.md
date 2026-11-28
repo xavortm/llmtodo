@@ -31,7 +31,7 @@ Claude Code builds. agy reviews, and Claude Code reviews in its place when agy i
 4. **Changes requested** moves the ticket back to In Progress. Claim it, fix every blocking and should-fix finding or decline it with a reason, commit and push. For a UI ticket, rebuild the preview with `scripts/preview-build <KEY>`. Add one line per finding to the Agent notes under `Round N (<reviewer>, changes requested)`, such as `Round 2 (agy, changes requested)`: `1. fixed in <sha>`, `2. declined: <why>`, `3. skipped (nit)`. Then go back to step 2.
 5. Stop after round 3 and ask the owner with `llmtodo issue ask`.
 
-agy reviews a throwaway clone (no hardlinks, no remote, build cache copied in) with a clean environment, so its commands cannot change this checkout. Its permission rules are not the guard; the clone is, and it does not jail agy, which still runs as the owner. llmtodo detects agy from `ANTIGRAVITY_AGENT` as an agent with harness `antigravity`, so agy never acts as the owner, who may approve. The script still sets `LLMTODO_ACTOR=agent:antigravity/<model>/<effort>` to name the model and effort. `AGY_MODEL` picks the model, default `gemini-4-neon-high`. The Claude reviewer gets the same clone and clean environment, the `dontAsk` permission mode with only read, git, cargo and `llmtodo issue view`/`review show` allowed, and only project settings. It returns its verdict as structured output, and the script posts the answer as `agent:claude-code/<model>/<effort>`. `CLAUDE_REVIEW_MODEL` and `CLAUDE_REVIEW_EFFORT` pick it, default `opus` and `high`. `REVIEWER=agy` or `REVIEWER=claude` forces one reviewer with no fallback.
+agy reviews a throwaway clone (no hardlinks, no remote, build cache copied in) with a clean environment, so its commands cannot change this checkout. Its permission rules are not the guard; the clone is, and it does not jail agy, which still runs as the owner. llmtodo detects agy from `ANTIGRAVITY_AGENT` as an agent with harness `antigravity`, so agy never acts as the owner, who may approve. When `AGY_MODEL` is set, the script passes `--model "$AGY_MODEL"` and sets `LLMTODO_ACTOR=agent:antigravity/<model>/<effort>` to name the model and effort; otherwise agy uses its default model. The Claude reviewer gets the same clone and clean environment, the `dontAsk` permission mode with only read, git, cargo and `llmtodo issue view`/`review show` allowed, and only project settings. It returns its verdict as structured output, and the script posts the answer as `agent:claude-code/<model>/<effort>`. `CLAUDE_REVIEW_MODEL` and `CLAUDE_REVIEW_EFFORT` pick it, default `opus` and `high`. `REVIEWER=agy` or `REVIEWER=claude` forces one reviewer with no fallback.
 
 The reviewer never edits code, commits, branches or claims. A builder never edits a reviewer's answer.
 
@@ -43,10 +43,10 @@ The owner's real data lives in `~/Library/Application Support/llmtodo`. Tests an
 
 ## Reference repos
 
-Shallow clones live outside this repo, in `~/code/oss/`. Read them before you write GPUI or UI code. They show working solutions for most app problems, and GPUI has no stable docs.
+Keep shallow clones of the upstream repos outside this repo (for example in `<refs>/`). Read them before you write GPUI or UI code. They show working solutions for most app problems, and GPUI has no stable docs.
 
-- `~/code/oss/zed`: Zed. GPUI lives in `crates/gpui`, with runnable examples in `crates/gpui/examples`.
-- `~/code/oss/gpui-component`: GPUI Kit, which the app is built on. It already bundles the Lucide icons in `crates/assets`. Usage examples are in `crates/story`.
+- `<refs>/zed`: Zed. GPUI lives in `crates/gpui`, with runnable examples in `crates/gpui/examples`.
+- `<refs>/gpui-component`: GPUI Kit, which the app is built on. It already bundles the Lucide icons in `crates/assets`. Usage examples are in `crates/story`.
 
 Where to look:
 
@@ -79,5 +79,5 @@ This repo is MIT, so the license decides what we can copy.
 GPUI Kit is pinned in `crates/ui/Cargo.toml`, `crates/app/Cargo.toml` and `crates/ui-bench/Cargo.toml` at gpui-component `0f047bb`. It takes GPUI from crates.io as `gpui-pre =0.3.14`, which is zed `f126950`. Do not add a separate GPUI dependency: it would compile a second, mismatched copy. The zed clone sits at `f126950` and the gpui-component clone at `0f047bb`. On every upgrade, check out the matching revisions in both clones and recopy the GPUI Kit skills, so the code you read matches the code we compile:
 
 ```sh
-git -C ~/code/oss/zed fetch --depth 1 origin <rev> && git -C ~/code/oss/zed checkout <rev>
+git -C <refs>/zed fetch --depth 1 origin <rev> && git -C <refs>/zed checkout <rev>
 ```

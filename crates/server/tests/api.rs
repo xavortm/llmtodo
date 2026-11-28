@@ -45,7 +45,7 @@ impl T {
             &owner(),
             "POST",
             "/v1/teams",
-            json!({ "key": "ALX", "name": "Alex" }),
+            json!({ "key": "ABC", "name": "Acme" }),
         )
         .await;
         t
@@ -124,13 +124,13 @@ impl T {
 async fn create_view_query_update() {
     let t = T::new().await;
     let a = t.issue("Fix the login page", json!({ "description": "Users cannot log in.\n\n+++ Agent notes\nnone\n+++\n", "priority": "high" })).await;
-    assert_eq!(a, "ALX-1");
-    let b = t.issue("Add dark mode", json!({ "parent": "ALX-1" })).await;
-    assert_eq!(b, "ALX-2");
+    assert_eq!(a, "ABC-1");
+    let b = t.issue("Add dark mode", json!({ "parent": "ABC-1" })).await;
+    assert_eq!(b, "ABC-2");
 
-    let v = t.ok(&owner(), "GET", "/v1/issues/alx-1", Value::Null).await;
+    let v = t.ok(&owner(), "GET", "/v1/issues/abc-1", Value::Null).await;
     assert_eq!(v["status"]["name"], "Todo");
-    assert_eq!(v["children"][0]["key"], "ALX-2");
+    assert_eq!(v["children"][0]["key"], "ABC-2");
     assert_eq!(v["description_version"], 1);
 
     let page = t
@@ -152,11 +152,11 @@ async fn create_view_query_update() {
         .iter()
         .map(|i| i["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys, ["ALX-1", "ALX-2"]);
+    assert_eq!(keys, ["ABC-1", "ABC-2"]);
 
     // Patch a section without a version.
     let v = t
-        .ok(&owner(), "PATCH", "/v1/issues/ALX-1", json!({ "patches": [{ "op": "replace_section", "section": "Agent notes", "body": "plan: rewrite" }] }))
+        .ok(&owner(), "PATCH", "/v1/issues/ABC-1", json!({ "patches": [{ "op": "replace_section", "section": "Agent notes", "body": "plan: rewrite" }] }))
         .await;
     assert!(
         v["description"]
@@ -171,7 +171,7 @@ async fn create_view_query_update() {
         t.err(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-1",
+            "/v1/issues/ABC-1",
             json!({ "body": "x" })
         )
         .await,
@@ -181,7 +181,7 @@ async fn create_view_query_update() {
         t.err(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-1",
+            "/v1/issues/ABC-1",
             json!({ "body": "x", "base_version": 1 })
         )
         .await,
@@ -190,7 +190,7 @@ async fn create_view_query_update() {
     t.ok(
         &owner(),
         "PATCH",
-        "/v1/issues/ALX-1",
+        "/v1/issues/ABC-1",
         json!({ "body": "x", "base_version": 2 }),
     )
     .await;
@@ -198,7 +198,7 @@ async fn create_view_query_update() {
         t.err(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-1",
+            "/v1/issues/ABC-1",
             json!({ "patches": [{ "op": "replace_exact", "old": "nope", "new": "y" }] })
         )
         .await,
@@ -207,7 +207,7 @@ async fn create_view_query_update() {
 
     // History and restore of a revision.
     let h = t
-        .ok(&owner(), "GET", "/v1/issues/ALX-1/history", Value::Null)
+        .ok(&owner(), "GET", "/v1/issues/ABC-1/history", Value::Null)
         .await;
     assert_eq!(h["revisions"].as_array().unwrap().len(), 3);
     // The list leaves out each version's text unless asked.
@@ -216,7 +216,7 @@ async fn create_view_query_update() {
         .ok(
             &owner(),
             "GET",
-            "/v1/issues/ALX-1/history?bodies=true",
+            "/v1/issues/ABC-1/history?bodies=true",
             Value::Null,
         )
         .await;
@@ -225,7 +225,7 @@ async fn create_view_query_update() {
         .ok(
             &owner(),
             "POST",
-            "/v1/issues/ALX-1/restore",
+            "/v1/issues/ABC-1/restore",
             json!({ "revision": 1 }),
         )
         .await;
@@ -241,21 +241,21 @@ async fn create_view_query_update() {
         t.err(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-1",
-            json!({ "parent": "ALX-2" })
+            "/v1/issues/ABC-1",
+            json!({ "parent": "ABC-2" })
         )
         .await,
         "validation"
     );
 
     // Trash and restore.
-    t.ok(&owner(), "DELETE", "/v1/issues/ALX-2", Value::Null)
+    t.ok(&owner(), "DELETE", "/v1/issues/ABC-2", Value::Null)
         .await;
     assert_eq!(
         t.err(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-2",
+            "/v1/issues/ABC-2",
             json!({ "title": "y" })
         )
         .await,
@@ -269,8 +269,8 @@ async fn create_view_query_update() {
             json!({ "trashed": true }),
         )
         .await;
-    assert_eq!(trash["items"][0]["key"], "ALX-2");
-    t.ok(&owner(), "POST", "/v1/issues/ALX-2/restore", json!({}))
+    assert_eq!(trash["items"][0]["key"], "ABC-2");
+    t.ok(&owner(), "POST", "/v1/issues/ABC-2/restore", json!({}))
         .await;
     t.stop().await;
 }
@@ -784,7 +784,7 @@ async fn the_graph_token_moves_only_when_the_graph_can_change() {
         json!({ "key": "WEB", "name": "Web" }),
     )
     .await;
-    let a = t.issue("A", json!({ "team": "ALX" })).await;
+    let a = t.issue("A", json!({ "team": "ABC" })).await;
     let pool = t.running.as_ref().unwrap().state.pool();
     let token = async || -> Vec<u8> {
         llmtodo_server::store::backend::query_scalar("SELECT token FROM dep_graph_token")
@@ -1069,7 +1069,7 @@ async fn team_move_keeps_old_key() {
         json!({ "key": "WEB", "name": "Web" }),
     )
     .await;
-    let k = t.issue("Move me", json!({ "team": "ALX" })).await;
+    let k = t.issue("Move me", json!({ "team": "ABC" })).await;
     let v = t
         .ok(
             &owner(),
@@ -1079,12 +1079,12 @@ async fn team_move_keeps_old_key() {
         )
         .await;
     assert_eq!(v["key"], "WEB-1");
-    assert_eq!(v["aliases"], json!(["ALX-1"]));
-    let v = t.ok(&owner(), "GET", "/v1/issues/ALX-1", Value::Null).await;
+    assert_eq!(v["aliases"], json!(["ABC-1"]));
+    let v = t.ok(&owner(), "GET", "/v1/issues/ABC-1", Value::Null).await;
     assert_eq!(v["key"], "WEB-1");
     // Keys are never reused.
-    let n = t.issue("Next", json!({ "team": "ALX" })).await;
-    assert_eq!(n, "ALX-2");
+    let n = t.issue("Next", json!({ "team": "ABC" })).await;
+    assert_eq!(n, "ABC-2");
     t.stop().await;
 }
 
@@ -1098,9 +1098,9 @@ async fn a_query_by_keys_returns_only_those_issues() {
         json!({ "key": "WEB", "name": "Web" }),
     )
     .await;
-    let a = t.issue("One", json!({ "team": "ALX" })).await;
-    let b = t.issue("Two", json!({ "team": "ALX" })).await;
-    t.issue("Three", json!({ "team": "ALX" })).await;
+    let a = t.issue("One", json!({ "team": "ABC" })).await;
+    let b = t.issue("Two", json!({ "team": "ABC" })).await;
+    t.issue("Three", json!({ "team": "ABC" })).await;
     // An old key still names its issue after a team move.
     t.ok(
         &owner(),
@@ -1124,17 +1124,17 @@ async fn a_query_by_keys_returns_only_those_issues() {
             &owner(),
             "POST",
             "/v1/issues/query",
-            json!({ "keys": [a, b, "ALX-99"], "include_description": true }),
+            json!({ "keys": [a, b, "ABC-99"], "include_description": true }),
         )
         .await;
-    assert_eq!(keys(&page), ["ALX-1", "WEB-1"]);
+    assert_eq!(keys(&page), ["ABC-1", "WEB-1"]);
     // Only unknown keys: an empty page, not an error.
     let page = t
         .ok(
             &owner(),
             "POST",
             "/v1/issues/query",
-            json!({ "keys": ["ALX-99"] }),
+            json!({ "keys": ["ABC-99"] }),
         )
         .await;
     assert!(keys(&page).is_empty());
@@ -1153,7 +1153,7 @@ async fn a_query_by_keys_returns_only_those_issues() {
             json!({ "keys": [a], "trashed": true }),
         )
         .await;
-    assert_eq!(keys(&trash), ["ALX-1"]);
+    assert_eq!(keys(&trash), ["ABC-1"]);
     t.stop().await;
 }
 
@@ -1357,7 +1357,7 @@ async fn documents_and_views() {
         &owner(),
         "POST",
         "/v1/projects",
-        json!({ "name": "Notebook", "teams": ["ALX"] }),
+        json!({ "name": "Notebook", "teams": ["ABC"] }),
     )
     .await;
     let d = t.ok(&owner(), "POST", "/v1/documents", json!({ "project": "notebook", "title": "Game Rules", "body": "## Scoring\n\nOne point.\n" })).await;
@@ -1558,7 +1558,7 @@ async fn sync_handoff_between_two_machines() {
         &owner(),
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "Alex" }),
+        json!({ "key": "ABC", "name": "Acme" }),
     )
     .await;
     a.issue("Written on A", json!({})).await;
@@ -1594,7 +1594,7 @@ async fn sync_handoff_between_two_machines() {
         )
         .await;
     assert!(r["backup"].is_string());
-    let v = b.ok(&owner(), "GET", "/v1/issues/ALX-1", Value::Null).await;
+    let v = b.ok(&owner(), "GET", "/v1/issues/ABC-1", Value::Null).await;
     assert_eq!(v["title"], "Written on A");
 
     // A now finds B holding the lock.
@@ -1646,7 +1646,7 @@ async fn sync_handoff_between_two_machines() {
         json!({ "folder": folder, "force": true }),
     )
     .await;
-    let v = a.ok(&owner(), "GET", "/v1/issues/ALX-2", Value::Null).await;
+    let v = a.ok(&owner(), "GET", "/v1/issues/ABC-2", Value::Null).await;
     assert_eq!(v["title"], "Written on B");
     let st = a.ok(&owner(), "GET", "/v1/sync/status", Value::Null).await;
     assert_eq!(st["local_generation"], 2);
@@ -1688,7 +1688,7 @@ async fn sync_pull_refuses_a_database_older_than_its_manifest() {
         &owner(),
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "Alex" }),
+        json!({ "key": "ABC", "name": "Acme" }),
     )
     .await;
     a.issue("Generation 1", json!({})).await;
@@ -1783,7 +1783,7 @@ async fn failed_sync_pull_leaves_the_server_working() {
         json!({ "folder": folder }),
     )
     .await;
-    let v = t.ok(&owner(), "GET", "/v1/issues/ALX-1", Value::Null).await;
+    let v = t.ok(&owner(), "GET", "/v1/issues/ABC-1", Value::Null).await;
     assert_eq!(v["title"], "Before the pull");
     t.issue("After the failed pull", json!({})).await;
     let st = t.ok(&owner(), "GET", "/v1/sync/status", Value::Null).await;
@@ -2377,38 +2377,38 @@ async fn query_pages_survive_a_write_between_pages() {
     for n in 1..=5 {
         t.issue(&format!("Issue {n}"), json!({})).await;
     }
-    // Newest update first: ALX-5, ALX-4 | ALX-3, ALX-2 | ALX-1.
+    // Newest update first: ABC-5, ABC-4 | ABC-3, ABC-2 | ABC-1.
     let keys = walk_pages(&t, json!({ "limit": 2 }), async || {
         t.ok(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-3",
+            "/v1/issues/ABC-3",
             json!({ "title": "Issue 3, edited" }),
         )
         .await;
     })
     .await;
-    assert_eq!(keys, ["ALX-5", "ALX-4", "ALX-2", "ALX-1"]);
+    assert_eq!(keys, ["ABC-5", "ABC-4", "ABC-2", "ABC-1"]);
 
     // In ID order a write moves nothing, so the walk sees every issue once.
     let keys = walk_pages(&t, json!({ "limit": 2, "order": "id" }), async || {
         t.ok(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-1",
+            "/v1/issues/ABC-1",
             json!({ "priority": "low" }),
         )
         .await;
         t.ok(
             &owner(),
             "PATCH",
-            "/v1/issues/ALX-4",
+            "/v1/issues/ABC-4",
             json!({ "priority": "urgent" }),
         )
         .await;
     })
     .await;
-    assert_eq!(keys, ["ALX-1", "ALX-2", "ALX-3", "ALX-4", "ALX-5"]);
+    assert_eq!(keys, ["ABC-1", "ABC-2", "ABC-3", "ABC-4", "ABC-5"]);
 
     assert_eq!(
         t.err(
@@ -2434,14 +2434,14 @@ async fn executor_filter_fills_each_page() {
     t.ok(
         &owner(),
         "PATCH",
-        "/v1/issues/ALX-1",
+        "/v1/issues/ABC-1",
         json!({ "wanted_executor": { "kind": "agent" } }),
     )
     .await;
     t.ok(
         &owner(),
         "PATCH",
-        "/v1/issues/ALX-5",
+        "/v1/issues/ABC-5",
         json!({ "wanted_executor": { "kind": "HUMAN" } }),
     )
     .await;
@@ -2464,7 +2464,7 @@ async fn executor_filter_fills_each_page() {
         }
     }
     keys.sort();
-    assert_eq!(keys, ["ALX-2", "ALX-3", "ALX-4", "ALX-5"]);
+    assert_eq!(keys, ["ABC-2", "ABC-3", "ABC-4", "ABC-5"]);
     t.stop().await;
 }
 
@@ -2535,7 +2535,7 @@ async fn live_events_go_out_in_seq_order() {
                 t.ok(
                     &owner(),
                     "PATCH",
-                    &format!("/v1/issues/ALX-{n}"),
+                    &format!("/v1/issues/ABC-{n}"),
                     json!({ "title": format!("Issue {n}, round {round}") }),
                 )
                 .await;
@@ -3039,7 +3039,7 @@ async fn question_list_filters_and_pages() {
         "bad_request"
     );
     assert_eq!(
-        t.err(&o, "GET", "/v1/questions?issue=ALX-999", json!(null))
+        t.err(&o, "GET", "/v1/questions?issue=ABC-999", json!(null))
             .await,
         "not_found"
     );
@@ -3738,8 +3738,8 @@ async fn catalog_lists_match_each_view() {
     )
     .await;
     for (name, teams) in [
-        ("One", json!(["ALX"])),
-        ("Two", json!(["BEE", "ALX"])),
+        ("One", json!(["ABC"])),
+        ("Two", json!(["BEE", "ABC"])),
         ("Three", json!([])),
     ] {
         t.ok(
@@ -3782,9 +3782,9 @@ async fn catalog_lists_match_each_view() {
             .unwrap()
             .clone()
     };
-    assert_eq!(by_slug("one")["teams"], json!(["ALX"]));
+    assert_eq!(by_slug("one")["teams"], json!(["ABC"]));
     assert_eq!(by_slug("one")["repos"], json!(["o/a"]));
-    assert_eq!(by_slug("two")["teams"], json!(["ALX", "BEE"]));
+    assert_eq!(by_slug("two")["teams"], json!(["ABC", "BEE"]));
     assert_eq!(by_slug("two")["repos"], json!(["o/b", "o/c"]));
     assert_eq!(by_slug("three")["teams"], json!([]));
     for p in projects.as_array().unwrap() {
@@ -3811,8 +3811,8 @@ async fn catalog_lists_match_each_view() {
     assert_eq!(doc["body"], "Long text.\n");
 
     // A relation shows the other issue's short form.
-    let a = t.issue("Blocked", json!({ "team": "ALX" })).await;
-    let b = t.issue("Blocker", json!({ "team": "ALX" })).await;
+    let a = t.issue("Blocked", json!({ "team": "ABC" })).await;
+    let b = t.issue("Blocker", json!({ "team": "ABC" })).await;
     t.ok(
         &o,
         "POST",
@@ -4015,7 +4015,7 @@ async fn order_refuses_foreign_keys_and_repeats() {
     let (p, k) = epic(&t).await;
     let other = t.issue("Other", json!({})).await;
     let nephew = t.issue("Nephew", json!({ "parent": other })).await;
-    for bad in [other.as_str(), nephew.as_str(), p.as_str(), "ALX-999"] {
+    for bad in [other.as_str(), nephew.as_str(), p.as_str(), "ABC-999"] {
         let (s, v) = set_order(&t, &p, json!([[k[0]], [bad]])).await;
         assert_eq!(s, 422, "{bad}: {v}");
         assert_eq!(v["error"]["code"], "validation");
@@ -4346,7 +4346,7 @@ async fn search_rows_follow_every_write() {
         &o,
         "POST",
         "/v1/projects",
-        json!({ "name": "Notebook", "teams": ["ALX"] }),
+        json!({ "name": "Notebook", "teams": ["ABC"] }),
     )
     .await;
     let a = t
@@ -4554,7 +4554,7 @@ async fn fts_rowid_migration_keeps_search_results() {
         "PRAGMA foreign_keys = OFF;
          WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60)
          INSERT INTO issues (id, team_id, number, key, title, description, status_id, created_at, updated_at)
-         SELECT 'i' || i, 't', i, 'ALX-' || i, 'title ' || i || ' alpha' || (i % 7), 'body beta' || (i % 5) || ' gamma ' || i, 's', 'x', 'x' FROM n;
+         SELECT 'i' || i, 't', i, 'ABC-' || i, 'title ' || i || ' alpha' || (i % 7), 'body beta' || (i % 5) || ' gamma ' || i, 's', 'x', 'x' FROM n;
          WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 90)
          INSERT INTO comments (id, issue_id, body, created_at, updated_at)
          SELECT 'c' || i, 'i' || (i % 60 + 1), 'comment beta' || (i % 3) || ' delta', 'x', 'x' FROM n;

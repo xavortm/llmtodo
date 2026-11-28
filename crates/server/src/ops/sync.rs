@@ -517,7 +517,7 @@ mod tests {
         let url = running.url();
         let http = reqwest::Client::new();
         http.post(format!("{url}/v1/teams"))
-            .json(&json!({ "key": "ALX", "name": "Alex" }))
+            .json(&json!({ "key": "ABC", "name": "Acme" }))
             .send()
             .await
             .unwrap();

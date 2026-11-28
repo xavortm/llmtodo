@@ -2,7 +2,7 @@
 
 `tickets.json` holds every closed ticket that has an estimate and measured time or cost. `scripts/estimate-report` writes it and prints the comparison. Run the script again to refresh both.
 
-The repo is public. So the file keeps titles and descriptions only for the llmtodo project. Other projects have numeric fields only, and the Fueled team's projects get letters, such as `AST-a`. Run `scripts/estimate-report --full <file>` with a path outside the repo to get every title and description.
+The repo is public. So the file keeps titles and descriptions only for the `llmtodo` project. Other projects have numeric fields only, and their team and project names are anonymized (for example `EXT` and `proj-a`). Run `scripts/estimate-report --full <file>` with a path outside the repo to get every title and description.
 
 ## Fields
 
@@ -17,7 +17,6 @@ The repo is public. So the file keeps titles and descriptions only for the llmto
 
 ## Other ways to estimate
 
-`scripts/estimate-fit` tests other estimates against the measured tickets. It holds the Jev rubric and every fit in one file. LLM-303 ran it on 2026-11-18. The best method is the agent's own estimate times one fitted scale, the "multiply by 0.4" rule of the llmtodo skill. Neither a fit on counted fields nor Jev beat it, so the CLI has no estimate step.
+`scripts/estimate-fit` tests other estimates against the measured tickets. LLM-303 ran it on 2026-11-18. The best method is the agent's own estimate times one fitted scale, the "multiply by 0.4" rule of the llmtodo skill. A fit on counted fields did not beat it, so the CLI has no estimate step.
 
 - `at-estimate.json` holds each description as it was when the agent estimated the ticket. The final description is about 5 times longer, because agents add Agent notes during the work. Its length predicts the real time too well, so every fit uses the earlier text.
-- `jev-answers.json` caches Jev's answers to the rubric for the llmtodo tickets. Jev sees only those, because only they keep their text in this folder.

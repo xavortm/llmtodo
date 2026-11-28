@@ -12,7 +12,7 @@ cost. The script prints a report and writes the per-ticket data set.
 
 The repo is public. So the committed data set keeps titles and descriptions
 only for the llmtodo project. Other projects get numeric features only, and
-the Fueled team's project names are replaced by letters.
+all non-llmtodo project names and non-LLM team keys are anonymized.
 """
 import argparse, collections, concurrent.futures, datetime, json, math, pathlib, re, statistics, subprocess, sys
 
@@ -269,15 +269,21 @@ def short(r):
 
 
 def public(rows):
-    letters = {}
+    proj_letters = {}
+    team_names = {}
     out = []
     for r in rows:
         r = dict(r)
-        if r["project"] not in PUBLIC_TEXT_PROJECTS:
-            r.pop("title"); r.pop("description")
         if r["team"] != "LLM":
-            letters.setdefault(r["project"], chr(ord("a") + len(letters)))
-            r["project"] = f"{r['team']}-{letters[r['project']]}"
+            idx = team_names.setdefault(r["team"], len(team_names) + 1)
+            anon_team = "EXT" if idx == 1 else f"EXT{idx}"
+            r["key"] = anon_team + "-" + r["key"].split("-", 1)[1]
+            r["team"] = anon_team
+        if r["project"] not in PUBLIC_TEXT_PROJECTS:
+            r.pop("title", None)
+            r.pop("description", None)
+            letter = proj_letters.setdefault(r["project"], chr(ord("a") + len(proj_letters)))
+            r["project"] = f"proj-{letter}"
         out.append(r)
     return out
 

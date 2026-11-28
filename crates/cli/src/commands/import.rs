@@ -8,7 +8,7 @@ use crate::{App, CliError, CliResult};
 #[derive(Subcommand)]
 pub enum ImportCmd {
     /// Copy issues, comments, relations, attachments, labels, projects,
-    /// documents and milestones from Linear. Keeps keys such as ALX-123.
+    /// documents and milestones from Linear. Keeps keys such as ABC-123.
     /// Safe to run again: it updates by Linear ID. Reads LINEAR_API_KEY.
     Linear {
         /// Team key to import. Repeat for several. Default: every team.

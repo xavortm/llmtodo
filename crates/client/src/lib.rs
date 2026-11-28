@@ -1089,7 +1089,7 @@ mod tests {
     #[test]
     fn segments_encode_slashes() {
         assert_eq!(seg("notebook/game-rules"), "notebook%2Fgame-rules");
-        assert_eq!(seg("ALX-12"), "ALX-12");
+        assert_eq!(seg("ABC-12"), "ABC-12");
     }
 
     #[test]

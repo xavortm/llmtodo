@@ -148,7 +148,7 @@ async fn list_with_large_dependency_graphs() {
     let http = reqwest::Client::new();
     let team = http
         .post(format!("{url}/v1/teams"))
-        .json(&json!({ "key": "ALX", "name": "Alex" }))
+        .json(&json!({ "key": "ABC", "name": "Acme" }))
         .send()
         .await
         .unwrap();
@@ -171,7 +171,7 @@ async fn list_with_large_dependency_graphs() {
     sqlx::query(
         "WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v + 1 FROM n WHERE v < ?)
          INSERT INTO issues (id, team_id, number, key, title, description, status_id, wanted_executor, created_at, updated_at)
-         SELECT printf('perf-%08d', n.v), i.team_id, n.v, 'ALX-' || n.v, 'Issue ' || n.v, '', i.status_id, '{}', i.created_at, i.updated_at
+         SELECT printf('perf-%08d', n.v), i.team_id, n.v, 'ABC-' || n.v, 'Issue ' || n.v, '', i.status_id, '{}', i.created_at, i.updated_at
          FROM n, issues i WHERE i.number = 1",
     )
     .bind(ISSUES)
@@ -271,17 +271,17 @@ async fn list_with_large_dependency_graphs() {
         .unwrap();
     let worst = timed_list(&url, &http, 1000).await;
     println!("one chain through all {ISSUES} issues, page of 1000: {worst:?}");
-    let (write, read) = timed_after_write(&url, &http, "ALX-25000").await;
+    let (write, read) = timed_after_write(&url, &http, "ABC-25000").await;
     println!("one open chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order on one open chain, pages of 1000: {t:?} in {pages} pages");
     // LLM-217: the refresh after a live event near the end of the chain
     // finds few issues, and must not walk the chain in SQL.
-    let near_end = format!("ALX-{}", ISSUES - 10);
+    let near_end = format!("ABC-{}", ISSUES - 10);
     let (down, n) = timed_filter(&url, &http, json!({ "depends_on": near_end })).await;
     println!("one open chain, depends_on near the end: {down:?} for {n} issues");
     assert_eq!(n, 10);
-    let (all_down, n) = timed_filter(&url, &http, json!({ "depends_on": "ALX-2" })).await;
+    let (all_down, n) = timed_filter(&url, &http, json!({ "depends_on": "ABC-2" })).await;
     println!("one open chain, depends_on the head: {all_down:?} for {n} issues");
     assert_eq!(n as i64, ISSUES - 2);
     assert!(
@@ -320,17 +320,17 @@ async fn list_with_large_dependency_graphs() {
         .unwrap();
     let closed = timed_list(&url, &http, 1000).await;
     println!("closed chain head held by open issues, page of 1000: {closed:?}");
-    let (write, read) = timed_after_write(&url, &http, &format!("ALX-{}", ISSUES - 500)).await;
+    let (write, read) = timed_after_write(&url, &http, &format!("ABC-{}", ISSUES - 500)).await;
     println!("closed chain, a write: {write:?}, the next page of 1000: {read:?}");
     let (t, pages) = timed_walk(&url, &http, 1000).await;
     println!("every issue in ID order with closed chains, pages of 1000: {t:?} in {pages} pages");
     // The open issue right after the closed part waits for 49,000 closed
     // issues. The issue at the head waits for none.
-    let after_closed = format!("ALX-{}", ISSUES - 999);
+    let after_closed = format!("ABC-{}", ISSUES - 999);
     let (up, n) = timed_filter(&url, &http, json!({ "closed_blockers_of": after_closed })).await;
     println!("closed chain, closed_blockers_of the first open issue: {up:?} for {n} issues");
     assert_eq!(n as i64, ISSUES - 1001);
-    let (head, n) = timed_filter(&url, &http, json!({ "closed_blockers_of": "ALX-3" })).await;
+    let (head, n) = timed_filter(&url, &http, json!({ "closed_blockers_of": "ABC-3" })).await;
     println!("closed chain, closed_blockers_of near the head: {head:?} for {n} issues");
     assert_eq!(n, 1);
     assert!(

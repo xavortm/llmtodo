@@ -4,5 +4,5 @@
 (https://github.com/longbridge/gpui-component, `skills/`, revision `0f047bb`).
 They are licensed under Apache-2.0. See `LICENSE-APACHE-gpui-kit`.
 
-To update them, pull the reference clone at `~/code/oss/gpui-component`
+To update them, pull your local reference clone of `gpui-component`
 to the pinned revision and copy the two folders again.

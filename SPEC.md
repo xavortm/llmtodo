@@ -8,16 +8,16 @@ Status: approved by the owner on 2026-11-10, after a design review. A gap review
 
 ## What the two projects use from Linear today
 
-I scanned two of the owner's projects. Both use one Linear workspace and the team ALX. I also counted field use on 250 issues from the two projects.
+I scanned two of the owner's projects. Both use one Linear workspace and one team (`ABC`). I also counted field use on 250 issues from the two projects.
 
 | Feature | How it is used | Use rate |
 |---|---|---|
-| Issue key `ALX-123` | Every doc, commit and PR refers to issues by key | all |
+| Issue key `ABC-123` | Every doc, commit and PR refers to issues by key | all |
 | Markdown description | The main record. Notes, PR links and triage blocks go here, not in comments | all |
 | Collapsible sections `+++ Title` / `+++` | Agent notes at the end of a description | common |
 | Statuses | Backlog, Todo, In Progress, In Review, Done, Canceled, Duplicate. Each has a type | all |
 | Assignee | Set on started work, `@me` on claim | 80% |
-| Parent and sub-issues | Wayfinder maps, sub-tasks | 44% |
+| Parent and sub-issues | Epic maps, sub-tasks | 44% |
 | Relations | `related` (254) and `blocks` (42) | heavy |
 | Attachments | GitHub PR links (212), commits, API links | 85% |
 | Labels | Flat labels plus one group (`Area` → fe, be, design). Workflow states use waiting on, relations and statuses, not labels | all |
@@ -38,7 +38,7 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 - Claim an issue atomically: set the assignee and In Progress in one call, and fail if someone else holds it.
 - Add relations: `blocks`, `blocked-by`, `related`, `duplicate`.
 - Attach a PR link or a local path to an issue.
-- Run the wayfinder "frontier" query. It lists the open sub-issues of a map issue that have no open blocker and no assignee.
+- Run the "frontier" query. It lists the open sub-issues of a map issue that have no open blocker and no assignee.
 - Search the backlog for duplicates before creating an issue.
 - Find which tickets a session worked on, and which sessions worked on a ticket.
 - Fail instead of prompting (`--no-input`), and skip confirmation on writes (`-y`).
@@ -61,7 +61,7 @@ I scanned two of the owner's projects. Both use one Linear workspace and the tea
 - Sharing the database between laptops by handoff.
 - An optional shared Postgres database, such as Neon, next to the default SQLite file. Laptops then share live data with no handoff (LLM-450).
 - Native desktop app with vim keys, and the CLI.
-- Import from Linear, so the existing ALX issues move over with their keys.
+- Import from Linear, so existing issues move over with their keys.
 - A read-only file store for images copied from Linear during the import. New uploads stay in "Later".
 
 ### Later
@@ -123,7 +123,7 @@ The server is a library inside the `server` crate. The `llmtodo` binary runs it 
 
 ### Data model (gap review)
 
-- **Team**: key such as `ALX`, name, statuses, and the next issue number.
+- **Team**: key such as `ABC`, name, statuses, and the next issue number.
 - **Status**: belongs to a team. It has a name, a type, a color and a position.
 - **Label** and **label group**: workspace-wide, so every team shares them.
 - **Project**: workspace-wide, with a short slug, a state and links to one or more teams. Linked GitHub repos belong to a project. A project also has a local folder, the main checkout of its repo on this machine. `llmtodo init` saves the git root there. Any CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet, whether or not the call starts the server. The check runs once per CLI process and costs one project read (LLM-215). `llmtodo project update --local-path` sets it by hand, and `""` clears it. A worktree saves the checkout it came from (LLM-213). A project also has an optional icon, a Lucide name, and an optional color, `#rrggbb`. Agents pick the icon through the CLI, from `llmtodo project icons`. The owner picks the color in the app. The server refuses an icon that is not in the app's icon list, and a color in another form (LLM-196).
@@ -271,7 +271,7 @@ The wanted executor is a set of `key=value` filters on the actor fields `kind`, 
 ### Claims
 
 - A claim belongs to an actor plus a session. The session ID comes from `LLMTODO_SESSION`, then `CLAUDE_CODE_SESSION_ID`, and the CLI generates one if neither is set.
-- `issue claim ALX-12` sets the assignee and In Progress in one transaction. It fails with a stable exit code if another session holds the issue.
+- `issue claim ABC-12` sets the assignee and In Progress in one transaction. It fails with a stable exit code if another session holds the issue.
 - Claims never end on their own. The frontier query and the app show each claim's age.
 - `issue release` frees an issue. `issue claim --steal` takes it over and records who stole it.
 - A claim stores the host, worktree path, branch and session ID. The CLI reads them from git and the environment, and flags can override them.
@@ -291,7 +291,7 @@ Gap review additions:
 
 An agent can mark an issue as Analyzing while it reads the issue or fills in its details without a claim. Examples: an agent writes tickets from the owner's chat, or researches before it plans.
 
-- `issue analyze ALX-12` sets the mark. `issue analyze ALX-12 --done` ends it.
+- `issue analyze ABC-12` sets the mark. `issue analyze ABC-12 --done` ends it.
 - The server keeps one mark per issue, in the `analyzing` table, with the actor, the session, the start time and the time of the session's last write to the issue. A mark from a new session replaces the old one.
 - Analyzing never blocks. Other sessions can write, claim and finish the issue. The app keeps the task editable.
 - Every write by the marking session to the issue moves the last-write time. The mark expires 15 minutes after that time, so a crashed agent cannot leave it on. Reads leave out an expired mark, and a later write does not bring it back.
@@ -306,7 +306,7 @@ Every write from an agent adds or updates a work-session record on the ticket, s
 
 - harness and version, model, effort
 - session ID and transcript path (`~/.claude/projects/<repo-slug>/<session-id>.jsonl` for Claude Code)
-- herdr pane ID, host, worktree, branch
+- terminal pane ID, host, worktree, branch
 - start time and last-seen time
 - commits made on that branch while the session ran
 
@@ -315,7 +315,7 @@ Every write from an agent adds or updates a work-session record on the ticket, s
 Gap review additions:
 
 - The CLI sends the current `HEAD` commit with every agent write. The server stores the first and the latest `HEAD` per session and ticket. The commit list is the git range between them, read by the CLI from the local repo when `issue view` runs on the same host.
-- The herdr pane ID comes from the herdr environment variables, when they are set.
+- The terminal pane ID comes from the multiplexer environment variables, when they are set.
 - Reads do not touch the work log. Only writes update the last-seen time.
 
 ## Issues and descriptions
@@ -544,7 +544,7 @@ Zed is the visual target. The app should feel like a Zed window that shows issue
 - Issue detail with a Markdown preview, the activity log and the work log
 - Project documents
 - Command palette
-- Claims list: which agent holds which ticket, in which worktree and herdr pane
+- Claims list: which agent holds which ticket, in which worktree and terminal pane
 - Inbox: every open owner question, answered in place
 - Trash, with restore
 
@@ -567,7 +567,7 @@ GPUI Kit's key contexts, such as `mode == normal`, carry the vim modes.
 
 - Descriptions and docs open as a rendered preview. `+++` sections show as collapsible blocks.
 - `e` opens the built-in editor with raw Markdown and syntax highlighting. It folds `+++` sections, like code folding in Zed. `Esc` or `Cmd+S` saves and goes back to the preview.
-- `E` (`Shift+E`) opens the text in `$EDITOR`, such as nvim, in a new herdr pane or a terminal. The app reloads and saves when the file is written.
+- `E` (`Shift+E`) opens the text in `$EDITOR`, such as nvim, in a new terminal pane or window. The app reloads and saves when the file is written.
 - When a save fails because an agent changed the text first, the app keeps the owner's text and shows both versions side by side. The owner picks one or merges by hand.
 - The app starts the server if it is not running, the same way the CLI does.
 
@@ -582,7 +582,7 @@ Risk: GPUI has no stable release, and its API changes with Zed. We pin a git rev
 ## Linear import and cutover
 
 - `llmtodo import linear` reads the Linear GraphQL API with the owner's Linear token. It imports issues, comments, relations, attachments, labels, projects, documents and milestones.
-- The import keeps `ALX-123` keys. The next new issue continues the numbering.
+- The import keeps `ABC-123` keys. The next new issue continues the numbering.
 - The import is idempotent: running it again updates records by their Linear ID instead of creating duplicates.
 - Cutover waits for the owner (decision 23). When it happens, it is one-shot. Import, check the result, and re-run as needed. Then stop writing to Linear and switch `docs/agents/issue-tracker.md` in both repos to the `llmtodo` CLI, with one commit per repo.
 
@@ -662,7 +662,7 @@ Gap review additions:
 ## Decision log
 
 1. **Single owner.** There is no sign-up, no roles and no sharing. Actors stay, so agents and the owner can hold tickets.
-2. **Keep issue keys.** The Linear import keeps `ALX-123`, and keys are never reused.
+2. **Keep issue keys.** The Linear import keeps `ABC-123`, and keys are never reused.
 3. **Local first.** SQLite on the owner's Mac. Postgres, Neon and Render are dropped. Remote access is a handoff, not a live connection. Decision 50 changes this: SQLite stays the default, and a shared Postgres database is an option.
 4. **Markdown editing.** Preview by default, the built-in editor on `e`, and `$EDITOR` on `Shift+E`, which is `E`.
 5. **GitHub sync in v1**, by polling, because the local server has no public URL.
@@ -716,7 +716,7 @@ Build decisions, 2026-11-10:
 43. **Task view layout (LLM-142).** The title row has a meta line under it: the labels, the cost, time and estimate, and the dependencies as chips. The line wraps on a narrow task view. Each panel below, such as Review or Git, starts with a section title and ends with a hairline. The Edit and Preview buttons sit in the description panel's header, beside its tabs.
 44. **Trackers are a development tool (LLM-126).** The owner answered Q2 on LLM-122 on 2026-11-11. The app can switch between data folders through environment variables only, so a preview can look up a real ticket. One installation stays one workspace. Real tracker settings are possible future work, so no code may assume one data folder for the life of a process: the client takes the folder as an input and resolves it in one place.
 45. **Shared client logic lives in `client` (LLM-126).** The live event stream, the data folder choice and the caller's identity are modules of the client crate. The app and the CLI use them, so a later client such as an MCP server gets them for free. A `Harness` trait reads an agent's session, transcript, usage and active time. Claude Code is the first harness, and Antigravity (agy) the second (LLM-594). An agent from another harness names itself with `LLMTODO_ACTOR` and sends no usage.
-46. **A status flag marks review, not a name (LLM-151).** The owner's Astro team uses In Review for the step that llmtodo's own team calls User review. A status has a `review` flag, and every review rule reads it: the claim end, the review section gate, the frontier, the review panel, the inbox list and review answers.
+46. **A status flag marks review, not a name (LLM-151).** Some teams use In Review for the step that llmtodo's own team calls User review. A status has a `review` flag, and every review rule reads it: the claim end, the review section gate, the frontier, the review panel, the inbox list and review answers.
 47. **Workflow states are fields, not labels (LLM-161).** Ready for an agent and needs the owner are `waiting_on`. Blocked is a `blocked-by` relation, and in review is a review status. `label create` and `label update --name` refuse a name with a workflow word, such as ready, owner or blocked, with exit code 6. `--force` creates it anyway. The check lives in the CLI, so the owner can still make any label in the app.
 48. **Tabs that do not fit go under More (LLM-197).** The task view's tab bar shows the tabs that fit, from the left. The rest go under a "More (N)" button at the right end of the tabs, which opens a GPUI Kit dropdown menu. The bar never scrolls sideways. It measures each label with the text system as it renders, and a canvas records the room the tabs had. Keyboard tab switching still reaches every tab.
 49. **An epic's order is stored as real `blocks` edges (LLM-206).** A sub-issue has a step number scoped to its parent. The server turns the steps into `blocks` relations with `source = order` and rewrites them on each order change, in the same transaction. Six queries read `blocks` edges, so real edges keep all of them, the cycle check and the 50,000-issue plan unchanged. A view that computed the edges on the fly would touch every one of them. See "Order (LLM-206)".
