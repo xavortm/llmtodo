@@ -841,6 +841,10 @@ impl Workspace {
         let Some(size) = state.read(cx).sizes().get(1).copied() else {
             return;
         };
+        // A sync of the kit's sizes, not a drag (LLM-640).
+        if self.layout.split_synced.take() == Some(size) {
+            return;
+        }
         // The smart split resizes the panel too. Only a drag
         // pins a size.
         let auto = self.layout.auto_split.filter(|_| !stacked);

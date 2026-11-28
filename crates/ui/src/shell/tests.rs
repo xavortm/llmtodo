@@ -3801,6 +3801,73 @@ fn split_auto_drops_the_dragged_width(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// LLM-640: the first drag after the task view opens moves the divider
+/// with the cursor. The kit's list width was still the whole window from
+/// before the task view showed, so the first frame made the task view far
+/// wider.
+#[gpui_kit::test]
+fn the_first_divider_drag_follows_the_cursor(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, point, px};
+    // A width the owner dragged to earlier, so the smart split stays out.
+    let (handle, view) = open_wide(1200., 760., 400., cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+        for _ in 0..3 {
+            window.render_frame(cx);
+        }
+        let before = view.read(cx).detail_size(cx).expect("task view laid out");
+        let start = window.find(("resizable-handle", 0usize)).bounds().center();
+        let to = point(start.x - px(10.), start.y);
+        let left = Some(MouseButton::Left);
+        let modifiers = Default::default();
+        mouse(
+            window,
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: start,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            },
+            cx,
+        );
+        for position in [point(start.x - px(5.), start.y), to] {
+            mouse(
+                window,
+                MouseMoveEvent {
+                    position,
+                    pressed_button: left,
+                    modifiers,
+                },
+                cx,
+            );
+            let now = view.read(cx).detail_size(cx).expect("task view laid out");
+            let moved = f32::from(now - before);
+            assert!(
+                (0. ..=10.5).contains(&moved),
+                "the task view grew {moved} px for a 10 px drag"
+            );
+        }
+        mouse(
+            window,
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                modifiers,
+                click_count: 1,
+            },
+            cx,
+        );
+        let after = view.read(cx).detail_size(cx).expect("task view laid out");
+        assert!(
+            (f32::from(after - before) - 10.).abs() < 1.,
+            "{before:?} {after:?}"
+        );
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn the_mouse_back_button_returns_to_the_previous_view(cx: &mut TestAppContext) {
     use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection};
