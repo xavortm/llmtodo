@@ -550,6 +550,15 @@ impl Issue {
     /// ticket, since its status says so, and on a closed ticket.
     pub fn review_badge(&self) -> Option<ReviewBadge> {
         let last = self.last_review.as_ref()?;
+        // LLM-645: the owner may approve in a reviewer agent's status too,
+        // so an approval is checked before that status hides the badge.
+        if self.approved_waiting() {
+            return Some(ReviewBadge {
+                text: "✓ Approved".into(),
+                tip: APPROVED_WAITING_TIP.into(),
+                approved: true,
+            });
+        }
         if self.status.agent_review || self.status.is_closed() {
             return None;
         }
@@ -562,11 +571,6 @@ impl Issue {
             n => format!("{n} notes"),
         };
         let (text, tip) = match last.verdict {
-            // LLM-645: an approval that waits for its merge says so, so the
-            // row does not read as the owner's turn.
-            api::ReviewVerdict::Approved if self.approved_waiting() => {
-                ("✓ Approved".to_string(), APPROVED_WAITING_TIP.to_string())
-            }
             api::ReviewVerdict::Approved => return None,
             api::ReviewVerdict::Passed if last.notes == 0 => (
                 format!("{who} ✓"),
@@ -584,7 +588,7 @@ impl Issue {
         Some(ReviewBadge {
             text: text.into(),
             tip: tip.into(),
-            approved: last.verdict == api::ReviewVerdict::Approved,
+            approved: false,
         })
     }
 }

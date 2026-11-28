@@ -1002,21 +1002,24 @@ fn an_approved_ticket_shows_it_waits_for_its_merge(cx: &mut TestAppContext) {
     use crate::model::data::LastReview;
     let (handle, view, _) = open(cx);
     let id = in_review(handle, &view, SECTION, cx);
+    // Grouped once, before the answer: the regroup must come from the
+    // update itself, as when the server answers an Approve.
+    view.update(cx, |this, cx| {
+        this.list()
+            .update(cx, |list, cx| list.group_by(GroupBy::Status, cx));
+    });
+    cx.run_until_parked();
     let set = |verdict: ReviewVerdict, waiting: WaitingOn, cx: &mut TestAppContext| {
         view.update(cx, |this, cx| {
-            this.store().update(cx, |store, _| {
-                store.modify(id, |i| {
-                    i.last_review = Some(LastReview {
-                        round: 2,
-                        verdict,
-                        notes: 0,
-                        agent: None,
-                    });
-                    i.waiting_on = Some(waiting);
-                });
+            let mut issue = this.store().read(cx).get(id).unwrap().clone();
+            issue.last_review = Some(LastReview {
+                round: 2,
+                verdict,
+                notes: 0,
+                agent: None,
             });
-            this.list()
-                .update(cx, |list, cx| list.group_by(GroupBy::Status, cx));
+            issue.waiting_on = Some(waiting);
+            this.upsert_issue(issue, cx);
         });
         cx.run_until_parked();
     };
@@ -1063,4 +1066,31 @@ fn an_approved_ticket_shows_it_waits_for_its_merge(cx: &mut TestAppContext) {
         assert!(window.try_find("detail-approved").is_none());
     })
     .unwrap();
+}
+
+/// LLM-645: the owner may approve a ticket that a reviewer agent still
+/// has, in a status such as In Review. It shows the Approved badge there
+/// too, and it is no drop target.
+#[test]
+fn an_approval_during_an_agent_review_shows_the_badge() {
+    use crate::model::data::LastReview;
+    let mut issue = crate::model::demo::issues(&crate::model::demo::catalog())
+        .into_iter()
+        .next()
+        .expect("demo issues");
+    issue.status = Status::new("In Review", StatusType::Started, 8)
+        .with_role(true, Some(llmtodo_api_types::ReviewRole::Agent));
+    issue.waiting_on = Some(WaitingOn::Agent);
+    issue.last_review = Some(LastReview {
+        round: 2,
+        verdict: ReviewVerdict::Approved,
+        notes: 0,
+        agent: None,
+    });
+    assert!(issue.approved_waiting());
+    assert!(issue.review_badge().is_some_and(|b| b.approved));
+    // Waiting on the owner again, it is the owner's turn: no badge.
+    issue.waiting_on = Some(WaitingOn::Owner);
+    assert!(!issue.approved_waiting());
+    assert!(issue.review_badge().is_none());
 }

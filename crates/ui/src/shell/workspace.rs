@@ -5009,18 +5009,28 @@ impl Workspace {
         if !self.editable(id, cx) {
             return;
         }
-        let Some(message) = self.edit_issue(id, cx, |issue, _| {
+        let approved_before = self
+            .store
+            .read(cx)
+            .get(id)
+            .is_some_and(Issue::approved_waiting);
+        let Some((message, approved_after)) = self.edit_issue(id, cx, |issue, _| {
             issue.waiting_on = waiting;
-            match waiting {
+            let message = match waiting {
                 Some(WaitingOn::Agent) => format!("{} waits on an agent", issue.key),
                 Some(WaitingOn::Owner) => format!("{} waits on you", issue.key),
                 Some(WaitingOn::Reviewer) => format!("{} waits on a reviewer agent", issue.key),
                 None => format!("{} waits on no one", issue.key),
-            }
+            };
+            (message, issue.approved_waiting())
         }) else {
             return;
         };
         self.message = message.into();
+        // LLM-645: who it waits on decides the "Approved, merging" group.
+        if approved_before != approved_after {
+            self.list_do(cx, |list, cx| list.refresh_keeping_selection(cx));
+        }
         let update = llmtodo_client::types::UpdateIssue {
             waiting_on: waiting.map_or(
                 llmtodo_client::types::Change::Clear,

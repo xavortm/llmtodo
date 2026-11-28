@@ -284,8 +284,10 @@ pub fn review_badge(
     let theme = cx.theme();
     // An approval waiting for its merge is not the owner's turn: it takes
     // the success color, so it reads apart from a reviewer's verdict.
+    // Its text sits on a faint fill of its own color, so aim above 4.5:1,
+    // as label tags do. The success color alone is tuned for icons.
     let tone = if badge.approved {
-        theme.success
+        crate::shell::theme::ensure_contrast(theme.success, &[theme.background, theme.muted], 5.0)
     } else {
         theme.muted_foreground
     };
