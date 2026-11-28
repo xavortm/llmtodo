@@ -149,14 +149,6 @@ struct PanelHeight {
     child: AnyElement,
 }
 
-impl IntoElement for PanelHeight {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 /// How a panel lays out in this frame.
 enum Mode {
     /// As usual: the content is a child of the box.

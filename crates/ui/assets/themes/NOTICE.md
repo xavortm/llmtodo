@@ -1,7 +1,7 @@
 # Bundled themes
 
 - `gruvbox.json`: copied unchanged from GPUI Kit (gpui-component) `themes/gruvbox.json`
-  at revision `1029e2c`. GPUI Kit is © 2024 - 2026 Longbridge, Apache License 2.0.
+  at revision `0f047bb`. GPUI Kit is © 2024 - 2026 Longbridge, Apache License 2.0.
   The Gruvbox palette is by Pavel Pertsev, <https://github.com/morhetz/gruvbox>,
   under the MIT/X11 license.
 - `macos.json`: written for llmtodo, MIT like the rest of the repo. The values

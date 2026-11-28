@@ -1,5 +1,5 @@
 # Every icon name the app can draw for a project: the SVG names that GPUI Kit
-# bundles at gpui-component 1029e2c, which are Lucide 1.43.0 and 12 GPUI Kit icons.
+# bundles at gpui-component 0f047bb, which are Lucide 1.43.0 and 12 GPUI Kit icons.
 # A test in the ui crate fails when this list and GPUI Kit disagree. On an
 # upgrade, write the list again from the gpui-component clone:
 #   ls crates/assets/assets/icons | sed 's/\.svg$//' | LC_ALL=C sort
