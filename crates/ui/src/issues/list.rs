@@ -733,6 +733,9 @@ impl IssueList {
             || old.labels != new.labels
             || old.assignee != new.assignee
             || old.added != new.added
+            // LLM-645: an approval keeps the status but moves the task to
+            // the "Approved, merging" group.
+            || old.approved_waiting() != new.approved_waiting()
     }
 
     /// Filters again after one issue changed: drops issues that went to the
@@ -768,6 +771,7 @@ impl IssueList {
         let i = self.store.read(cx).get(id)?;
         let title: SharedString = match self.group {
             GroupBy::None => return None,
+            GroupBy::Status if i.approved_waiting() => rows::APPROVED_GROUP.into(),
             GroupBy::Status => i.status.name.clone(),
             GroupBy::Label => i
                 .labels
@@ -2584,8 +2588,14 @@ impl IssueList {
         let drop = theme.foreground.opacity(0.16);
         let events = self.events.clone();
         let store = self.store.clone();
-        this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
-            .drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
+        let this = this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()));
+        // LLM-645: a row in "Approved, merging" is no drop target. Its group
+        // stands for no status, so a drop there would move the task to a
+        // status the owner does not see.
+        if issue.approved_waiting() {
+            return this;
+        }
+        this.drag_over::<DraggedIssue>(move |s, _, _, _| s.bg(drop))
             .on_drop(move |dragged: &DraggedIssue, window, cx| {
                 let same = store
                     .read(cx)

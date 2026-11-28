@@ -99,6 +99,10 @@ pub struct BuiltRows {
 /// The title of the group of issues with no parent.
 pub const NO_PARENT: &str = "No parent";
 
+/// The group, under "group by status", of approved tickets that wait for
+/// their merge (LLM-645).
+pub const APPROVED_GROUP: &str = "Approved, merging";
+
 /// The title of the group of issues with no project.
 pub const NO_PROJECT: &str = "No project";
 
@@ -306,7 +310,12 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
             for (ix, s) in input.statuses.iter().enumerate() {
                 at.entry(s.name.as_ref()).or_insert(ix);
             }
+            let mut approved = Vec::new();
             for issue in issues {
+                if issue.approved_waiting() {
+                    approved.push(issue.id);
+                    continue;
+                }
                 let status = &issue.status;
                 let ix = *at.entry(status.name.as_ref()).or_insert_with(|| {
                     groups
@@ -326,6 +335,22 @@ fn group(issues: &[&Issue], input: &RowsInput<'_>) -> Vec<Row> {
             }
             // A stable sort, so equal ranks keep the catalog's order.
             groups.sort_by_key(|g| g.2.as_ref().map(Status::rank));
+            // LLM-645: approved tickets that wait for their merge get their
+            // own group under the last review status, so the review groups
+            // hold only tickets that need the owner. It has no status, so a
+            // drop on it changes nothing.
+            if !approved.is_empty() {
+                let at = groups
+                    .iter()
+                    .rposition(|g| g.2.as_ref().is_some_and(|s| s.review && !g.3.is_empty()))
+                    .or_else(|| {
+                        groups
+                            .iter()
+                            .rposition(|g| g.2.as_ref().is_some_and(|s| s.review))
+                    })
+                    .map_or(groups.len(), |ix| ix + 1);
+                groups.insert(at, (APPROVED_GROUP.into(), None, None, approved));
+            }
             groups
         }
         GroupBy::Label => {

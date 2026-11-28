@@ -530,20 +530,35 @@ pub fn reviewer_name(actor: &api::Actor) -> String {
     }
 }
 
+/// What an approved ticket waits for (LLM-645).
+pub const APPROVED_WAITING_TIP: &str = "You approved it. An agent will merge its PR and close it.";
+
 /// The verdict badge on a ticket's row: its text and its tooltip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewBadge {
     pub text: SharedString,
     pub tip: SharedString,
+    /// The owner approved it and it waits for its merge (LLM-645). The
+    /// badge then shows in the success color.
+    pub approved: bool,
 }
 
 impl Issue {
     /// The badge for the newest review answer, such as `agy ✓`,
-    /// `agy · 3 notes` or `agy · changes`. None while a reviewer agent
-    /// reviews the ticket, since its status says so, and after the
-    /// owner's approval or on a closed ticket.
+    /// `agy · 3 notes`, `agy · changes` or `✓ Approved` while an approved
+    /// ticket waits for its merge. None while a reviewer agent reviews the
+    /// ticket, since its status says so, and on a closed ticket.
     pub fn review_badge(&self) -> Option<ReviewBadge> {
         let last = self.last_review.as_ref()?;
+        // LLM-645: the owner may approve in a reviewer agent's status too,
+        // so an approval is checked before that status hides the badge.
+        if self.approved_waiting() {
+            return Some(ReviewBadge {
+                text: "✓ Approved".into(),
+                tip: APPROVED_WAITING_TIP.into(),
+                approved: true,
+            });
+        }
         if self.status.agent_review || self.status.is_closed() {
             return None;
         }
@@ -573,6 +588,7 @@ impl Issue {
         Some(ReviewBadge {
             text: text.into(),
             tip: tip.into(),
+            approved: false,
         })
     }
 }
@@ -663,6 +679,19 @@ impl Issue {
         } else {
             LLM_RANK_NONE
         }
+    }
+
+    /// LLM-645: the owner approved the ticket and it waits on an agent to
+    /// merge its PR and close it. It stays in its review status meanwhile,
+    /// but it is no longer the owner's turn.
+    pub fn approved_waiting(&self) -> bool {
+        self.status.review
+            && !self.status.is_closed()
+            && self.waiting_on == Some(WaitingOn::Agent)
+            && self
+                .last_review
+                .as_ref()
+                .is_some_and(|r| r.verdict == api::ReviewVerdict::Approved)
     }
 
     /// LLM-166: why Approve does not apply to the task, or `None` when it

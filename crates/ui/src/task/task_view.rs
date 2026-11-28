@@ -1971,6 +1971,7 @@ impl TaskView {
                 .items_center()
                 .child(child)
         };
+        let approved_waiting = issue.approved_waiting();
         h_flex()
             .id("detail-header")
             .test_support()
@@ -1990,11 +1991,29 @@ impl TaskView {
                         Icon::new(issue.status.icon())
                             .small()
                             .when(issue.status.is_done(), |i| i.text_color(theme.success)),
-                        Card::text(format!("Status: {}", issue.status.name)),
+                        Card::text(if approved_waiting {
+                            format!(
+                                "Status: {}. {}",
+                                issue.status.name,
+                                crate::model::data::APPROVED_WAITING_TIP
+                            )
+                        } else {
+                            format!("Status: {}", issue.status.name)
+                        }),
                     )
                     .into_any_element(),
                 ))
                 .child(on_first_line("detail-key", key))
+                // LLM-645: an approved ticket says it waits for its merge,
+                // not for the owner.
+                .children(
+                    widgets::review_badge(
+                        SharedString::from(format!("detail-approved-{issue_id}")).into(),
+                        issue.review_badge().filter(|b| b.approved),
+                        cx,
+                    )
+                    .map(|b| on_first_line("detail-approved", b)),
+                )
             })
             .child(
                 div()

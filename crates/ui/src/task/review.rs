@@ -102,12 +102,15 @@ pub fn panel(
     };
     let mut body: Vec<AnyElement> = Vec::new();
     // An approval with an open PR waits on an agent to merge it.
-    let approved_waiting = in_review
-        && issue.waiting_on == Some(WaitingOn::Agent)
-        && state
-            .answers
-            .last()
-            .is_some_and(|a| a.verdict == ReviewVerdict::Approved);
+    // The answers load with the task, so they can be newer than the
+    // ticket's own last review.
+    let approved_waiting = issue.approved_waiting()
+        || (in_review
+            && issue.waiting_on == Some(WaitingOn::Agent)
+            && state
+                .answers
+                .last()
+                .is_some_and(|a| a.verdict == ReviewVerdict::Approved));
     if in_review && let Some(try_it) = &state.try_it {
         body.push(try_it_row(issue, try_it, events.clone(), cx));
     }
@@ -178,7 +181,7 @@ pub fn panel(
                     .id("review-waiting-merge")
                     .test_support()
                     .text_color(muted)
-                    .child("You approved it. An agent will merge its PR and close it.")
+                    .child(crate::model::data::APPROVED_WAITING_TIP)
                     .into_any_element(),
             );
         } else {

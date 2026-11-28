@@ -271,7 +271,8 @@ pub fn waiting_on(
 }
 
 /// The verdict badge of the newest review answer, such as `agy · 3 notes`
-/// (LLM-593). A neutral tag: the words carry the verdict. Its card says who
+/// (LLM-593). A neutral tag: the words carry the verdict. An approval that
+/// waits for its merge is green (LLM-645). Its card says who
 /// answered what, in which round. Nothing without a badge: see
 /// `Issue::review_badge`.
 pub fn review_badge(
@@ -281,7 +282,15 @@ pub fn review_badge(
 ) -> Option<AnyElement> {
     let badge = badge?;
     let theme = cx.theme();
-    let muted = theme.muted_foreground;
+    // An approval waiting for its merge is not the owner's turn: it takes
+    // the success color, so it reads apart from a reviewer's verdict.
+    // Its text sits on a faint fill of its own color, so aim above 4.5:1,
+    // as label tags do. The success color alone is tuned for icons.
+    let tone = if badge.approved {
+        crate::shell::theme::ensure_contrast(theme.success, &[theme.background, theme.muted], 5.0)
+    } else {
+        theme.muted_foreground
+    };
     Some(
         div()
             .id(id)
@@ -290,8 +299,8 @@ pub fn review_badge(
             .px_1p5()
             .rounded(theme.radius)
             .text_xs()
-            .text_color(muted)
-            .bg(muted.opacity(0.12))
+            .text_color(tone)
+            .bg(tone.opacity(0.12))
             .child(badge.text)
             .tooltip(crate::shell::tooltip::Card::text(badge.tip).builder())
             .into_any_element(),
