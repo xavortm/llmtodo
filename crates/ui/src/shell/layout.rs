@@ -2,9 +2,6 @@
 //! list and the task view. The workspace owns it and updates it in its own
 //! update pass.
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use gpui_kit::component::resizable::ResizableState;
 use gpui_kit::{Entity, Pixels};
 
@@ -16,9 +13,6 @@ pub struct Layout {
     /// The room beside the list and the task view width the smart split
     /// last gave it. Only used until the owner drags the divider.
     pub auto_split: Option<(Pixels, Pixels)>,
-    /// The task view size a sync of the kit's sizes set (LLM-640). Its
-    /// resize event is not a drag, so it pins no size.
-    pub split_synced: Rc<Cell<Option<Pixels>>>,
     /// The owner's choice: show the sidebar or not. Only Cmd-B, the title
     /// bar button and `:sidebar` change it, and it is saved.
     pub sidebar_open: bool,
@@ -41,7 +35,6 @@ impl Layout {
             split_stacked,
             split_sizes: (None, None),
             auto_split: None,
-            split_synced: Default::default(),
             sidebar_open: false,
             narrow,
             sidebar_forced: false,

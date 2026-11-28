@@ -76,7 +76,7 @@ This repo is MIT, so the license decides what we can copy.
 
 ### Keep the clones in step
 
-GPUI Kit is pinned in `crates/ui/Cargo.toml`, `crates/app/Cargo.toml` and `crates/ui-bench/Cargo.toml` at gpui-component `1029e2c`. It takes GPUI from crates.io as `gpui-pre =0.3.12`, which is zed `d2a4fb6`. Do not add a separate GPUI dependency: it would compile a second, mismatched copy. The zed clone sits at `d2a4fb6` and the gpui-component clone at `1029e2c`. On every upgrade, check out the matching revisions in both clones and recopy the GPUI Kit skills, so the code you read matches the code we compile:
+GPUI Kit is pinned in `crates/ui/Cargo.toml`, `crates/app/Cargo.toml` and `crates/ui-bench/Cargo.toml` at gpui-component `0f047bb`. It takes GPUI from crates.io as `gpui-pre =0.3.14`, which is zed `f126950`. Do not add a separate GPUI dependency: it would compile a second, mismatched copy. The zed clone sits at `f126950` and the gpui-component clone at `0f047bb`. On every upgrade, check out the matching revisions in both clones and recopy the GPUI Kit skills, so the code you read matches the code we compile:
 
 ```sh
 git -C ~/code/oss/zed fetch --depth 1 origin <rev> && git -C ~/code/oss/zed checkout <rev>

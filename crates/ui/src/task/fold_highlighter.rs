@@ -7,7 +7,7 @@
 //!
 //! The parsing follows GPUI Kit's own `TreeSitterInputHighlighter` in
 //! `gpui-component/crates/component/src/highlighter/input_adapter.rs`
-//! (Apache-2.0, longbridge/gpui-component at `1029e2c`). It passes each edit
+//! (Apache-2.0, longbridge/gpui-component at `0f047bb`). It passes each edit
 //! to tree-sitter, parses for at most 2 ms on the main thread, and finishes
 //! a longer parse on a background thread. `to_tree_sitter_edit` is copied
 //! from that file. The background parse differs: GPUI Kit's helpers for it

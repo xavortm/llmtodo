@@ -73,11 +73,3 @@ impl Element for Unzoomed {
         window.with_rem_size(Some(rem), |window| self.child.paint(window, cx));
     }
 }
-
-impl IntoElement for Unzoomed {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}

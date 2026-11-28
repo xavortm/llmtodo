@@ -476,14 +476,6 @@ impl gpui_kit::Element for TextColorProbe {
     }
 }
 
-impl gpui_kit::IntoElement for TextColorProbe {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 pub(crate) type ProbeCell = std::rc::Rc<std::cell::Cell<Option<gpui_kit::Hsla>>>;
 
 /// One real option button with a probe in place of its letter and its label.

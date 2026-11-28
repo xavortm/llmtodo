@@ -75,35 +75,6 @@ impl Workspace {
         }
     }
 
-    /// LLM-640: makes the kit's panel sizes match the widths on screen.
-    /// The kit keeps the list's size from before the task view opened, and
-    /// its drag code reads that size before it measures the panels again.
-    /// So the first frame of a drag made the task view hundreds of pixels
-    /// wider. A resize to the size the kit already holds moves nothing,
-    /// but it measures the panels first. Never during a drag: the resize
-    /// would end it.
-    fn sync_split_sizes(
-        state: &Entity<ResizableState>,
-        synced: &std::cell::Cell<Option<gpui_kit::Pixels>>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        if cx.has_active_drag() {
-            return;
-        }
-        let split = state.read(cx);
-        let Some(&list) = split.sizes().first() else {
-            return;
-        };
-        let total: f32 = split.sizes().iter().map(|s| f32::from(*s)).sum();
-        let room = f32::from(split.container_size());
-        if split.sizes().len() < 2 || room <= 0. || (total - room).abs() < 0.5 {
-            return;
-        }
-        state.update(cx, |state, cx| state.resize_panel(0, list, window, cx));
-        synced.set(state.read(cx).sizes().get(1).copied());
-    }
-
     /// The list and the task view, side by side or stacked. Drag the
     /// divider to resize the task view. Each layout keeps its own size.
     /// `filters_open` runs from 0 to 1: how far the filter panel is open.
@@ -239,12 +210,7 @@ impl Workspace {
                         ),
                 )
             });
-        let state = if stacked {
-            self.layout.split_stacked.clone()
-        } else {
-            self.layout.split_side.clone()
-        };
-        let group = group
+        group
             .with_handle_appearance(std::rc::Rc::new(Self::divider))
             .child(list.into_any_element())
             .child(
@@ -288,21 +254,7 @@ impl Workspace {
                             cx,
                         ))
                     }),
-            );
-        // The canvas prepaints after the panels, so it sees the widths of
-        // this frame. A hidden task view keeps old bounds, so only an open
-        // one syncs.
-        let synced = self.layout.split_synced.clone();
-        div().size_full().child(group).when(open, |this| {
-            this.child(
-                gpui_kit::canvas(
-                    move |_, window, cx| Self::sync_split_sizes(&state, &synced, window, cx),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_0(),
             )
-        })
     }
 
     /// The line between the list and the task view. It is 2 px, so the
