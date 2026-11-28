@@ -3530,7 +3530,7 @@ impl Workspace {
 
     /// LLM-155: after the owner approves a review ticket or sets it to
     /// Done, selects the first row in the list that is still in a review
-    /// status. `done` names the tickets that just left review. The list
+    /// status and not approved already (LLM-645). `done` names the tickets that just left review. The list
     /// scrolls only when that row is out of view. With no review ticket
     /// left, nothing changes. LLM-168: the task panel shows the row only
     /// when `open` is set, which says a panel was open when the owner
@@ -3551,7 +3551,7 @@ impl Workspace {
                 .find_map(|(row, r)| match r {
                     Row::Issue(id) if !done.contains(id) => store
                         .get(*id)
-                        .filter(|i| i.status.review && !i.deleted)
+                        .filter(|i| i.status.review && !i.deleted && !i.approved_waiting())
                         .map(|_| (row, *id)),
                     _ => None,
                 })

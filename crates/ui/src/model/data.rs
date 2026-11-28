@@ -530,18 +530,24 @@ pub fn reviewer_name(actor: &api::Actor) -> String {
     }
 }
 
+/// What an approved ticket waits for (LLM-645).
+pub const APPROVED_WAITING_TIP: &str = "You approved it. An agent will merge its PR and close it.";
+
 /// The verdict badge on a ticket's row: its text and its tooltip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewBadge {
     pub text: SharedString,
     pub tip: SharedString,
+    /// The owner approved it and it waits for its merge (LLM-645). The
+    /// badge then shows in the success color.
+    pub approved: bool,
 }
 
 impl Issue {
     /// The badge for the newest review answer, such as `agy ✓`,
-    /// `agy · 3 notes` or `agy · changes`. None while a reviewer agent
-    /// reviews the ticket, since its status says so, and after the
-    /// owner's approval or on a closed ticket.
+    /// `agy · 3 notes`, `agy · changes` or `✓ Approved` while an approved
+    /// ticket waits for its merge. None while a reviewer agent reviews the
+    /// ticket, since its status says so, and on a closed ticket.
     pub fn review_badge(&self) -> Option<ReviewBadge> {
         let last = self.last_review.as_ref()?;
         if self.status.agent_review || self.status.is_closed() {
@@ -556,6 +562,11 @@ impl Issue {
             n => format!("{n} notes"),
         };
         let (text, tip) = match last.verdict {
+            // LLM-645: an approval that waits for its merge says so, so the
+            // row does not read as the owner's turn.
+            api::ReviewVerdict::Approved if self.approved_waiting() => {
+                ("✓ Approved".to_string(), APPROVED_WAITING_TIP.to_string())
+            }
             api::ReviewVerdict::Approved => return None,
             api::ReviewVerdict::Passed if last.notes == 0 => (
                 format!("{who} ✓"),
@@ -573,6 +584,7 @@ impl Issue {
         Some(ReviewBadge {
             text: text.into(),
             tip: tip.into(),
+            approved: last.verdict == api::ReviewVerdict::Approved,
         })
     }
 }
@@ -663,6 +675,19 @@ impl Issue {
         } else {
             LLM_RANK_NONE
         }
+    }
+
+    /// LLM-645: the owner approved the ticket and it waits on an agent to
+    /// merge its PR and close it. It stays in its review status meanwhile,
+    /// but it is no longer the owner's turn.
+    pub fn approved_waiting(&self) -> bool {
+        self.status.review
+            && !self.status.is_closed()
+            && self.waiting_on == Some(WaitingOn::Agent)
+            && self
+                .last_review
+                .as_ref()
+                .is_some_and(|r| r.verdict == api::ReviewVerdict::Approved)
     }
 
     /// LLM-166: why Approve does not apply to the task, or `None` when it

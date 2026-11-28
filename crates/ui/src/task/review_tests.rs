@@ -990,3 +990,77 @@ fn in_review_stays_out_of_the_inbox_and_rows_show_the_badge(cx: &mut TestAppCont
     })
     .unwrap();
 }
+
+/// LLM-645: an approved ticket that waits on an agent to merge its PR
+/// says so on its row and in the task header, and sits in its own group
+/// under "group by status", out of the User review group. A new answer
+/// that asks for changes puts it back.
+#[gpui_kit::test]
+fn an_approved_ticket_shows_it_waits_for_its_merge(cx: &mut TestAppContext) {
+    use crate::issues::list::{GroupBy, Row};
+    use crate::issues::rows::APPROVED_GROUP;
+    use crate::model::data::LastReview;
+    let (handle, view, _) = open(cx);
+    let id = in_review(handle, &view, SECTION, cx);
+    let set = |verdict: ReviewVerdict, waiting: WaitingOn, cx: &mut TestAppContext| {
+        view.update(cx, |this, cx| {
+            this.store().update(cx, |store, _| {
+                store.modify(id, |i| {
+                    i.last_review = Some(LastReview {
+                        round: 2,
+                        verdict,
+                        notes: 0,
+                        agent: None,
+                    });
+                    i.waiting_on = Some(waiting);
+                });
+            });
+            this.list()
+                .update(cx, |list, cx| list.group_by(GroupBy::Status, cx));
+        });
+        cx.run_until_parked();
+    };
+    // The group title each row sits under.
+    let group_of = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let mut title = None;
+            for row in view.read(cx).list().read(cx).rows() {
+                match row {
+                    Row::Header { title: t, .. } => title = Some(t.to_string()),
+                    Row::Issue(i) if *i == id => return title,
+                    _ => {}
+                }
+            }
+            None
+        })
+    };
+    let row_badge = crate::shell::widgets::issue_part("row-review", id);
+
+    set(ReviewVerdict::Approved, WaitingOn::Agent, cx);
+    assert!(cx.read(|cx| {
+        view.read(cx)
+            .store()
+            .read(cx)
+            .get(id)
+            .unwrap()
+            .approved_waiting()
+    }));
+    assert_eq!(group_of(cx).as_deref(), Some(APPROVED_GROUP));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(row_badge.clone()).is_some(),
+            "the row says Approved"
+        );
+        window.find("detail-approved");
+    })
+    .unwrap();
+
+    set(ReviewVerdict::ChangesRequested, WaitingOn::Agent, cx);
+    assert_eq!(group_of(cx).as_deref(), Some("User review"));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("detail-approved").is_none());
+    })
+    .unwrap();
+}

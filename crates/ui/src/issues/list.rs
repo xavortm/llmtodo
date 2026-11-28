@@ -768,6 +768,7 @@ impl IssueList {
         let i = self.store.read(cx).get(id)?;
         let title: SharedString = match self.group {
             GroupBy::None => return None,
+            GroupBy::Status if i.approved_waiting() => rows::APPROVED_GROUP.into(),
             GroupBy::Status => i.status.name.clone(),
             GroupBy::Label => i
                 .labels
