@@ -336,7 +336,7 @@ Pass `-w agent` when the ticket is ready for an agent to pick up. Leave it out f
 
 ## The work log
 
-Every write you make adds your session to the ticket's work log: harness, model, effort, branch, worktree, herdr pane and commits. You do not need a flag for it. Add a note or a link to your session:
+Every write you make adds your session to the ticket's work log: harness, model, effort, branch, worktree, terminal pane and commits. You do not need a flag for it. Add a note or a link to your session:
 
 ```sh
 llmtodo session note "Plan: /path/to/plan.md" --issue ABC-12

@@ -876,9 +876,9 @@ fn agy() -> llmtodo_api_types::Actor {
     llmtodo_api_types::Actor {
         id: llmtodo_core::ActorId::from_u128(7),
         kind: llmtodo_api_types::ActorKind::Agent,
-        name: "antigravity/gemini-4-neon/high".into(),
+        name: "antigravity/reviewer/high".into(),
         harness: Some("antigravity".into()),
-        model: Some("gemini-4-neon".into()),
+        model: Some("reviewer".into()),
         effort: Some("high".into()),
         is_owner: false,
     }

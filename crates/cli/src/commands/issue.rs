@@ -499,7 +499,7 @@ pub enum CommentCmd {
 
 #[derive(Subcommand)]
 pub enum RelationCmd {
-    /// `issue relation add ALX-1 blocks ALX-2`
+    /// `issue relation add ABC-1 blocks ABC-2`
     Add {
         key: String,
         kind: RelationInput,

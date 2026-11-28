@@ -7,7 +7,7 @@ license.workspace = true
 # GPUI Kit is pinned to one git revision. GPUI comes through GPUI Kit, which
 # pins `gpui-pre =0.3.14` from crates.io at that revision. Do not add a
 # separate GPUI dependency: it must stay the exact one GPUI Kit compiles with.
-# Upgrade both together, and move ~/code/oss/gpui-component with them.
+# Upgrade both together, and update your local `gpui-component` clone with them.
 [features]
 # The demo data, for `llmtodo-ui-bench`. It turns on no `test-support`.
 bench-support = []

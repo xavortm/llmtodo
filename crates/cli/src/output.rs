@@ -379,14 +379,14 @@ mod tests {
 
     #[test]
     fn picks_nested_fields() {
-        let v = json!({ "key": "ALX-1", "title": "t", "status": { "name": "Todo", "type": "unstarted" } });
+        let v = json!({ "key": "ABC-1", "title": "t", "status": { "name": "Todo", "type": "unstarted" } });
         let f: Vec<String> = ["key", "status.name"]
             .iter()
             .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(
             pick(v, &f),
-            json!({ "key": "ALX-1", "status": { "name": "Todo" } })
+            json!({ "key": "ABC-1", "status": { "name": "Todo" } })
         );
     }
 }

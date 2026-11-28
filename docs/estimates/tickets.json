@@ -3,11 +3,11 @@
  "note": "Written by scripts/estimate-report. Ratios use active_minutes / estimate_minutes and cost_usd / estimate_cost_usd.",
  "tickets": [
   {
-   "key": "AST-16",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-16",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-1",
+   "parent": "EXT-1",
    "estimate_minutes": 45,
    "estimate_cost_usd": 6.0,
    "active_minutes": 1.77,
@@ -33,11 +33,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-18",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-18",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-2",
+   "parent": "EXT-2",
    "estimate_minutes": 30,
    "estimate_cost_usd": 3.0,
    "active_minutes": 11.48,
@@ -63,11 +63,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-22",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-22",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-2",
+   "parent": "EXT-2",
    "estimate_minutes": 15,
    "estimate_cost_usd": 1.5,
    "active_minutes": 0.55,
@@ -93,11 +93,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-25",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-25",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-3",
+   "parent": "EXT-3",
    "estimate_minutes": 8,
    "estimate_cost_usd": 0.6,
    "active_minutes": 9.32,
@@ -123,11 +123,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-30",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-30",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-4",
+   "parent": "EXT-4",
    "estimate_minutes": 25,
    "estimate_cost_usd": 3.0,
    "active_minutes": 6.22,
@@ -153,11 +153,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-35",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-35",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-5",
+   "parent": "EXT-5",
    "estimate_minutes": 10,
    "estimate_cost_usd": 0.8,
    "active_minutes": 0.3,
@@ -183,11 +183,11 @@
    "interleaved": true
   },
   {
-   "key": "AST-67",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-67",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 10,
    "estimate_cost_usd": 2.0,
    "active_minutes": 1.65,
@@ -213,11 +213,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-68",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-68",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 45,
    "estimate_cost_usd": 10.0,
    "active_minutes": 2.85,
@@ -243,11 +243,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-69",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-69",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 40,
    "estimate_cost_usd": 9.0,
    "active_minutes": 8.42,
@@ -273,11 +273,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-70",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-70",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 25,
    "estimate_cost_usd": 5.0,
    "active_minutes": 3.25,
@@ -303,11 +303,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-71",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-71",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 50,
    "estimate_cost_usd": 11.0,
    "active_minutes": 10.05,
@@ -333,11 +333,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-72",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-72",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 25,
    "estimate_cost_usd": 5.0,
    "active_minutes": 3.53,
@@ -363,11 +363,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-73",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-73",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 5,
    "estimate_cost_usd": 1.0,
    "active_minutes": 1.02,
@@ -393,11 +393,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-74",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-74",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 60,
    "estimate_cost_usd": 12.0,
    "active_minutes": 7.13,
@@ -423,11 +423,11 @@
    "interleaved": false
   },
   {
-   "key": "AST-75",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-75",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [],
-   "parent": "AST-66",
+   "parent": "EXT-66",
    "estimate_minutes": 40,
    "estimate_cost_usd": 8.0,
    "active_minutes": 4.2,
@@ -453,9 +453,9 @@
    "interleaved": false
   },
   {
-   "key": "AST-77",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-77",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [
     "Area/canvas"
    ],
@@ -485,9 +485,9 @@
    "interleaved": true
   },
   {
-   "key": "AST-79",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-79",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [
     "Area/canvas"
    ],
@@ -517,9 +517,9 @@
    "interleaved": true
   },
   {
-   "key": "AST-123",
-   "team": "AST",
-   "project": "AST-a",
+   "key": "EXT-123",
+   "team": "EXT",
+   "project": "proj-a",
    "labels": [
     "Area/playbook"
    ],
@@ -997,7 +997,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "Server: any review status ends the claim, not only User review",
-   "description": "The owner reported this on 2026-11-11. In the Astro starter team, 13 tickets in \"In Review\" show as locked by an agent. A ticket waiting for review must never be locked.\n\nLLM-138 ends the claim only on a move to the status named \"User review\". The Astro team uses \"In Review\" for the same step.\n\n## Fix\n\n- A status has a review flag. The CLI and the API can set it.\n- A migration sets the flag on statuses named \"In Review\" or \"User review\" in every team, and ends the live claims on issues in those statuses. The activity log records each ended claim.\n- Everything that works for User review today works for any status with the flag: the move ends the claim, the review section is required, the review panel shows, and Approve and Request changes work.\n- The frontier skips issues in a review status.\n- The agent docs and the skill say \"a review status\" instead of naming User review only.\n\n+++ Agent notes\nEstimate before the claim: 45 minutes and 12 USD.\n\nLanded in adb8381.\n\n- A status has a `review` flag. `status create --review` and `status update --review true|false` set it. Setting it ends the claims on the status's issues.\n- Every review rule reads the flag: the claim end, the section gate, the GitHub sync skip, the review panel, the inbox list, review answers and the claim's work status.\n- Migration 0012 sets the flag on In Review and User review in every team. At the next start the server ends live claims on issues in a review status, once, as the `migration` system actor. The reason is `review`. With no claims to end it writes nothing, so sync sees no change.\n- New teams get the flag on In Review. A Linear import sets it on either name.\n- The frontier skips review tickets, unless one waits on an agent after an approval with an open PR.\n- A claim on a review ticket moves it to the first work status, so it is never locked in review.\n- A PR open still moves a ticket to In Review, but only with a review section, and the move now ends the claim.\n\nTested on realistic data: the installed old build made two teams with claimed tickets in In Review and In Progress. The new server unlocked the three In Review tickets, kept the In Progress claims, and wrote a pre-migrate backup.\n+++\n",
+   "description": "The owner reported this on 2026-11-11. In another team, 13 tickets in \"In Review\" show as locked by an agent. A ticket waiting for review must never be locked.\n\nLLM-138 ends the claim only on a move to the status named \"User review\". That team uses \"In Review\" for the same step.\n\n## Fix\n\n- A status has a review flag. The CLI and the API can set it.\n- A migration sets the flag on statuses named \"In Review\" or \"User review\" in every team, and ends the live claims on issues in those statuses. The activity log records each ended claim.\n- Everything that works for User review today works for any status with the flag: the move ends the claim, the review section is required, the review panel shows, and Approve and Request changes work.\n- The frontier skips issues in a review status.\n- The agent docs and the skill say \"a review status\" instead of naming User review only.\n\n+++ Agent notes\nEstimate before the claim: 45 minutes and 12 USD.\n\nLanded in adb8381.\n\n- A status has a `review` flag. `status create --review` and `status update --review true|false` set it. Setting it ends the claims on the status's issues.\n- Every review rule reads the flag: the claim end, the section gate, the GitHub sync skip, the review panel, the inbox list, review answers and the claim's work status.\n- Migration 0012 sets the flag on In Review and User review in every team. At the next start the server ends live claims on issues in a review status, once, as the `migration` system actor. The reason is `review`. With no claims to end it writes nothing, so sync sees no change.\n- New teams get the flag on In Review. A Linear import sets it on either name.\n- The frontier skips review tickets, unless one waits on an agent after an approval with an open PR.\n- A claim on a review ticket moves it to the first work status, so it is never locked in review.\n- A PR open still moves a ticket to In Review, but only with a review section, and the move now ends the claim.\n\nTested on realistic data: the installed old build made two teams with claimed tickets in In Review and In Progress. The new server unlocked the three In Review tickets, kept the In Progress claims, and wrote a pre-migrate backup.\n+++\n",
    "labels": [
     "Area/server"
    ],
@@ -1173,7 +1173,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "App: sidebar shows each team with its projects under it",
-   "description": "The owner asked for this on 2026-11-11. The sidebar has a Teams section and a Projects section. Each team now groups the owner's work, such as Fueled and Personal, so one tree is clearer.\n\n- Each team is a heading in the sidebar, with its projects listed under it.\n- A click on a team heading shows all of that team's tickets, as a team entry does today.\n- A click on a project shows that project's tickets, as today.\n- A project linked to several teams shows under each of them.\n- Counts stay correct for teams and projects.\n- Keyboard navigation and the hover, pressed and release states work on every entry.\n\n+++ Agent notes\nLanded in a4a94d6 on main.\n\n- `Catalog` has `project_teams`, from the server's project team list.\n- `sidebar::scopes` returns `Row` values. Each team row comes first, with its projects indented under it. Projects with no known team go under a Projects heading.\n- The Teams and Projects sections are gone. A lone team now shows too, because it holds the projects. LLM-80 hid it before.\n- A project under two teams has two rows. The sidebar keeps the picked row, so `j` and `k` go on from the right one. The second row's ID ends in its row number.\n- Counts count each scope once.\n- Team clicks go through `set_scope`, so the LLM-149 check closes a task from another team.\n- Tests: two unit tests in `sidebar.rs`, four UI tests in `sidebar_tests.rs`. `cargo test -p llmtodo-ui`: 381 passed.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open the app.\n2. Show the sidebar.\n3. Click Fueled.\n4. Click a project under Fueled.\n5. Open a task.\n6. Click Personal.\n7. Press h, then j and k.\n\n### What to check\n- Fueled and Personal are headings in the sidebar.\n- Each project is under its team.\n- The Teams and Projects sections are gone.\n- Step 3 shows all Fueled tasks.\n- Step 4 shows only that project's tasks.\n- Step 6 closes the task panel.\n- j and k move through every row.\n- Each row darkens on hover and on press.\n- The counts look right.\n+++\n",
+   "description": "The owner asked for this on 2026-11-11. The sidebar has a Teams section and a Projects section. Each team now groups the owner's work, such as Team A and Team B, so one tree is clearer.\n\n- Each team is a heading in the sidebar, with its projects listed under it.\n- A click on a team heading shows all of that team's tickets, as a team entry does today.\n- A click on a project shows that project's tickets, as today.\n- A project linked to several teams shows under each of them.\n- Counts stay correct for teams and projects.\n- Keyboard navigation and the hover, pressed and release states work on every entry.\n\n+++ Agent notes\nLanded in a4a94d6 on main.\n\n- `Catalog` has `project_teams`, from the server's project team list.\n- `sidebar::scopes` returns `Row` values. Each team row comes first, with its projects indented under it. Projects with no known team go under a Projects heading.\n- The Teams and Projects sections are gone. A lone team now shows too, because it holds the projects. LLM-80 hid it before.\n- A project under two teams has two rows. The sidebar keeps the picked row, so `j` and `k` go on from the right one. The second row's ID ends in its row number.\n- Counts count each scope once.\n- Team clicks go through `set_scope`, so the LLM-149 check closes a task from another team.\n- Tests: two unit tests in `sidebar.rs`, four UI tests in `sidebar_tests.rs`. `cargo test -p llmtodo-ui`: 381 passed.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open the app.\n2. Show the sidebar.\n3. Click Team A.\n4. Click a project under Team A.\n5. Open a task.\n6. Click Team B.\n7. Press h, then j and k.\n\n### What to check\n- Team A and Team B are headings in the sidebar.\n- Each project is under its team.\n- The Teams and Projects sections are gone.\n- Step 3 shows all Team A tasks.\n- Step 4 shows only that project's tasks.\n- Step 6 closes the task panel.\n- j and k move through every row.\n- Each row darkens on hover and on press.\n- The counts look right.\n+++\n",
    "labels": [
     "Area/app"
    ],
@@ -1241,7 +1241,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "Going public: remove other projects and local paths from the repo",
-   "description": "Before the repo goes public, remove the owner's other projects and local paths from it. The owner does not need any of them in this repo.\n\nA scan on 2026-11-11 found no secrets: no keys, tokens, passwords, databases or `.env` files. gitleaks checked all 221 commits and found one false positive.\n\n## What to remove\n\n1. **Demo content.** The 17 files in `scripts/demo-content/` (`01.md` to `17.md`) are real tickets from the ImperiaQuiz and BackToLife projects. Replace them with made-up text of the same length and the same Markdown shapes, so previews still show real lengths. Remove every `linear.app/alex-testing-linear` link and every link to `xavortm/conquiztador` or `xavortm/imperiaquiz`. Update `scripts/demo-content/README.md`, which says the text comes from the owner's tickets.\n2. **SPEC.md.** Lines 11 to 58 name ImperiaQuiz, `conquiztador`, BackToLife, BringToLife and the workspace `alex-testing-linear`. Describe the same findings without the names, such as \"two existing projects\".\n3. **Tests.** Replace ImperiaQuiz and BackToLife with neutral sample names in `crates/server/tests/api.rs`, `crates/server/tests/import.rs`, `crates/server/src/store/projects.rs` and `crates/client/src/lib.rs`. `import.rs` also links `xavortm/conquiztador/pull/12`.\n4. **Local paths.** `docs/agents/issue-tracker.md` uses `/Users/alex/Development/llmtodo`. Use paths relative to the repo root.\n5. **Check again.** Grep the tree for `imperiaquiz`, `conquiztador`, `backtolife`, `bringtolife`, `alex-testing-linear` and `/Users/`, ignoring case. The result must be empty. Run the tests and `scripts/preview`.\n\n## Owner decision: git history\n\nSteps 1 to 5 clean only the current files. The old text stays in git history: the demo content, the deleted `scripts/demo-content/18.md`, and `HANDOVER.md`, which had `/Users/alex` paths. Removing it needs `git filter-repo` and a force-push to `main`. That rewrites every commit hash, so links to old commits stop working. Ask the owner before you do it.\n\nEvery commit also carries the owner's personal email. A history rewrite can change it to the GitHub noreply address at the same time.\n\n+++ Agent notes\nSteps 1 to 5 landed. The owner then chose to drop all git history: main is now one commit, 29e3d4c, force-pushed. A backup of the old history is at ~/Development/llmtodo-history-backup.bundle. gitleaks and the grep find nothing in the new history. The commit keeps the owner's git email.\n+++\n",
+   "description": "Before the repo goes public, remove the owner's other projects and local paths from it. The owner does not need any of them in this repo.\n\nA scan on 2026-11-11 found no secrets: no keys, tokens, passwords, databases or `.env` files. gitleaks checked all 221 commits and found one false positive.\n\n## What to remove\n\n1. **Demo content.** The 17 files in `scripts/demo-content/` (`01.md` to `17.md`) are real tickets from two other projects. Replace them with made-up text of the same length and the same Markdown shapes, so previews still show real lengths. Remove every link to private workspaces or repos. Update `scripts/demo-content/README.md`, which says the text comes from the owner's tickets.\n2. **SPEC.md.** Lines 11 to 58 name other projects and a personal Linear workspace. Describe the same findings without the names, such as \"two existing projects\".\n3. **Tests.** Replace other projects with neutral sample names in `crates/server/tests/api.rs`, `crates/server/tests/import.rs`, `crates/server/src/store/projects.rs` and `crates/client/src/lib.rs`. `import.rs` also links a private repo PR.\n4. **Local paths.** `docs/agents/issue-tracker.md` uses a local checkout path. Use paths relative to the repo root.\n5. **Check again.** Grep the tree for the removed project names, workspace slug and `/Users/`, ignoring case. The result must be empty. Run the tests and `scripts/preview`.\n\n## Owner decision: git history\n\nSteps 1 to 5 clean only the current files. The old text stays in git history: the demo content, the deleted `scripts/demo-content/18.md`, and `HANDOVER.md`, which had local user paths. Removing it needs `git filter-repo` and a force-push to `main`. That rewrites every commit hash, so links to old commits stop working. Ask the owner before you do it.\n\nEvery commit also carries the owner's personal email. A history rewrite can change it to the GitHub noreply address at the same time.\n\n+++ Agent notes\nSteps 1 to 5 landed. The owner then chose to drop all git history: main is now one commit, 29e3d4c, force-pushed. A backup of the old history is at <backup-dir>/llmtodo-history-backup.bundle. gitleaks and the grep find nothing in the new history. The commit keeps the owner's git email.\n+++\n",
    "labels": [],
    "parent": "LLM-1",
    "estimate_minutes": 60,
@@ -1308,7 +1308,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "Skill and CLI: agents use labels instead of waiting on",
-   "description": "Agents make labels such as `ready-for-agent` and `needs-owner` for a state the tracker already has: waiting on. The app shows the waiting-on icon only for the real field, so a label alone shows nothing.\n\n## What happened\n\n- An agent in the Astro project added `ready-for-agent` to 8 tickets.\n- Only 5 of them also got waiting on agent. The other 3 show no icon: AST-77, AST-78 and AST-79.\n- AST-76 has a `needs-owner` label next to waiting on owner.\n- An agent in this project put `ready-for-agent` on LLM-158 on 2026-11-11.\n\n## Why\n\n- The short version in the skill never says to set `-w agent` when a ticket is ready. It mentions waiting on only for `issue ask`.\n- The guide explains waiting on, but nothing says \"do not use labels for this\".\n- `issue create` leaves waiting on empty. A new ticket ready for work does not show the icon.\n- Nothing warns when an agent creates a label whose name matches a workflow state.\n\n## What to do\n\n1. In the skill and the guide, say: mark a ticket ready with `-w agent`, never with a label. The same goes for \"needs owner\", \"blocked\" and \"in review\": use waiting on, relations and statuses.\n2. Put `-w agent` in the `issue create` examples for tickets that are ready for work.\n3. Make `label create` warn, or refuse without `--force`, when the name looks like a workflow state, such as ready, agent, owner, blocked or review. The warning names the field or command to use.\n4. Run `scripts/gen-agent-docs` and reinstall the skill.\n5. Clean up the data: set waiting on agent on the open tickets with `ready-for-agent`, remove the label from every ticket and delete it. Do the same for `needs-owner` with waiting on owner.\n\n+++ Agent notes\n\n- I chose refuse, not warn. `label create` and `label update --name` exit with code 6 when the name has a workflow word. The words are ready, agent, owner, human, waiting, blocked, review, progress, wip and done. The error names the field or command to use. `--force` skips the check. The check lives in the CLI, so the app can still make any label.\n- The skill's short version has a new step 9 on waiting on. The guide has a new section, \"Use fields for workflow states\", and `-w agent` in the `issue create` examples. SPEC has decision 47.\n- Data cleanup: I set waiting on agent on AST-77 and AST-79. Both are In Progress and claimed by another session. I removed `ready-for-agent` from LLM-158, AST-51, AST-54, AST-55, AST-56, AST-61, AST-77, AST-78 and AST-79. I removed `needs-owner` from AST-76, which is Done. Then I deleted both labels.\n- Commit on main: efefe67. All `llmtodo-cli` tests pass.\n+++\n",
+   "description": "Agents make labels such as `ready-for-agent` and `needs-owner` for a state the tracker already has: waiting on. The app shows the waiting-on icon only for the real field, so a label alone shows nothing.\n\n## What happened\n\n- An agent in another project added `ready-for-agent` to 8 tickets.\n- Only 5 of them also got waiting on agent. The other 3 show no icon: EXT-77, EXT-78 and EXT-79.\n- EXT-76 has a `needs-owner` label next to waiting on owner.\n- An agent in this project put `ready-for-agent` on LLM-158 on 2026-11-11.\n\n## Why\n\n- The short version in the skill never says to set `-w agent` when a ticket is ready. It mentions waiting on only for `issue ask`.\n- The guide explains waiting on, but nothing says \"do not use labels for this\".\n- `issue create` leaves waiting on empty. A new ticket ready for work does not show the icon.\n- Nothing warns when an agent creates a label whose name matches a workflow state.\n\n## What to do\n\n1. In the skill and the guide, say: mark a ticket ready with `-w agent`, never with a label. The same goes for \"needs owner\", \"blocked\" and \"in review\": use waiting on, relations and statuses.\n2. Put `-w agent` in the `issue create` examples for tickets that are ready for work.\n3. Make `label create` warn, or refuse without `--force`, when the name looks like a workflow state, such as ready, agent, owner, blocked or review. The warning names the field or command to use.\n4. Run `scripts/gen-agent-docs` and reinstall the skill.\n5. Clean up the data: set waiting on agent on the open tickets with `ready-for-agent`, remove the label from every ticket and delete it. Do the same for `needs-owner` with waiting on owner.\n\n+++ Agent notes\n\n- I chose refuse, not warn. `label create` and `label update --name` exit with code 6 when the name has a workflow word. The words are ready, agent, owner, human, waiting, blocked, review, progress, wip and done. The error names the field or command to use. `--force` skips the check. The check lives in the CLI, so the app can still make any label.\n- The skill's short version has a new step 9 on waiting on. The guide has a new section, \"Use fields for workflow states\", and `-w agent` in the `issue create` examples. SPEC has decision 47.\n- Data cleanup: I set waiting on agent on EXT-77 and EXT-79. Both are In Progress and claimed by another session. I removed `ready-for-agent` from LLM-158, EXT-51, EXT-54, EXT-55, EXT-56, EXT-61, EXT-77, EXT-78 and EXT-79. I removed `needs-owner` from EXT-76, which is Done. Then I deleted both labels.\n- Commit on main: efefe67. All `llmtodo-cli` tests pass.\n+++\n",
    "labels": [],
    "parent": "LLM-1",
    "estimate_minutes": 25,
@@ -1572,7 +1572,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "App: the $EDITOR check never stops and redraws the window every 400 ms",
-   "description": "After the owner opens a description in `$EDITOR` once, the app redraws the whole window every 400 ms until it quits. The check for saved files never stops.\n\nIt also blocks two features. Tracker switching and \"Restart to update\" both refuse while an `$EDITOR` edit is open, and in practice an edit never closes.\n\n+++ Agent notes\n\n\nFound in the 2026-11-12 performance review. Confirmed in the code.\n\n## Cause\n\n- `start_external_poll` (`crates/ui/src/shell/workspace.rs:3477`) starts a 400 ms loop. Nothing ever sets `_external_poll` back to `None`.\n- `poll_external` (`workspace.rs:3493`) calls `cx.notify()` on every tick, even when `self.external.poll()` returned no saves.\n- `ExternalEdits::poll` (`crates/ui/src/model/external_editor.rs:234`) ends a session only when its temp file is gone. No code deletes `llmtodo-edit/<KEY>.md`, so sessions never end.\n- Each tick runs one `stat` per session on the main thread.\n- Tracker switching (`workspace.rs:672`) and restart (`workspace/update.rs:124`) refuse while `external.is_empty()` is false.\n\n## Fix\n\n1. Call `cx.notify()` only when the poll returned saves or a session ended.\n2. Stop the loop when `self.external.is_empty()` after a poll. Start it again on the next `$EDITOR` open.\n3. End a session when the editor process exits, or when its task closes or is deleted. Delete the temp file when the session ends. The launcher may not give a process handle for every editor. Check `Launcher` and pick the simplest signal that works for both terminal and GUI editors.\n4. Add tests: no notify on an idle tick, the loop stops when the last session ends, and a session ends when the editor exits.\n\n## What I changed\n\nCommit `5cc8473` on main.\n\n- The launcher gives no process handle: Terminal and herdr run the command themselves. So the shell line is now `<editor> '<file>'; touch '<file>.done'`. This works for terminal editors and for GUI editors that wait, such as `code --wait`.\n- On the next check after the marker appears, the app reads the file one last time and saves it. Then it ends the session and deletes the file and the marker.\n- A session also ends when its file is gone, or when its task goes to the Trash or leaves the store. I did not end sessions when a task closes, because editing a Done task's description is a real use. This is my default; say if you want closed tasks to end edits too.\n- An editor that returns within 3 s did not wait, such as `code` without `--wait`. Its session stays open for saves, and the status bar tells the owner to set EDITOR to wait.\n- `poll_external` notifies only when it found a save, an end or a detached editor. The 400 ms loop stops when the last session ends, and the next `Shift+E` starts it again.\n- A new open deletes an old marker for the same task first.\n- Tests cover an idle poll, the last save before an exit, a quick exit, the task leaving, a gone file, an old marker, no notify on idle ticks, and the loop stopping.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open any task you can edit.\n2. Press Shift+E.\n3. Change the text in the editor and save it.\n4. Quit the editor.\n5. Switch to another tracker.\n\n### What to check\n- After you save, the task shows the new text.\n- After you quit, the status bar says \"Closed <key> in $EDITOR\".\n- Switching the tracker works. It no longer says to close $EDITOR first.\n+++\n",
+   "description": "After the owner opens a description in `$EDITOR` once, the app redraws the whole window every 400 ms until it quits. The check for saved files never stops.\n\nIt also blocks two features. Tracker switching and \"Restart to update\" both refuse while an `$EDITOR` edit is open, and in practice an edit never closes.\n\n+++ Agent notes\n\n\nFound in the 2026-11-12 performance review. Confirmed in the code.\n\n## Cause\n\n- `start_external_poll` (`crates/ui/src/shell/workspace.rs:3477`) starts a 400 ms loop. Nothing ever sets `_external_poll` back to `None`.\n- `poll_external` (`workspace.rs:3493`) calls `cx.notify()` on every tick, even when `self.external.poll()` returned no saves.\n- `ExternalEdits::poll` (`crates/ui/src/model/external_editor.rs:234`) ends a session only when its temp file is gone. No code deletes `llmtodo-edit/<KEY>.md`, so sessions never end.\n- Each tick runs one `stat` per session on the main thread.\n- Tracker switching (`workspace.rs:672`) and restart (`workspace/update.rs:124`) refuse while `external.is_empty()` is false.\n\n## Fix\n\n1. Call `cx.notify()` only when the poll returned saves or a session ended.\n2. Stop the loop when `self.external.is_empty()` after a poll. Start it again on the next `$EDITOR` open.\n3. End a session when the editor process exits, or when its task closes or is deleted. Delete the temp file when the session ends. The launcher may not give a process handle for every editor. Check `Launcher` and pick the simplest signal that works for both terminal and GUI editors.\n4. Add tests: no notify on an idle tick, the loop stops when the last session ends, and a session ends when the editor exits.\n\n## What I changed\n\nCommit `5cc8473` on main.\n\n- The launcher gives no process handle: Terminal and terminal multiplexers run the command themselves. So the shell line is now `<editor> '<file>'; touch '<file>.done'`. This works for terminal editors and for GUI editors that wait, such as `code --wait`.\n- On the next check after the marker appears, the app reads the file one last time and saves it. Then it ends the session and deletes the file and the marker.\n- A session also ends when its file is gone, or when its task goes to the Trash or leaves the store. I did not end sessions when a task closes, because editing a Done task's description is a real use. This is my default; say if you want closed tasks to end edits too.\n- An editor that returns within 3 s did not wait, such as `code` without `--wait`. Its session stays open for saves, and the status bar tells the owner to set EDITOR to wait.\n- `poll_external` notifies only when it found a save, an end or a detached editor. The 400 ms loop stops when the last session ends, and the next `Shift+E` starts it again.\n- A new open deletes an old marker for the same task first.\n- Tests cover an idle poll, the last save before an exit, a quick exit, the task leaving, a gone file, an old marker, no notify on idle ticks, and the loop stopping.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open any task you can edit.\n2. Press Shift+E.\n3. Change the text in the editor and save it.\n4. Quit the editor.\n5. Switch to another tracker.\n\n### What to check\n- After you save, the task shows the new text.\n- After you quit, the status bar says \"Closed <key> in $EDITOR\".\n- Switching the tracker works. It no longer says to close $EDITOR first.\n+++\n",
    "labels": [
     "Area/app"
    ],
@@ -2154,7 +2154,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "Mascot: clicks bother the working cat, then anger it, then startle it to the other side",
-   "description": "Clicks on the working cat bother it, step by step. Time moves it on, not the number of clicks.\n\n1. A click: it stops typing and looks at you, with a \"?\" above its head.\n2. A click after 1 second of that: it gets angry. It glares, and a red anger mark pulses on its forehead.\n3. A click after 1.5 seconds of anger: it is startled, jumps up, and walks to the other side to work there.\n4. No click for 2 seconds: it calms down and types again.\n\nClicks while a step holds do nothing more, so ten fast clicks act like one. This replaces today's rule that a double click walks the working cat to the other side.\n\nTry it in `design/mascot/preview.html`, mode \"Try it: click the working cat\".\n\n+++ Agent notes\nThe owner asked for this on 2026-11-12. The art and the rules are in `design/mascot/sprites.js` (commit `3ff82b9`): animations `puzzled`, `angry` and `workStartle`, a new palette key `A` for the anger mark, and `RULES` with every time. The preview's \"work\" mode (`workClick`, `workTick` in `preview.html`) shows the exact rules.\n\n## Plan\n\n1. Run `node design/mascot/export.mjs --app` and commit `mascot.json`. Export `RULES` into the JSON too (for example under `cues` or a new `rules` key), and read the times from it in the app, so the preview and the app cannot drift.\n2. Add `AnimId::Puzzled`, `AnimId::Angry` and `AnimId::WorkStartle`.\n3. In `behaviour.rs`, while at work (`Laptop`): a click starts puzzled. Each bothered step remembers when it started and when the last click came. A click before the step's lock (`puzzledLockMs`, `angryLockMs`) only updates the last click. A later click moves to the next step. After `workStartle` ends, commute to the other side, as the old double click did. With no click for `calmMs`, go back to `Laptop`.\n4. Remove the double-click commute at work. Clicks during the commute stay ignored.\n5. If the agent work ends while the cat is puzzled or angry, do what `Laptop` does when work ends.\n6. Tests: one click shows puzzled, fast clicks never skip a step, the full chain takes at least the two locks, calm-down after `calmMs`, and the startle ends at work on the other side.\n7. Update the rules at the top of `behaviour.rs` and in `~/.claude/projects/-Users-alex-Development-llmtodo/memory/llmtodo-mascot.md`.\n\n## What I changed\n\nCommit `9549261`, landed on main.\n\n- `mascot.json` already carried `RULES` (added for LLM-184). `Rules` in `sprites.rs` now also reads `puzzledLockMs`, `angryLockMs` and `calmMs`.\n- New acts `Puzzled`, `Angry` and `WorkStartle` play the new art. The double-click commute at work is gone. `click` no longer takes a click count.\n- Exact timing: the view records when each timeline step starts, on the executor clock. A click passes the time since then. `Behaviour` keeps an animation clock, so a lock or a calm-down is exact, not rounded to a timeline step (up to 320 ms). A bothered step ends early when the calm-down falls inside it.\n- A click inside a lock still counts as the last click for the calm-down, as in the preview.\n- Work that ends while puzzled or angry does what the laptop does: it walks home or sleeps. Work that ends during the startle lets it play, then walks home instead of to the other side.\n- Hover on a bothered or startled cat holds nothing, as at work.\n- I fixed a flaky old test, `hover_and_clicks_do_nothing_during_the_walk_in`. After a walk-in delay near 3 s, the cat still stood just out of view. It failed about 1 run in 20.\n- Tests: 9 new behaviour and view tests, and the old double-click tests rewritten. `cargo test -p llmtodo-ui` passes, 495 tests, three runs in a row.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Start an agent on a task, so the cat types on its laptop.\n2. Click the cat once.\n3. Click it many times fast.\n4. Wait one second, then click again.\n5. Wait two seconds, then click again.\n6. Click it once, then wait.\n\n### What to check\n- It stops typing and looks at you. A \"?\" shows above its head.\n- Nothing more happens at first.\n- It glares. A red mark pulses on its forehead.\n- It jumps up, then walks to the other side and types there.\n- After two seconds it types again.\n+++\n",
+   "description": "Clicks on the working cat bother it, step by step. Time moves it on, not the number of clicks.\n\n1. A click: it stops typing and looks at you, with a \"?\" above its head.\n2. A click after 1 second of that: it gets angry. It glares, and a red anger mark pulses on its forehead.\n3. A click after 1.5 seconds of anger: it is startled, jumps up, and walks to the other side to work there.\n4. No click for 2 seconds: it calms down and types again.\n\nClicks while a step holds do nothing more, so ten fast clicks act like one. This replaces today's rule that a double click walks the working cat to the other side.\n\nTry it in `design/mascot/preview.html`, mode \"Try it: click the working cat\".\n\n+++ Agent notes\nThe owner asked for this on 2026-11-12. The art and the rules are in `design/mascot/sprites.js` (commit `3ff82b9`): animations `puzzled`, `angry` and `workStartle`, a new palette key `A` for the anger mark, and `RULES` with every time. The preview's \"work\" mode (`workClick`, `workTick` in `preview.html`) shows the exact rules.\n\n## Plan\n\n1. Run `node design/mascot/export.mjs --app` and commit `mascot.json`. Export `RULES` into the JSON too (for example under `cues` or a new `rules` key), and read the times from it in the app, so the preview and the app cannot drift.\n2. Add `AnimId::Puzzled`, `AnimId::Angry` and `AnimId::WorkStartle`.\n3. In `behaviour.rs`, while at work (`Laptop`): a click starts puzzled. Each bothered step remembers when it started and when the last click came. A click before the step's lock (`puzzledLockMs`, `angryLockMs`) only updates the last click. A later click moves to the next step. After `workStartle` ends, commute to the other side, as the old double click did. With no click for `calmMs`, go back to `Laptop`.\n4. Remove the double-click commute at work. Clicks during the commute stay ignored.\n5. If the agent work ends while the cat is puzzled or angry, do what `Laptop` does when work ends.\n6. Tests: one click shows puzzled, fast clicks never skip a step, the full chain takes at least the two locks, calm-down after `calmMs`, and the startle ends at work on the other side.\n7. Update the rules at the top of `behaviour.rs` and in `<claude-memory>/llmtodo-mascot.md`.\n\n## What I changed\n\nCommit `9549261`, landed on main.\n\n- `mascot.json` already carried `RULES` (added for LLM-184). `Rules` in `sprites.rs` now also reads `puzzledLockMs`, `angryLockMs` and `calmMs`.\n- New acts `Puzzled`, `Angry` and `WorkStartle` play the new art. The double-click commute at work is gone. `click` no longer takes a click count.\n- Exact timing: the view records when each timeline step starts, on the executor clock. A click passes the time since then. `Behaviour` keeps an animation clock, so a lock or a calm-down is exact, not rounded to a timeline step (up to 320 ms). A bothered step ends early when the calm-down falls inside it.\n- A click inside a lock still counts as the last click for the calm-down, as in the preview.\n- Work that ends while puzzled or angry does what the laptop does: it walks home or sleeps. Work that ends during the startle lets it play, then walks home instead of to the other side.\n- Hover on a bothered or startled cat holds nothing, as at work.\n- I fixed a flaky old test, `hover_and_clicks_do_nothing_during_the_walk_in`. After a walk-in delay near 3 s, the cat still stood just out of view. It failed about 1 run in 20.\n- Tests: 9 new behaviour and view tests, and the old double-click tests rewritten. `cargo test -p llmtodo-ui` passes, 495 tests, three runs in a row.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Start an agent on a task, so the cat types on its laptop.\n2. Click the cat once.\n3. Click it many times fast.\n4. Wait one second, then click again.\n5. Wait two seconds, then click again.\n6. Click it once, then wait.\n\n### What to check\n- It stops typing and looks at you. A \"?\" shows above its head.\n- Nothing more happens at first.\n- It glares. A red mark pulses on its forehead.\n- It jumps up, then walks to the other side and types there.\n- After two seconds it types again.\n+++\n",
    "labels": [
     "Area/app"
    ],
@@ -2490,7 +2490,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "Projects: pick a custom Lucide icon for each project",
-   "description": "Each project can have its own icon, picked from the Lucide icon set. The app already uses Lucide icons through GPUI Kit.\n\n## What to build\n\n1. A project has an optional icon. Projects without one keep today's icon.\n2. The app shows the project's icon wherever it shows the project, such as the sidebar.\n3. The owner picks the icon in the app, from a searchable icon picker. A filter by name finds an icon fast, and the first match is selected.\n4. The CLI can set and clear the icon, such as `llmtodo project update <slug> --icon rocket` and `--icon none`. Agents get full coverage, as for every other field.\n5. The server stores the icon name and refuses a name that is not a Lucide icon.\n\nThe owner asked for this on 2026-11-13.\n\n+++ Agent notes\n\n- Landed in `6fe58b1` on main.\n- Icon size: the app already used `AllAssets`, which embeds all 1,830 GPUI Kit icons. I measured both release builds. `AllAssets` is 47,258,768 bytes and the default `Assets` is 46,310,576 bytes. The difference is 948,192 bytes, about 0.9 MiB, so the app keeps every icon and needs no curated list.\n- The list of valid names lives in `crates/core/src/project_icons.txt`, read by `llmtodo_core::project_style`. The server checks it. A test in `crates/ui/src/shell/icons.rs` fails when it and GPUI Kit's icons disagree.\n- The list has the 1,818 Lucide icons and 12 GPUI Kit icons, because the app can draw all of them.\n- CLI: `project create` and `project update` take `--icon` and `--color`. `none` clears each one. `init --create` takes `--project-icon`. `project icons [filter]` lists names and needs no server.\n- App: the icon shows in the sidebar and in the title bar. No other project menu exists in the app today.\n- Colors: 8 presets in `PROJECT_COLORS`. The app keeps each at 3:1 contrast on the sidebar, page and menus in every theme, and a test checks it.\n- The right-click menu selects its first item after its first frame, through `SelectDown`. GPUI Kit's menu has no public way to preselect an item.\n- Real projects: llmtodo got `hard-hat`, the app's own icon. Torch got `flame`. I set no colors.\n+++\n\n+++ Scope change\n\nThe owner changed the scope on 2026-11-13:\n\n- The owner sets only a color for each project in the app. There is no icon picker in the app for now.\n- Agents pick the icon. When an agent creates a project, or runs `llmtodo init --create`, it picks a Lucide icon that fits the project. The skill guide says how.\n- The CLI sets both: `project update <slug> --icon <name>|none` and `--color <hex>|none`.\n- The app draws the project icon in the project color wherever it shows the project. With no color, the icon stays monochrome.\n- The color picker is a small set of preset swatches that read well in every theme, plus None. Every swatch has hover and press states.\n- After this lands, the agent picks icons for the existing projects.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open the app.\n2. Show the sidebar with Cmd-B.\n3. Look at the llmtodo and Torch rows.\n4. Right-click the llmtodo row.\n5. Press Ctrl-N, then Enter.\n6. Open the palette with : and type project-color.\n7. Switch the theme to light, Gruvbox and macOS.\n\n### What to check\n- llmtodo shows a hard hat. Torch shows a flame.\n- The menu lists None and 8 colors. None is selected when it opens.\n- Each color row changes on hover and on press.\n- Ctrl-N moves to Red. Enter makes the hard hat red.\n- The title bar shows the red hard hat before the name.\n- The palette lists each color with a swatch.\n- project-color none makes the icon gray again.\n- Every color is easy to see in every theme.\n+++\n",
+   "description": "Each project can have its own icon, picked from the Lucide icon set. The app already uses Lucide icons through GPUI Kit.\n\n## What to build\n\n1. A project has an optional icon. Projects without one keep today's icon.\n2. The app shows the project's icon wherever it shows the project, such as the sidebar.\n3. The owner picks the icon in the app, from a searchable icon picker. A filter by name finds an icon fast, and the first match is selected.\n4. The CLI can set and clear the icon, such as `llmtodo project update <slug> --icon rocket` and `--icon none`. Agents get full coverage, as for every other field.\n5. The server stores the icon name and refuses a name that is not a Lucide icon.\n\nThe owner asked for this on 2026-11-13.\n\n+++ Agent notes\n\n- Landed in `6fe58b1` on main.\n- Icon size: the app already used `AllAssets`, which embeds all 1,830 GPUI Kit icons. I measured both release builds. `AllAssets` is 47,258,768 bytes and the default `Assets` is 46,310,576 bytes. The difference is 948,192 bytes, about 0.9 MiB, so the app keeps every icon and needs no curated list.\n- The list of valid names lives in `crates/core/src/project_icons.txt`, read by `llmtodo_core::project_style`. The server checks it. A test in `crates/ui/src/shell/icons.rs` fails when it and GPUI Kit's icons disagree.\n- The list has the 1,818 Lucide icons and 12 GPUI Kit icons, because the app can draw all of them.\n- CLI: `project create` and `project update` take `--icon` and `--color`. `none` clears each one. `init --create` takes `--project-icon`. `project icons [filter]` lists names and needs no server.\n- App: the icon shows in the sidebar and in the title bar. No other project menu exists in the app today.\n- Colors: 8 presets in `PROJECT_COLORS`. The app keeps each at 3:1 contrast on the sidebar, page and menus in every theme, and a test checks it.\n- The right-click menu selects its first item after its first frame, through `SelectDown`. GPUI Kit's menu has no public way to preselect an item.\n- Real projects: llmtodo got `hard-hat`, the app's own icon. Another project got `flame`. I set no colors.\n+++\n\n+++ Scope change\n\nThe owner changed the scope on 2026-11-13:\n\n- The owner sets only a color for each project in the app. There is no icon picker in the app for now.\n- Agents pick the icon. When an agent creates a project, or runs `llmtodo init --create`, it picks a Lucide icon that fits the project. The skill guide says how.\n- The CLI sets both: `project update <slug> --icon <name>|none` and `--color <hex>|none`.\n- The app draws the project icon in the project color wherever it shows the project. With no color, the icon stays monochrome.\n- The color picker is a small set of preset swatches that read well in every theme, plus None. Every swatch has hover and press states.\n- After this lands, the agent picks icons for the existing projects.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Open the app.\n2. Show the sidebar with Cmd-B.\n3. Look at the project rows.\n4. Right-click the llmtodo row.\n5. Press Ctrl-N, then Enter.\n6. Open the palette with : and type project-color.\n7. Switch the theme to light, Gruvbox and macOS.\n\n### What to check\n- llmtodo shows a hard hat. The second project shows a flame.\n- The menu lists None and 8 colors. None is selected when it opens.\n- Each color row changes on hover and on press.\n- Ctrl-N moves to Red. Enter makes the hard hat red.\n- The title bar shows the red hard hat before the name.\n- The palette lists each color with a swatch.\n- project-color none makes the icon gray again.\n- Every color is easy to see in every theme.\n+++\n",
    "labels": [],
    "parent": null,
    "estimate_minutes": 40,
@@ -3013,7 +3013,7 @@
    "team": "LLM",
    "project": "llmtodo",
    "title": "App: the title bar shows / instead of the project",
-   "description": "The title bar's folder path shows the app's working folder. An app started from the Dock or Finder has the working folder /, so the bar always shows /. The app knows no local folder for a project.\n\nFix: the title bar shows the current project's name and its linked repo, such as xavortm/llmtodo. With no project in scope, it shows the tracker's name. It never shows the working folder. LLMTODO_PROJECT_DIR keeps working for development runs.\n\n+++ Scope change\n\nThe owner changed the scope on 2026-11-13:\n\n- If the project has a linked repo, the title bar shows it as a link. A click opens the repo on GitHub.\n- If there is no repo, the title bar shows the local folder of the project.\n- The app learns the local folder from the CLI. `llmtodo init` saves the git root on the project. A CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet. `project update --local-path` sets it by hand.\n+++\n\n+++ Agent notes\nLanded in `d43da57` on main.\n\n- The title bar works out its label at render time from the scope, the catalog and the open tracker. It updates when the scope, the catalog or the tracker changes.\n- A project scope shows the project name. With a linked repo, the bar shows the repo as a link through `widgets::link`, and a click opens it. Without a repo, it shows the local folder, and a click copies it. A project document counts as its project.\n- Any other scope shows the tracker's name and nothing on the right.\n- `LLMTODO_PROJECT_DIR` still wins when it is set.\n- Projects have a new `local_path` field, from migration 0015. `llmtodo init` saves the main checkout. A worktree saves the checkout it came from. Any CLI call from a repo with `.llmtodo.toml` fills the field when it is empty. `project update --local-path` sets it, and `\"\"` clears it.\n- Tests: `shell::title_bar_tests`, `the_title_bar_names_the_open_tracker`, the LLM-212 zoom test now on the repo link, `projects_remember_their_local_folder` in the CLI tests, and `the_main_checkout_root_skips_linked_worktrees`.\n- Left open: the git panel's commit lookup in `backend::with_commits` still falls back to the working folder. It could use `local_path` instead.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Run scripts/publish and open the app.\n2. Click All issues in the sidebar.\n3. Click the llmtodo project in the sidebar.\n4. Click xavortm/llmtodo in the title bar.\n5. Run llmtodo project update llmtodo --local-path ~/Development/llmtodo in a terminal.\n6. Run llmtodo project unlink-repo xavortm/llmtodo --project llmtodo.\n7. Look at the title bar.\n8. Run llmtodo project link-repo xavortm/llmtodo --project llmtodo.\n\n### What to check\n- With All issues, the title bar shows the tracker name and no path.\n- With the llmtodo project, the title bar shows llmtodo and xavortm/llmtodo.\n- The repo text changes on hover and on press.\n- The click opens the repo on GitHub.\n- Without the repo, the title bar shows ~/Development/llmtodo.\n- The title bar never shows /.\n+++\n",
+   "description": "The title bar's folder path shows the app's working folder. An app started from the Dock or Finder has the working folder /, so the bar always shows /. The app knows no local folder for a project.\n\nFix: the title bar shows the current project's name and its linked repo, such as xavortm/llmtodo. With no project in scope, it shows the tracker's name. It never shows the working folder. LLMTODO_PROJECT_DIR keeps working for development runs.\n\n+++ Scope change\n\nThe owner changed the scope on 2026-11-13:\n\n- If the project has a linked repo, the title bar shows it as a link. A click opens the repo on GitHub.\n- If there is no repo, the title bar shows the local folder of the project.\n- The app learns the local folder from the CLI. `llmtodo init` saves the git root on the project. A CLI call from a repo with `.llmtodo.toml` saves it when the project has none yet. `project update --local-path` sets it by hand.\n+++\n\n+++ Agent notes\nLanded in `d43da57` on main.\n\n- The title bar works out its label at render time from the scope, the catalog and the open tracker. It updates when the scope, the catalog or the tracker changes.\n- A project scope shows the project name. With a linked repo, the bar shows the repo as a link through `widgets::link`, and a click opens it. Without a repo, it shows the local folder, and a click copies it. A project document counts as its project.\n- Any other scope shows the tracker's name and nothing on the right.\n- `LLMTODO_PROJECT_DIR` still wins when it is set.\n- Projects have a new `local_path` field, from migration 0015. `llmtodo init` saves the main checkout. A worktree saves the checkout it came from. Any CLI call from a repo with `.llmtodo.toml` fills the field when it is empty. `project update --local-path` sets it, and `\"\"` clears it.\n- Tests: `shell::title_bar_tests`, `the_title_bar_names_the_open_tracker`, the LLM-212 zoom test now on the repo link, `projects_remember_their_local_folder` in the CLI tests, and `the_main_checkout_root_skips_linked_worktrees`.\n- Left open: the git panel's commit lookup in `backend::with_commits` still falls back to the working folder. It could use `local_path` instead.\n+++\n\n+++ Review\n### Steps to reproduce\n1. Run scripts/publish and open the app.\n2. Click All issues in the sidebar.\n3. Click the llmtodo project in the sidebar.\n4. Click xavortm/llmtodo in the title bar.\n5. Run llmtodo project update llmtodo --local-path <repo-path>/llmtodo in a terminal.\n6. Run llmtodo project unlink-repo xavortm/llmtodo --project llmtodo.\n7. Look at the title bar.\n8. Run llmtodo project link-repo xavortm/llmtodo --project llmtodo.\n\n### What to check\n- With All issues, the title bar shows the tracker name and no path.\n- With the llmtodo project, the title bar shows llmtodo and xavortm/llmtodo.\n- The repo text changes on hover and on press.\n- The click opens the repo on GitHub.\n- Without the repo, the title bar shows <repo-path>/llmtodo.\n- The title bar never shows /.\n+++\n",
    "labels": [],
    "parent": null,
    "estimate_minutes": 35,
@@ -3273,7 +3273,7 @@
   {
    "key": "LLM-221",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 10,
@@ -3303,7 +3303,7 @@
   {
    "key": "LLM-222",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 25,
@@ -3399,7 +3399,7 @@
   {
    "key": "LLM-225",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 20,
@@ -3429,7 +3429,7 @@
   {
    "key": "LLM-226",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 60,
@@ -3459,7 +3459,7 @@
   {
    "key": "LLM-227",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 25,
@@ -3489,7 +3489,7 @@
   {
    "key": "LLM-228",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 25,
@@ -3519,7 +3519,7 @@
   {
    "key": "LLM-229",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 25,
@@ -3549,7 +3549,7 @@
   {
    "key": "LLM-230",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 20,
@@ -3579,7 +3579,7 @@
   {
    "key": "LLM-231",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 25,
@@ -3609,7 +3609,7 @@
   {
    "key": "LLM-232",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 25,
@@ -3639,7 +3639,7 @@
   {
    "key": "LLM-233",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 20,
@@ -3669,7 +3669,7 @@
   {
    "key": "LLM-234",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 10,
@@ -3699,7 +3699,7 @@
   {
    "key": "LLM-235",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": "LLM-227",
    "estimate_minutes": 35,
@@ -3763,7 +3763,7 @@
   {
    "key": "LLM-237",
    "team": "LLM",
-   "project": "macamp",
+   "project": "proj-b",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -3825,7 +3825,7 @@
   {
    "key": "LLM-253",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 30,
@@ -3855,7 +3855,7 @@
   {
    "key": "LLM-254",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 30,
@@ -3885,7 +3885,7 @@
   {
    "key": "LLM-255",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 25,
@@ -3915,7 +3915,7 @@
   {
    "key": "LLM-256",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 30,
@@ -3945,7 +3945,7 @@
   {
    "key": "LLM-257",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -3975,7 +3975,7 @@
   {
    "key": "LLM-258",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 60,
@@ -4005,7 +4005,7 @@
   {
    "key": "LLM-259",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 10,
@@ -4035,7 +4035,7 @@
   {
    "key": "LLM-260",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -4065,7 +4065,7 @@
   {
    "key": "LLM-261",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 30,
@@ -4095,7 +4095,7 @@
   {
    "key": "LLM-262",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 60,
@@ -4125,7 +4125,7 @@
   {
    "key": "LLM-263",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -4155,7 +4155,7 @@
   {
    "key": "LLM-264",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 10,
@@ -4185,7 +4185,7 @@
   {
    "key": "LLM-265",
    "team": "LLM",
-   "project": "chess",
+   "project": "proj-c",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -4215,7 +4215,7 @@
   {
    "key": "LLM-266",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 5,
@@ -4245,7 +4245,7 @@
   {
    "key": "LLM-267",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -4275,7 +4275,7 @@
   {
    "key": "LLM-268",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 15,
@@ -4305,7 +4305,7 @@
   {
    "key": "LLM-269",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 40,
@@ -4335,7 +4335,7 @@
   {
    "key": "LLM-270",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4367,7 +4367,7 @@
   {
    "key": "LLM-272",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4399,7 +4399,7 @@
   {
    "key": "LLM-273",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4431,7 +4431,7 @@
   {
    "key": "LLM-274",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4463,7 +4463,7 @@
   {
    "key": "LLM-275",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4495,7 +4495,7 @@
   {
    "key": "LLM-276",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4527,7 +4527,7 @@
   {
    "key": "LLM-277",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/app"
    ],
@@ -4559,7 +4559,7 @@
   {
    "key": "LLM-278",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/app"
    ],
@@ -4591,7 +4591,7 @@
   {
    "key": "LLM-279",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/app"
    ],
@@ -4623,7 +4623,7 @@
   {
    "key": "LLM-280",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/app"
    ],
@@ -4655,7 +4655,7 @@
   {
    "key": "LLM-281",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4687,7 +4687,7 @@
   {
    "key": "LLM-282",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4719,7 +4719,7 @@
   {
    "key": "LLM-283",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4751,7 +4751,7 @@
   {
    "key": "LLM-284",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [
     "Area/core"
    ],
@@ -4783,7 +4783,7 @@
   {
    "key": "LLM-285",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": "LLM-271",
    "estimate_minutes": 15,
@@ -4813,7 +4813,7 @@
   {
    "key": "LLM-286",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 45,
@@ -4843,7 +4843,7 @@
   {
    "key": "LLM-287",
    "team": "LLM",
-   "project": "scrabble",
+   "project": "proj-d",
    "labels": [],
    "parent": null,
    "estimate_minutes": 40,

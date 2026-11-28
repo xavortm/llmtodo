@@ -1119,7 +1119,7 @@ pub struct CreateIssue {
     pub wanted_executor: Option<WantedExecutor>,
     #[serde(default)]
     pub waiting_on: Option<WaitingOn>,
-    /// Relations to add at once, such as `{"blocked-by": ["ALX-1"]}`.
+    /// Relations to add at once, such as `{"blocked-by": ["ABC-1"]}`.
     #[serde(default)]
     pub relations: BTreeMap<RelationInput, Vec<String>>,
     /// Estimated agent working time. A claim needs this and the cost estimate.
@@ -1699,7 +1699,7 @@ pub struct GithubReport {
     pub pull_requests_seen: u64,
     pub commits_seen: u64,
     pub attached: u64,
-    /// Issue status moves, such as `ALX-12: In Progress -> In Review`.
+    /// Issue status moves, such as `ABC-12: In Progress -> In Review`.
     pub moves: Vec<String>,
     /// Why the sync is paused, such as a missing `gh` token.
     pub paused: Option<String>,

@@ -185,17 +185,17 @@ async fn agent_workflow_and_exit_codes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn duplicate_search_spans_all_projects() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json(
         "s1",
         &[
-            "project", "create", "Alpha", "--slug", "alpha", "--team", "ALX",
+            "project", "create", "Alpha", "--slug", "alpha", "--team", "ABC",
         ],
     );
     t.json(
         "s1",
         &[
-            "project", "create", "Beta", "--slug", "beta", "--team", "ALX",
+            "project", "create", "Beta", "--slug", "beta", "--team", "ABC",
         ],
     );
     t.json(
@@ -222,11 +222,11 @@ async fn duplicate_search_spans_all_projects() {
     };
     // The default project still applies to a plain query.
     assert!(keys(&[]).is_empty());
-    assert_eq!(keys(&["--similar", "login page crash"]), ["ALX-1"]);
-    assert_eq!(keys(&["-q", "login", "--all-projects"]), ["ALX-1"]);
+    assert_eq!(keys(&["--similar", "login page crash"]), ["ABC-1"]);
+    assert_eq!(keys(&["-q", "login", "--all-projects"]), ["ABC-1"]);
     assert_eq!(
-        keys(&["--team", "ALX", "-q", "login", "--all-projects"]),
-        ["ALX-1"]
+        keys(&["--team", "ABC", "-q", "login", "--all-projects"]),
+        ["ABC-1"]
     );
     // A text search limited by the default project says so on stderr.
     let out = t
@@ -246,11 +246,11 @@ async fn duplicate_search_spans_all_projects() {
 #[tokio::test(flavor = "multi_thread")]
 async fn repo_human_actor_does_not_hide_an_agent() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json("s1", &["issue", "create", "-t", "Work"]);
     std::fs::write(t.dir.path().join(".llmtodo.toml"), "actor = \"human\"\n").unwrap();
     let out = t
-        .cmd("agent-s", &["--json", "issue", "claim", "ALX-1"])
+        .cmd("agent-s", &["--json", "issue", "claim", "ABC-1"])
         .env_remove("LLMTODO_ACTOR")
         .env("AI_AGENT", "claude-code_2-1-322_agent")
         .output()
@@ -265,7 +265,7 @@ async fn repo_human_actor_does_not_hide_an_agent() {
     // Without agent detection, the repo setting still applies.
     t.json("s1", &["issue", "create", "-t", "Owner work"]);
     let out = t
-        .cmd("human-s", &["--json", "issue", "claim", "ALX-2"])
+        .cmd("human-s", &["--json", "issue", "claim", "ABC-2"])
         .env_remove("LLMTODO_ACTOR")
         .output()
         .unwrap();
@@ -286,10 +286,10 @@ async fn repo_human_actor_does_not_hide_an_agent() {
 #[tokio::test(flavor = "multi_thread")]
 async fn antigravity_is_detected_inside_claude_code() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json("s1", &["issue", "create", "-t", "Work"]);
     let out = t
-        .cmd("unused", &["--json", "issue", "claim", "ALX-1"])
+        .cmd("unused", &["--json", "issue", "claim", "ABC-1"])
         .env_remove("LLMTODO_ACTOR")
         .env_remove("LLMTODO_SESSION")
         .env("ANTIGRAVITY_AGENT", "1")
@@ -306,7 +306,7 @@ async fn antigravity_is_detected_inside_claude_code() {
     );
     let v = t.json(
         "s1",
-        &["--json", "issue", "view", "ALX-1", "--fields", "claim"],
+        &["--json", "issue", "view", "ABC-1", "--fields", "claim"],
     );
     let claim = &v["claim"];
     assert_eq!(claim["actor"]["kind"], "agent", "{v}");
@@ -320,10 +320,10 @@ async fn antigravity_is_detected_inside_claude_code() {
 #[tokio::test(flavor = "multi_thread")]
 async fn repeated_claim_warns_on_stderr() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json("s1", &["issue", "create", "-t", "Work"]);
     let claim = || {
-        t.cmd("same", &["--json", "issue", "claim", "ALX-1"])
+        t.cmd("same", &["--json", "issue", "claim", "ABC-1"])
             .output()
             .unwrap()
     };
@@ -381,14 +381,14 @@ async fn label_create_refuses_workflow_names() {
 #[tokio::test(flavor = "multi_thread")]
 async fn update_without_a_change_fails() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json("s1", &["issue", "create", "-t", "Work"]);
     assert_eq!(
-        t.code("s1", &["issue", "update", "ALX-1", "--with", "Use comrak."]),
+        t.code("s1", &["issue", "update", "ABC-1", "--with", "Use comrak."]),
         2
     );
-    assert_eq!(t.code("s1", &["issue", "update", "ALX-1"]), 2);
-    assert_eq!(t.code("s1", &["issue", "update", "ALX-1", "--force"]), 2);
+    assert_eq!(t.code("s1", &["issue", "update", "ABC-1"]), 2);
+    assert_eq!(t.code("s1", &["issue", "update", "ABC-1", "--force"]), 2);
     assert_eq!(
         t.code("s1", &["doc", "update", "some-doc", "--with", "x"]),
         2
@@ -396,11 +396,11 @@ async fn update_without_a_change_fails() {
     assert_eq!(t.code("s1", &["doc", "update", "some-doc"]), 2);
     let v = t.json(
         "s1",
-        &["issue", "view", "ALX-1", "--fields", "description_version"],
+        &["issue", "view", "ABC-1", "--fields", "description_version"],
     );
     assert_eq!(v["description_version"], 1);
     // A real change still works.
-    t.json("s1", &["issue", "update", "ALX-1", "-p", "high"]);
+    t.json("s1", &["issue", "update", "ABC-1", "-p", "high"]);
     t.stop().await;
 }
 
@@ -518,14 +518,14 @@ async fn usage_is_read_only_for_writes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ask_and_answer_owner_questions() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     t.json("s1", &["issue", "create", "-t", "Decide"]);
     let v = t.json(
         "s1",
         &[
             "issue",
             "ask",
-            "ALX-1",
+            "ABC-1",
             "Fork or PR?",
             "-o",
             "a=Fork",
@@ -538,7 +538,7 @@ async fn ask_and_answer_owner_questions() {
     assert_eq!(v["waiting_on"], "owner");
     let v = t.json(
         "s1",
-        &["issue", "ask", "ALX-1", "Name?", "--context", "Short."],
+        &["issue", "ask", "ABC-1", "Name?", "--context", "Short."],
     );
     assert_eq!(v["question"]["id"], "Q2");
     assert_eq!(v["question"]["context"], "Short.");
@@ -551,35 +551,35 @@ async fn ask_and_answer_owner_questions() {
         .map(|q| q["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, ["Q1", "Q2"]);
-    assert_eq!(v[0]["key"], "ALX-1");
+    assert_eq!(v[0]["key"], "ABC-1");
 
-    let v = t.json("s1", &["issue", "answer", "ALX-1", "Q1", "b"]);
+    let v = t.json("s1", &["issue", "answer", "ABC-1", "Q1", "b"]);
     assert_eq!(v["question"]["answer"], "b) Upstream PR");
     assert_eq!(v["open"], 1);
     assert_eq!(v["waiting_on"], "owner");
-    let v = t.json("s1", &["issue", "answer", "ALX-1", "2", "lt"]);
+    let v = t.json("s1", &["issue", "answer", "ABC-1", "2", "lt"]);
     assert_eq!(v["open"], 0);
     assert_eq!(v["waiting_on"], "agent");
     let v = t.json("s1", &["issue", "questions"]);
     assert_eq!(v.as_array().unwrap().len(), 0);
-    let v = t.json("s1", &["issue", "questions", "ALX-1", "--all"]);
+    let v = t.json("s1", &["issue", "questions", "ABC-1", "--all"]);
     assert_eq!(v.as_array().unwrap().len(), 2);
 
     // Bad input: one option, an unknown question.
     assert_eq!(
-        t.code("s1", &["issue", "ask", "ALX-1", "Only?", "-o", "x"]),
+        t.code("s1", &["issue", "ask", "ABC-1", "Only?", "-o", "x"]),
         2
     );
-    assert_eq!(t.code("s1", &["issue", "answer", "ALX-1", "Q9", "x"]), 6);
+    assert_eq!(t.code("s1", &["issue", "answer", "ABC-1", "Q9", "x"]), 6);
 
     // The actor who answered can take the last answer back.
-    let v = t.json("s1", &["issue", "undo-answer", "ALX-1", "q2"]);
+    let v = t.json("s1", &["issue", "undo-answer", "ABC-1", "q2"]);
     assert_eq!(v["question"]["id"], "Q2");
     assert_eq!(v["question"]["answer"], serde_json::Value::Null);
     assert_eq!(v["open"], 1);
     assert_eq!(v["waiting_on"], "owner");
     // A second undo finds nothing to take back.
-    assert_eq!(t.code("s1", &["issue", "undo-answer", "ALX-1", "Q2"]), 6);
+    assert_eq!(t.code("s1", &["issue", "undo-answer", "ABC-1", "Q2"]), 6);
     t.stop().await;
 }
 
@@ -587,12 +587,12 @@ async fn ask_and_answer_owner_questions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn query_narrows_to_claimed_and_analyzing() {
     let t = T::new().await;
-    t.json("s1", &["team", "create", "ALX", "Alex"]);
+    t.json("s1", &["team", "create", "ABC", "Acme"]);
     for title in ["Locked", "Reading", "Idle"] {
         t.json("s1", &["issue", "create", "-t", title]);
     }
-    t.json("s1", &["issue", "claim", "ALX-1"]);
-    t.json("s2", &["issue", "analyze", "ALX-2"]);
+    t.json("s1", &["issue", "claim", "ABC-1"]);
+    t.json("s2", &["issue", "analyze", "ABC-2"]);
     let keys = |flags: &[&str]| {
         let mut args = vec!["issue", "query", "--fields", "key"];
         args.extend(flags);
@@ -606,9 +606,9 @@ async fn query_narrows_to_claimed_and_analyzing() {
         keys.sort();
         keys
     };
-    assert_eq!(keys(&["--claimed"]), ["ALX-1"]);
-    assert_eq!(keys(&["--analyzing"]), ["ALX-2"]);
-    assert_eq!(keys(&["--claimed", "--analyzing"]), ["ALX-1", "ALX-2"]);
+    assert_eq!(keys(&["--claimed"]), ["ABC-1"]);
+    assert_eq!(keys(&["--analyzing"]), ["ABC-2"]);
+    assert_eq!(keys(&["--claimed", "--analyzing"]), ["ABC-1", "ABC-2"]);
     assert_eq!(keys(&[]).len(), 3);
     t.stop().await;
 }

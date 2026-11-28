@@ -68,13 +68,13 @@ impl T {
             &owner(),
             "POST",
             "/v1/teams",
-            json!({ "key": "ALX", "name": "Alex" }),
+            json!({ "key": "ABC", "name": "Acme" }),
         )
         .await;
         t.ok(
             &owner(),
             "POST",
-            "/v1/teams/ALX/statuses",
+            "/v1/teams/ABC/statuses",
             json!({ "name": "User review", "type": "started", "review": true }),
         )
         .await;
@@ -535,7 +535,7 @@ async fn the_flag_can_be_set_and_cleared() {
         .ok(
             &owner(),
             "POST",
-            "/v1/teams/ALX/statuses",
+            "/v1/teams/ABC/statuses",
             json!({ "name": "QA", "type": "started" }),
         )
         .await;
@@ -653,7 +653,7 @@ async fn the_migration_ends_claims_on_review_tickets() {
         return;
     }
     let mut t = T::bare().await;
-    for (key, name) in [("ASTRO", "Astro starter"), ("LLM", "llmtodo")] {
+    for (key, name) in [("BETA", "Beta team"), ("LLM", "llmtodo")] {
         t.ok(
             &owner(),
             "POST",
@@ -670,12 +670,7 @@ async fn the_migration_ends_claims_on_review_tickets() {
     )
     .await;
     let mut keys = Vec::new();
-    for (team, session) in [
-        ("ASTRO", "s1"),
-        ("ASTRO", "s2"),
-        ("LLM", "s3"),
-        ("LLM", "s4"),
-    ] {
+    for (team, session) in [("BETA", "s1"), ("BETA", "s2"), ("LLM", "s3"), ("LLM", "s4")] {
         let v = t
             .ok(
                 &owner(),
@@ -705,7 +700,7 @@ async fn the_migration_ends_claims_on_review_tickets() {
             .await
             .unwrap();
         let moves = [
-            (&keys[0], "ASTRO", "In Review"),
+            (&keys[0], "BETA", "In Review"),
             (&keys[2], "LLM", "User review"),
         ];
         for (k, team, status) in moves {
@@ -734,7 +729,7 @@ async fn the_migration_ends_claims_on_review_tickets() {
 
     t.running = Some(start(t._dir.path()).await);
     t.url = t.running.as_ref().unwrap().url();
-    for team in ["ASTRO", "LLM"] {
+    for team in ["BETA", "LLM"] {
         let v = t
             .ok(&owner(), "GET", &format!("/v1/teams/{team}"), json!({}))
             .await;
@@ -794,7 +789,7 @@ async fn one_request_answers_many_reviews() {
                 { "issue": a, "verdict": "approved" },
                 { "issue": not_in_review, "verdict": "approved" },
                 { "issue": b, "verdict": "changes_requested" },
-                { "issue": "ALX-999", "verdict": "approved" },
+                { "issue": "ABC-999", "verdict": "approved" },
                 { "issue": c, "verdict": "approved", "feedback": "Nice." },
             ] }),
         )
@@ -838,7 +833,7 @@ impl T {
     /// Makes the team's In Review the reviewer agent's step (LLM-588).
     /// User review stays the owner's.
     async fn agent_review(&self) {
-        let team = self.ok(&owner(), "GET", "/v1/teams/ALX", json!({})).await;
+        let team = self.ok(&owner(), "GET", "/v1/teams/ABC", json!({})).await;
         let id = team["statuses"]
             .as_array()
             .unwrap()
@@ -1000,7 +995,7 @@ async fn the_list_copy_carries_the_last_review() {
 #[tokio::test]
 async fn request_changes_falls_back_to_todo() {
     let t = T::new().await;
-    let team = t.ok(&owner(), "GET", "/v1/teams/ALX", Value::Null).await;
+    let team = t.ok(&owner(), "GET", "/v1/teams/ABC", Value::Null).await;
     let in_progress = team["statuses"]
         .as_array()
         .unwrap()
@@ -1104,7 +1099,7 @@ async fn the_role_follows_the_review_flag() {
         .ok(
             &owner(),
             "POST",
-            "/v1/teams/ALX/statuses",
+            "/v1/teams/ABC/statuses",
             json!({ "name": "QA", "type": "started", "review_role": "agent" }),
         )
         .await;
@@ -1120,7 +1115,7 @@ async fn the_role_follows_the_review_flag() {
         .call(
             &owner(),
             "POST",
-            "/v1/teams/ALX/statuses",
+            "/v1/teams/ABC/statuses",
             json!({ "name": "QB", "type": "started", "review": false, "review_role": "owner" }),
         )
         .await;
@@ -1176,7 +1171,7 @@ async fn the_migration_sets_review_roles() {
         return;
     }
     let mut t = T::bare().await;
-    for (key, name) in [("ASTRO", "Astro starter"), ("LLM", "llmtodo")] {
+    for (key, name) in [("BETA", "Beta team"), ("LLM", "llmtodo")] {
         t.ok(
             &owner(),
             "POST",
@@ -1262,7 +1257,7 @@ async fn the_migration_sets_review_roles() {
             })
             .collect()
     };
-    assert_eq!(roles("ASTRO").await, [("In Review".into(), json!("owner"))]);
+    assert_eq!(roles("BETA").await, [("In Review".into(), json!("owner"))]);
     let mut llm = roles("LLM").await;
     llm.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(

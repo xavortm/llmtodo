@@ -46,7 +46,7 @@ fn open_with(
 }
 
 fn team() -> Team {
-    team_named("ALX", 0)
+    team_named("ABC", 0)
 }
 
 /// Team `key`. Each `n` gives it its own IDs.
@@ -64,7 +64,7 @@ fn team_named(key: &str, n: u32) -> Team {
 fn issue(n: u32, title: &str) -> Issue {
     serde_json::from_value(serde_json::json!({
         "id": format!("01a1c453-1260-7779-be1c-619faeb9d5{n:02}"),
-        "key": format!("ALX-{n}"), "team": "ALX", "title": title,
+        "key": format!("ABC-{n}"), "team": "ABC", "title": title,
         "status": {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "name": "Todo", "type": "unstarted", "color": "#fff"},
         "priority": "none", "assignee": null, "labels": [], "project": null,
         "milestone": null, "parent": null, "wanted_executor": {}, "description": null,
@@ -103,7 +103,7 @@ fn frame(
 }
 
 fn title(view: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
-    cx.read(|cx| view.read(cx).issue_by_key("ALX-1", cx).title.to_string())
+    cx.read(|cx| view.read(cx).issue_by_key("ABC-1", cx).title.to_string())
 }
 
 #[gpui_kit::test]
@@ -122,7 +122,7 @@ fn the_cache_shows_dimmed_until_the_live_load_replaces_it(cx: &mut TestAppContex
         assert!(store.cached);
         assert_eq!(
             store.catalog.team_names[0].key.as_ref(),
-            "ALX",
+            "ABC",
             "the sidebar has its teams"
         );
     });
@@ -133,13 +133,13 @@ fn the_cache_shows_dimmed_until_the_live_load_replaces_it(cx: &mut TestAppContex
     // An edit waits for the live data.
     while requests.try_recv().is_ok() {}
     view.update(cx, |this, cx| {
-        let id = this.issue_by_key("ALX-1", cx).id;
+        let id = this.issue_by_key("ABC-1", cx).id;
         this.set_priority(id, Priority::Urgent, cx);
     });
     cx.read(|cx| {
         let this = view.read(cx);
         assert_eq!(
-            this.issue_by_key("ALX-1", cx).priority,
+            this.issue_by_key("ABC-1", cx).priority,
             crate::model::data::Priority::None
         );
         assert!(
@@ -178,7 +178,7 @@ fn the_cache_shows_dimmed_until_the_live_load_replaces_it(cx: &mut TestAppContex
 
     // Edits work again.
     view.update(cx, |this, cx| {
-        let id = this.issue_by_key("ALX-1", cx).id;
+        let id = this.issue_by_key("ABC-1", cx).id;
         this.set_priority(id, Priority::Urgent, cx);
     });
     assert!(
@@ -280,7 +280,7 @@ fn project_edits_wait_while_the_cache_shows(cx: &mut TestAppContext) {
     let project = |slug: &str, n: u32| -> llmtodo_client::types::Project {
         serde_json::from_value(serde_json::json!({
             "id": format!("01a1c453-1260-7779-be1c-619faeb9d6{n:02}"), "slug": slug, "name": slug,
-            "description": "", "state": "started", "teams": ["ALX"], "repos": [],
+            "description": "", "state": "started", "teams": ["ABC"], "repos": [],
             "position": n, "created_at": "2026-11-01T10:00:00Z",
             "updated_at": "2026-11-01T10:00:00Z", "deleted_at": null
         }))

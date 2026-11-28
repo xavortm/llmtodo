@@ -97,7 +97,7 @@ async fn history(r: &llmtodo_server::Running, edits: usize) -> Vec<String> {
         r,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "Alex" }),
+        json!({ "key": "ABC", "name": "Acme" }),
     )
     .await;
     let first: String = (0..120)
@@ -117,7 +117,7 @@ async fn history(r: &llmtodo_server::Running, edits: usize) -> Vec<String> {
         let v = call(
             r,
             "PATCH",
-            "/v1/issues/ALX-1",
+            "/v1/issues/ABC-1",
             json!({ "body": next, "force": true }),
         )
         .await;
@@ -131,7 +131,7 @@ async fn bodies(r: &llmtodo_server::Running) -> Vec<(i64, String)> {
     let h = call(
         r,
         "GET",
-        "/v1/issues/ALX-1/history?bodies=true",
+        "/v1/issues/ABC-1/history?bodies=true",
         Value::Null,
     )
     .await;
@@ -193,7 +193,7 @@ async fn every_revision_of_a_long_history_restores_byte_for_byte() {
         let got = call(
             &r,
             "POST",
-            "/v1/issues/ALX-1/restore",
+            "/v1/issues/ABC-1/restore",
             json!({ "revision": v }),
         )
         .await;
@@ -247,7 +247,7 @@ async fn the_upgrade_compacts_full_copies() {
     call(
         &r,
         "PATCH",
-        "/v1/issues/ALX-1",
+        "/v1/issues/ABC-1",
         json!({ "body": next, "force": true }),
     )
     .await;
@@ -301,7 +301,7 @@ async fn a_trim_keeps_the_text_of_kept_revisions() {
         let got = call(
             &r,
             "POST",
-            "/v1/issues/ALX-1/restore",
+            "/v1/issues/ABC-1/restore",
             json!({ "revision": v }),
         )
         .await;

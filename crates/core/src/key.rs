@@ -1,18 +1,18 @@
-//! Issue keys such as `ALX-123`.
+//! Issue keys such as `ABC-123`.
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Longest team key we accept, such as `ALX` or `WEB2`.
+/// Longest team key we accept, such as `ABC` or `WEB2`.
 pub const MAX_TEAM_KEY_LEN: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IssueKey {
     pub team: String,
     pub number: u32,
-    /// A key given offline, such as `ALX-~1`, before the shared database
+    /// A key given offline, such as `ABC-~1`, before the shared database
     /// gave the real one (LLM-471). `~` never appears in a real key, and
     /// the provisional key stays as an alias after replay.
     pub provisional: bool,
@@ -53,7 +53,7 @@ impl IssueKey {
         }
     }
 
-    /// A provisional key, such as `ALX-~1`.
+    /// A provisional key, such as `ABC-~1`.
     pub fn provisional(team: impl Into<String>, number: u32) -> Self {
         Self {
             team: team.into(),
@@ -73,8 +73,8 @@ impl fmt::Display for IssueKey {
 impl FromStr for IssueKey {
     type Err = KeyError;
 
-    /// Parses `ALX-123`, or a provisional `ALX-~1`. Lower case input is
-    /// accepted: `alx-123`.
+    /// Parses `ABC-123`, or a provisional `ABC-~1`. Lower case input is
+    /// accepted: `abc-123`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         let (team, num) = s
@@ -120,7 +120,7 @@ impl schemars::JsonSchema for IssueKey {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}-~?[1-9][0-9]{0,8}$", "examples": ["ALX-123", "ALX-~1"] })
+        schemars::json_schema!({ "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}-~?[1-9][0-9]{0,8}$", "examples": ["ABC-123", "ABC-~1"] })
     }
 }
 
@@ -134,14 +134,14 @@ pub struct KeyMatch {
 
 /// Finds issue keys in text such as a PR title, a branch name or Markdown.
 ///
-/// Only upper-case keys count in prose (`ALX-12`), so words like `utf-8` do
+/// Only upper-case keys count in prose (`ABC-12`), so words like `utf-8` do
 /// not match. Branch names are usually lower case, so use
 /// [`find_keys_any_case`] for them.
 pub fn find_keys(text: &str) -> Vec<KeyMatch> {
     scan(text, false)
 }
 
-/// Like [`find_keys`], but also matches `alx-12`, as in `alx-12-fix-login`.
+/// Like [`find_keys`], but also matches `abc-12`, as in `abc-12-fix-login`.
 pub fn find_keys_any_case(text: &str) -> Vec<KeyMatch> {
     scan(text, true)
 }
@@ -198,34 +198,34 @@ mod tests {
 
     #[test]
     fn parses_and_prints() {
-        let k: IssueKey = "alx-42".parse().unwrap();
-        assert_eq!(k, IssueKey::new("ALX", 42));
-        assert_eq!(k.to_string(), "ALX-42");
+        let k: IssueKey = "abc-42".parse().unwrap();
+        assert_eq!(k, IssueKey::new("ABC", 42));
+        assert_eq!(k.to_string(), "ABC-42");
     }
 
     #[test]
     fn provisional_keys_parse_and_print() {
-        let k: IssueKey = "alx-~3".parse().unwrap();
-        assert_eq!(k, IssueKey::provisional("ALX", 3));
-        assert_eq!(k.to_string(), "ALX-~3");
-        assert_ne!(k, IssueKey::new("ALX", 3));
-        assert!("ALX-~".parse::<IssueKey>().is_err());
-        assert!("ALX-~~1".parse::<IssueKey>().is_err());
+        let k: IssueKey = "abc-~3".parse().unwrap();
+        assert_eq!(k, IssueKey::provisional("ABC", 3));
+        assert_eq!(k.to_string(), "ABC-~3");
+        assert_ne!(k, IssueKey::new("ABC", 3));
+        assert!("ABC-~".parse::<IssueKey>().is_err());
+        assert!("ABC-~~1".parse::<IssueKey>().is_err());
         // Prose never names a provisional key as a real one.
-        assert!(find_keys("see ALX-~3").is_empty());
+        assert!(find_keys("see ABC-~3").is_empty());
     }
 
     #[test]
     fn rejects_bad_keys() {
         for bad in [
-            "ALX",
-            "ALX-",
+            "ABC",
+            "ABC-",
             "-1",
-            "ALX-01",
+            "ABC-01",
             "1AB-3",
-            "ALX-1a",
+            "ABC-1a",
             "TOOLONGTEAMKEY-1",
-            "ALX-1234567890",
+            "ABC-1234567890",
         ] {
             assert!(bad.parse::<IssueKey>().is_err(), "{bad}");
         }
@@ -233,25 +233,25 @@ mod tests {
 
     #[test]
     fn finds_keys_in_text() {
-        let found: Vec<_> = find_keys("Fixes ALX-12, see (WEB2-3). Not utf-8 or xALX-9 or ALX-5x.")
+        let found: Vec<_> = find_keys("Fixes ABC-12, see (WEB2-3). Not utf-8 or xABC-9 or ABC-5x.")
             .into_iter()
             .map(|m| m.key.to_string())
             .collect();
-        assert_eq!(found, ["ALX-12", "WEB2-3"]);
+        assert_eq!(found, ["ABC-12", "WEB2-3"]);
     }
 
     #[test]
     fn finds_keys_in_branches() {
-        let found: Vec<_> = find_keys_any_case("alex/alx-435-fix-login")
+        let found: Vec<_> = find_keys_any_case("dev/abc-435-fix-login")
             .into_iter()
             .map(|m| m.key.to_string())
             .collect();
-        assert_eq!(found, ["ALX-435"]);
+        assert_eq!(found, ["ABC-435"]);
     }
 
     #[test]
     fn team_keys() {
-        assert_eq!(normalize_team_key("alx").unwrap(), "ALX");
+        assert_eq!(normalize_team_key("abc").unwrap(), "ABC");
         assert!(normalize_team_key("a-b").is_err());
         assert!(normalize_team_key("").is_err());
     }

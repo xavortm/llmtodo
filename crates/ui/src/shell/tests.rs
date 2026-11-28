@@ -1681,12 +1681,12 @@ fn statuses_and_labels_come_from_the_server(cx: &mut TestAppContext) {
     use llmtodo_client::types::{Issue, Label, Team};
     let (_, view) = open(cx);
     let team: Team = serde_json::from_value(serde_json::json!({
-        "id": "01a1c453-1260-7779-be1c-619faeb9d420", "key": "ALX", "name": "alx",
+        "id": "01a1c453-1260-7779-be1c-619faeb9d420", "key": "ABC", "name": "abc",
         "created_at": "2026-11-01T10:00:00Z",
         "statuses": [
-            {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "team": "ALX", "name": "Todo", "type": "unstarted", "color": "#fff", "position": 1},
-            {"id": "01a1c453-1260-7779-be1c-619faeb9d422", "team": "ALX", "name": "In Review", "type": "started", "color": "#fff", "position": 3},
-            {"id": "01a1c453-1260-7779-be1c-619faeb9d423", "team": "ALX", "name": "Duplicate", "type": "canceled", "color": "#fff", "position": 6}
+            {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "team": "ABC", "name": "Todo", "type": "unstarted", "color": "#fff", "position": 1},
+            {"id": "01a1c453-1260-7779-be1c-619faeb9d422", "team": "ABC", "name": "In Review", "type": "started", "color": "#fff", "position": 3},
+            {"id": "01a1c453-1260-7779-be1c-619faeb9d423", "team": "ABC", "name": "Duplicate", "type": "canceled", "color": "#fff", "position": 6}
         ]
     }))
     .unwrap();
@@ -1698,7 +1698,7 @@ fn statuses_and_labels_come_from_the_server(cx: &mut TestAppContext) {
     let issue = |n: u32, status: &str, kind: &str| -> Issue {
         serde_json::from_value(serde_json::json!({
             "id": format!("01a1c453-1260-7779-be1c-619faeb9d5{n:02}"),
-            "key": format!("ALX-{n}"), "team": "ALX", "title": format!("Issue {n}"),
+            "key": format!("ABC-{n}"), "team": "ABC", "title": format!("Issue {n}"),
             "status": {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "name": status, "type": kind, "color": "#fff"},
             "priority": "none", "assignee": null, "labels": ["Area/fe"], "project": null,
             "milestone": null, "parent": null, "wanted_executor": {}, "description": "Body",
@@ -1732,7 +1732,7 @@ fn statuses_and_labels_come_from_the_server(cx: &mut TestAppContext) {
         let keys: Vec<_> = (0..3)
             .map(|n| this.visible_issue(n, cx).key.to_string())
             .collect();
-        assert_eq!(keys, ["ALX-2", "ALX-9", "ALX-10"]);
+        assert_eq!(keys, ["ABC-2", "ABC-9", "ABC-10"]);
         let review = this.visible_issue(2, cx);
         assert_eq!(review.status.name, "In Review");
         assert_eq!(review.version, 3);
@@ -2108,10 +2108,10 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
     view.update(cx, |this, _| this.attach_backend(backend));
     let team = |status: &str| -> Team {
         serde_json::from_value(serde_json::json!({
-            "id": "01a1c453-1260-7779-be1c-619faeb9d420", "key": "ALX", "name": "alx",
+            "id": "01a1c453-1260-7779-be1c-619faeb9d420", "key": "ABC", "name": "abc",
             "created_at": "2026-11-01T10:00:00Z",
             "statuses": [
-                {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "team": "ALX", "name": status, "type": "unstarted", "color": "#fff", "position": 1}
+                {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "team": "ABC", "name": status, "type": "unstarted", "color": "#fff", "position": 1}
             ]
         }))
         .unwrap()
@@ -2126,7 +2126,7 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
     let issue = |n: u32, description: Option<&str>, version: i64| -> Issue {
         serde_json::from_value(serde_json::json!({
             "id": format!("01a1c453-1260-7779-be1c-619faeb9d5{n:02}"),
-            "key": format!("ALX-{n}"), "team": "ALX", "title": format!("Issue {n}"),
+            "key": format!("ABC-{n}"), "team": "ABC", "title": format!("Issue {n}"),
             "status": {"id": "01a1c453-1260-7779-be1c-619faeb9d421", "name": "Todo", "type": "unstarted", "color": "#fff"},
             "priority": "none", "assignee": null, "labels": ["fe"], "project": null,
             "milestone": null, "parent": null, "wanted_executor": {}, "description": description,
@@ -2171,14 +2171,14 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
             })),
             cx,
         );
-        let one = by_key(this, "ALX-1", cx);
+        let one = by_key(this, "ABC-1", cx);
         assert_eq!(one.status.name, "Ready");
         assert_eq!(one.labels[0].name, "frontend");
         assert_eq!(
             (one.description.as_ref(), one.description_loaded),
             ("One", true)
         );
-        assert!(!by_key(this, "ALX-2", cx).description_loaded);
+        assert!(!by_key(this, "ABC-2", cx).description_loaded);
     });
     assert!(
         std::iter::from_fn(|| requests.try_recv().ok())
@@ -2191,9 +2191,9 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
     // newer one.
     view.update(cx, |this, cx| {
         this.apply_event(snapshot(vec![issue(1, None, 2)]), cx);
-        assert_eq!(by_key(this, "ALX-1", cx).description.as_ref(), "One");
+        assert_eq!(by_key(this, "ABC-1", cx).description.as_ref(), "One");
         this.apply_event(snapshot(vec![issue(1, None, 3)]), cx);
-        let one = by_key(this, "ALX-1", cx);
+        let one = by_key(this, "ABC-1", cx);
         assert!(!one.description_loaded);
         assert_eq!(one.version, 3);
     });
@@ -2203,11 +2203,11 @@ fn a_catalog_event_renames_held_issues_without_a_fetch(cx: &mut TestAppContext) 
 fn a_team_move_replaces_the_key_in_place(cx: &mut TestAppContext) {
     let (_handle, view) = open(cx);
     let count = cx.read(|cx| view.read(cx).visible_count(cx));
-    // An agent moves LLM-101 to team ALX, so it comes back as ALX-3.
+    // An agent moves LLM-101 to team ABC, so it comes back as ABC-3.
     view.update(cx, |this, cx| {
         let mut issue = this.issue_by_key("LLM-101", cx).clone();
-        issue.key = "ALX-3".into();
-        issue.team = "ALX".into();
+        issue.key = "ABC-3".into();
+        issue.team = "ABC".into();
         this.upsert_issue(issue, cx);
     });
     cx.read(|cx| {
@@ -2216,7 +2216,7 @@ fn a_team_move_replaces_the_key_in_place(cx: &mut TestAppContext) {
         let keys: Vec<String> = (0..this.visible_count(cx))
             .map(|n| this.visible_issue(n, cx).key.to_string())
             .collect();
-        assert!(keys.contains(&"ALX-3".to_string()));
+        assert!(keys.contains(&"ABC-3".to_string()));
         assert!(!keys.contains(&"LLM-101".to_string()));
     });
 }
@@ -3228,11 +3228,11 @@ fn issue_links_open_the_issue(cx: &mut TestAppContext) {
     });
 
     // A key the store does not hold says so and changes nothing.
-    view.update(cx, |this, cx| this.open_key("ALX-9", cx));
+    view.update(cx, |this, cx| this.open_key("ABC-9", cx));
     cx.read(|cx| {
         let ws = view.read(cx);
         assert_eq!(ws.detail(cx).map(|d| d.issue), Some(target));
-        assert_eq!(ws.message(), "ALX-9 is not in this workspace");
+        assert_eq!(ws.message(), "ABC-9 is not in this workspace");
     });
 }
 

@@ -218,7 +218,7 @@ owner issue update "$user_review" --status "User review"
 # notes), one passed with none (agy ✓) and one got changes (agy · changes).
 in_review_id=$(LLMTODO_ACTOR=human "$bin" --json --no-input status list --team DEMO | tr '{' '\n' | grep '"name":"In Review"' | sed -E 's/.*"id":"([^"]+)".*/\1/')
 owner status update "$in_review_id" --review-role agent
-agy=agent:antigravity/gemini-4-neon/high
+agy=agent:antigravity/reviewer/high
 # `to_agy <key>`: a coding agent claims the ticket and sends it to agy.
 to_agy() {
   owner issue update "$1" --estimate-minutes 20 --estimate-cost 1
@@ -252,7 +252,7 @@ key issue create -t "Invite screen" --project demo-app --parent "$map" -l fronte
 # to show the empty state.
 for k in "$todo" "$progress" "$review" "$done_" "$canceled" "$dup" "$blocked"; do fill "$k"; done
 
-# Assignees and claims by agents, with worktrees and herdr panes. A claim
+# Assignees and claims by agents, with worktrees and terminal panes. A claim
 # needs both estimates.
 owner issue update "$progress" --estimate-minutes 90 --estimate-cost 4.5
 owner issue update "$review" --estimate-minutes 45 --estimate-cost 1.25

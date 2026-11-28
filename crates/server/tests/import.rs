@@ -17,10 +17,10 @@ fn page(nodes: Value) -> Value {
 fn workspace() -> Recorded {
     let issue = |id: &str, number: i64, title: &str, extra: Value| {
         let mut v = json!({
-            "id": id, "identifier": format!("ALX-{number}"), "number": number, "title": title, "description": "",
+            "id": id, "identifier": format!("ABC-{number}"), "number": number, "title": title, "description": "",
             "priority": 0, "createdAt": "2026-03-01T10:00:00.000Z", "updatedAt": "2026-03-02T10:00:00.000Z",
             "archivedAt": null, "completedAt": null, "canceledAt": null,
-            "state": { "id": "st-todo" }, "team": { "id": "team-alx" }, "project": { "id": "proj-nb" }, "projectMilestone": null,
+            "state": { "id": "st-todo" }, "team": { "id": "team-abc" }, "project": { "id": "proj-nb" }, "projectMilestone": null,
             "parent": null, "assignee": null, "creator": { "id": "user-me" },
             "labels": page(json!([])), "relations": page(json!([])), "attachments": page(json!([])), "comments": page(json!([]))
         });
@@ -33,7 +33,7 @@ fn workspace() -> Recorded {
         issue(
             "i5",
             5,
-            "Wayfinder map",
+            "Project map",
             json!({ "priority": 2, "description": "Map.\n\n+++ Agent notes\nnotes\n+++\n", "assignee": { "id": "user-me" } })
         ),
         issue(
@@ -79,8 +79,8 @@ impl Fetch for Recorded {
             .unwrap_or("");
         Ok(match op {
             "Meta" => json!({
-                "viewer": { "id": "user-me", "name": "Alex", "displayName": "alex", "email": "x@example.com" },
-                "teams": { "nodes": [{ "id": "team-alx", "key": "ALX", "name": "Alex", "states": page(json!([
+                "viewer": { "id": "user-me", "name": "Pat", "displayName": "pat", "email": "x@example.com" },
+                "teams": { "nodes": [{ "id": "team-abc", "key": "ABC", "name": "Acme", "states": page(json!([
                     { "id": "st-triage", "name": "Triage", "type": "triage", "color": "#ff0000", "position": -1.0 },
                     { "id": "st-todo", "name": "Todo", "type": "unstarted", "color": "#e2e2e2", "position": 1.0 },
                     { "id": "st-progress", "name": "In Progress", "type": "started", "color": "#f2c94c", "position": 2.0 },
@@ -93,13 +93,13 @@ impl Fetch for Recorded {
                 { "id": "lab-triage", "name": "needs-triage", "color": "#ff00ff", "description": "Needs a look", "isGroup": false, "parent": null },
             ])) }),
             "Users" => json!({ "users": page(json!([
-                { "id": "user-me", "name": "Alex", "displayName": "alex", "email": "x@example.com" },
+                { "id": "user-me", "name": "Pat", "displayName": "pat", "email": "x@example.com" },
                 { "id": "user-sam", "name": "Sam Doe", "displayName": "sam", "email": "s@example.com" },
             ])) }),
             "Projects" => json!({ "projects": page(json!([{
                 "id": "proj-nb", "name": "Notebook", "description": "Notes app", "createdAt": "2026-01-01T00:00:00.000Z",
                 "updatedAt": "2026-01-02T00:00:00.000Z", "archivedAt": null, "status": { "type": "started" },
-                "teams": page(json!([{ "id": "team-alx" }])),
+                "teams": page(json!([{ "id": "team-abc" }])),
                 "projectMilestones": page(json!([{ "id": "ms-beta", "name": "Beta", "description": "", "targetDate": "2026-12-01", "sortOrder": 1.0 }])),
             }])) }),
             "Documents" => json!({ "documents": page(json!([{
@@ -164,9 +164,9 @@ async fn import_keeps_keys_and_is_idempotent() {
     assert_eq!(report.counts["files"].created, 1);
     assert!(report.backup.is_some());
 
-    let child = get(&base, "/v1/issues/ALX-7").await;
-    assert_eq!(child["key"], "ALX-7");
-    assert_eq!(child["parent"], "ALX-5");
+    let child = get(&base, "/v1/issues/ABC-7").await;
+    assert_eq!(child["key"], "ABC-7");
+    assert_eq!(child["parent"], "ABC-5");
     assert_eq!(child["status"]["name"], "In Progress");
     assert_eq!(child["assignee"]["name"], "sam");
     assert_eq!(child["labels"], json!(["Area/fe", "needs-triage"]));
@@ -189,7 +189,7 @@ async fn import_keeps_keys_and_is_idempotent() {
         .unwrap();
     assert_eq!(img.headers()["content-type"], "image/png");
 
-    let map = get(&base, "/v1/issues/ALX-5").await;
+    let map = get(&base, "/v1/issues/ABC-5").await;
     assert_eq!(map["assignee"]["is_owner"], true);
     assert_eq!(map["priority"], "high");
     assert!(
@@ -209,11 +209,11 @@ async fn import_keeps_keys_and_is_idempotent() {
     );
 
     // Archived issues land in the trash.
-    let trashed = get(&base, "/v1/issues/ALX-8").await;
+    let trashed = get(&base, "/v1/issues/ABC-8").await;
     assert!(trashed["deleted_at"].is_string());
 
     // Triage maps to backlog.
-    let team = get(&base, "/v1/teams/ALX").await;
+    let team = get(&base, "/v1/teams/ABC").await;
     assert!(
         team["statuses"]
             .as_array()
@@ -236,14 +236,14 @@ async fn import_keeps_keys_and_is_idempotent() {
     let http = reqwest::Client::new();
     let created: Value = http
         .post(format!("{base}/v1/issues"))
-        .json(&json!({ "title": "New", "team": "ALX" }))
+        .json(&json!({ "title": "New", "team": "ABC" }))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(created["key"], "ALX-10");
+    assert_eq!(created["key"], "ABC-10");
     running.stop().await.unwrap();
 }
 
@@ -266,8 +266,8 @@ async fn send(base: &str, method: &str, path: &str, body: Value, session: Option
     req.send().await.unwrap().json().await.unwrap()
 }
 
-/// The owner made ALX-1 to ALX-5 here before the import. The import must not
-/// write Linear's ALX-5 over the local one.
+/// The owner made ABC-1 to ABC-5 here before the import. The import must not
+/// write Linear's ABC-5 over the local one.
 #[tokio::test]
 async fn import_skips_keys_held_by_local_issues() {
     let dir = tempfile::tempdir().unwrap();
@@ -286,7 +286,7 @@ async fn import_skips_keys_held_by_local_issues() {
         &base,
         "POST",
         "/v1/teams",
-        json!({ "key": "ALX", "name": "Alex" }),
+        json!({ "key": "ABC", "name": "Acme" }),
         None,
     )
     .await;
@@ -309,23 +309,23 @@ async fn import_skips_keys_held_by_local_issues() {
         report
             .problems
             .iter()
-            .any(|p| p.starts_with("ALX-5:") && p.contains("made here")),
+            .any(|p| p.starts_with("ABC-5:") && p.contains("made here")),
         "{:?}",
         report.problems
     );
 
-    let five = get(&base, "/v1/issues/ALX-5").await;
+    let five = get(&base, "/v1/issues/ABC-5").await;
     assert_eq!(five["title"], "Local 5");
     assert!(five["description"].as_str().unwrap_or_default().is_empty());
     // The other Linear issues still arrive.
     assert_eq!(
-        get(&base, "/v1/issues/ALX-9").await["title"],
+        get(&base, "/v1/issues/ABC-9").await["title"],
         "Blocked task"
     );
     running.stop().await.unwrap();
 }
 
-/// An agent claims ALX-7 after the import, then the owner re-runs it. The
+/// An agent claims ABC-7 after the import, then the owner re-runs it. The
 /// claim and the local assignee stay. An issue nobody touched here still
 /// takes Linear's change, and the change shows up in the activity log.
 #[tokio::test]
@@ -352,21 +352,21 @@ async fn reimport_keeps_local_changes_and_claims() {
     send(
         &base,
         "PATCH",
-        "/v1/issues/ALX-7",
+        "/v1/issues/ABC-7",
         json!({ "estimate_minutes": 30, "estimate_cost_usd": 1.5 }),
         Some("agent-1"),
     )
     .await;
-    // ALX-7 came from Linear assigned to sam, so the agent must steal it.
+    // ABC-7 came from Linear assigned to sam, so the agent must steal it.
     send(
         &base,
         "POST",
-        "/v1/issues/ALX-7/claim",
+        "/v1/issues/ABC-7/claim",
         json!({ "steal": true }),
         Some("agent-1"),
     )
     .await;
-    let claimed = get(&base, "/v1/issues/ALX-7").await;
+    let claimed = get(&base, "/v1/issues/ABC-7").await;
     let agent = claimed["assignee"]["name"].clone();
     assert_ne!(agent, "sam");
 
@@ -386,20 +386,20 @@ async fn reimport_keeps_local_changes_and_claims() {
         again
             .problems
             .iter()
-            .any(|p| p.starts_with("ALX-7:") && p.contains("changed here")),
+            .any(|p| p.starts_with("ABC-7:") && p.contains("changed here")),
         "{:?}",
         again.problems
     );
 
-    let seven = get(&base, "/v1/issues/ALX-7").await;
+    let seven = get(&base, "/v1/issues/ABC-7").await;
     assert_eq!(seven["title"], "Child task");
     assert_eq!(seven["assignee"]["name"], agent);
     assert_eq!(seven["status"]["name"], "In Progress");
-    assert_eq!(seven["parent"], "ALX-5");
+    assert_eq!(seven["parent"], "ABC-5");
 
-    let nine = get(&base, "/v1/issues/ALX-9").await;
+    let nine = get(&base, "/v1/issues/ABC-9").await;
     assert_eq!(nine["title"], "Blocked task, renamed in Linear");
-    let history = get(&base, "/v1/issues/ALX-9/history").await;
+    let history = get(&base, "/v1/issues/ABC-9/history").await;
     let imported: Vec<&Value> = history["activity"]
         .as_array()
         .unwrap()
@@ -414,7 +414,7 @@ async fn reimport_keeps_local_changes_and_claims() {
     running.stop().await.unwrap();
 }
 
-/// Linear returns ALX-5 with a full first page of comments and relations.
+/// Linear returns ABC-5 with a full first page of comments and relations.
 /// The rest come from per-issue queries, and none of them may be dropped.
 struct Paged(Recorded);
 
@@ -488,7 +488,7 @@ async fn import_reads_every_page_of_nested_lists() {
         .unwrap();
     assert_eq!(report.counts["comments"].created, 5, "{:?}", report.counts);
 
-    let map = get(&base, "/v1/issues/ALX-5").await;
+    let map = get(&base, "/v1/issues/ABC-5").await;
     let bodies: Vec<&str> = map["comments"]
         .as_array()
         .unwrap()
@@ -505,7 +505,7 @@ async fn import_reads_every_page_of_nested_lists() {
         .iter()
         .map(|r| r["issue"]["key"].as_str().unwrap_or_default())
         .collect();
-    assert!(related.contains(&"ALX-7"), "{related:?}");
-    assert!(related.contains(&"ALX-8"), "{related:?}");
+    assert!(related.contains(&"ABC-7"), "{related:?}");
+    assert!(related.contains(&"ABC-8"), "{related:?}");
     running.stop().await.unwrap();
 }
