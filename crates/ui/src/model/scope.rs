@@ -38,6 +38,13 @@ pub struct ViewMembers {
 }
 
 impl Scope {
+    /// Whether the list can hold issues from more than one project, so it
+    /// may show the Project column (LLM-647). Only a project's own list
+    /// cannot: every issue there is in that project.
+    pub fn mixes_projects(&self) -> bool {
+        !matches!(self, Self::Project(_))
+    }
+
     /// Whether the list shows `issue` in this scope. `view` holds the
     /// members of the saved view the server sent last.
     pub fn matches(&self, issue: &Issue, view: Option<&ViewMembers>) -> bool {
@@ -121,5 +128,20 @@ impl Scope {
                 .iter()
                 .any(|d| d.id.to_string() == id.as_ref()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scope;
+
+    /// LLM-647: only a project's own list holds one project.
+    #[test]
+    fn only_a_project_holds_one_project() {
+        assert!(Scope::All.mixes_projects());
+        assert!(Scope::Team("LLM".into()).mixes_projects());
+        assert!(Scope::View("Open bugs".into()).mixes_projects());
+        assert!(Scope::Trash.mixes_projects());
+        assert!(!Scope::Project("app".into()).mixes_projects());
     }
 }
