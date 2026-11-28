@@ -7,15 +7,17 @@
 # The password is a local test value, not a secret.
 services:
   postgres:
-    image: postgres:17
+    image: postgres:19
     environment:
       POSTGRES_USER: llmtodo
       POSTGRES_PASSWORD: llmtodo
       POSTGRES_DB: llmtodo
     ports:
       - "127.0.0.1:54329:5432"
+    # Postgres 18 and later keep their data in /var/lib/postgresql/<major>,
+    # and refuse a mount at the old /var/lib/postgresql/data.
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql
     command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "max_connections=400"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U llmtodo"]
