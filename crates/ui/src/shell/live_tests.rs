@@ -2011,14 +2011,16 @@ fn backend_saves_a_project_color() {
         slug: "app".into(),
         color: Some("#12a594".into()),
     });
-    let project = live.wait(&mut events, "catalog with the color", |e| match e {
+    let (project, writes) = live.wait(&mut events, "catalog with the color", |e| match e {
         Event::Catalog(s) => s
             .projects
             .iter()
             .find(|p| p.slug == "app" && p.color.is_some())
-            .cloned(),
+            .map(|p| (p.clone(), s.project_writes)),
         _ => None,
     });
+    // The read came after the write, so the app takes it.
+    assert_eq!(writes, 1);
     assert_eq!(project.color.as_deref(), Some("#12a594"));
     assert_eq!(project.icon.as_deref(), Some("rocket"));
 

@@ -132,6 +132,14 @@ impl Workspace {
                     self.loaded_tracker(cx);
                 }
             }
+            // A read from before the app's latest project write would
+            // undo the move or color the sidebar already shows. The write's
+            // own events bring a fresh one.
+            backend::Event::Catalog(data)
+                if self
+                    .backend
+                    .as_ref()
+                    .is_some_and(|b| data.project_writes < b.project_writes()) => {}
             backend::Event::Catalog(data) => self.apply_catalog(data.catalog(), cx),
             backend::Event::Issue(issue) => self.receive_rows(vec![*issue], cx),
             backend::Event::Issues(issues) => self.receive_rows(issues, cx),

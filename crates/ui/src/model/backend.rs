@@ -14,6 +14,8 @@
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc as fmpsc;
@@ -40,6 +42,11 @@ pub struct CatalogData {
     pub views: Vec<SavedView>,
     /// Project documents, without their bodies.
     pub documents: Vec<Document>,
+    /// How many project writes the app had sent when this read began. A
+    /// read from before the app's latest one may lack it, so the app skips
+    /// it, and the write's own events bring a fresh catalog.
+    #[serde(skip)]
+    pub project_writes: u64,
 }
 
 impl CatalogData {
@@ -437,6 +444,8 @@ impl Target {
 #[derive(Clone)]
 pub struct Backend {
     tx: tmpsc::UnboundedSender<Request>,
+    /// The project writes sent so far. See [`CatalogData::project_writes`].
+    project_writes: Arc<AtomicU64>,
 }
 
 impl Backend {
@@ -445,6 +454,8 @@ impl Backend {
     pub fn start(target: Target) -> (Self, fmpsc::UnboundedReceiver<Event>) {
         let (tx, rx) = tmpsc::unbounded_channel();
         let (etx, erx) = fmpsc::unbounded();
+        let project_writes = Arc::new(AtomicU64::new(0));
+        let writes = project_writes.clone();
         std::thread::Builder::new()
             .name("llmtodo-api".into())
             .spawn(move || {
@@ -453,10 +464,10 @@ impl Backend {
                     .enable_all()
                     .build()
                     .expect("tokio runtime for the API client");
-                runtime.block_on(run(target, rx, etx));
+                runtime.block_on(run(target, rx, etx, writes));
             })
             .expect("start the API thread");
-        (Self { tx }, erx)
+        (Self { tx, project_writes }, erx)
     }
 
     /// A backend with no API thread. Tests read what the app sends from
@@ -464,7 +475,8 @@ impl Backend {
     #[cfg(test)]
     pub fn detached() -> (Self, tmpsc::UnboundedReceiver<Request>) {
         let (tx, rx) = tmpsc::unbounded_channel();
-        (Self { tx }, rx)
+        let project_writes = Arc::default();
+        (Self { tx, project_writes }, rx)
     }
 
     pub fn write(&self, key: &str, write: Write, kind: WriteKind) {
@@ -481,7 +493,20 @@ impl Backend {
     }
 
     pub fn request(&self, request: Request) {
+        // Counted on the app's thread, before the request goes, so no
+        // catalog read can start after the write and still look older.
+        if matches!(
+            request,
+            Request::SetProjectOrder { .. } | Request::SetProjectColor { .. }
+        ) {
+            self.project_writes.fetch_add(1, Ordering::SeqCst);
+        }
         let _ = self.tx.send(request);
+    }
+
+    /// The project writes sent so far.
+    pub fn project_writes(&self) -> u64 {
+        self.project_writes.load(Ordering::SeqCst)
     }
 
     pub fn reload(&self) {
@@ -682,9 +707,15 @@ impl Backoff {
     }
 }
 
-async fn run(target: Target, mut requests: tmpsc::UnboundedReceiver<Request>, events: Events) {
+async fn run(
+    target: Target,
+    mut requests: tmpsc::UnboundedReceiver<Request>,
+    events: Events,
+    project_writes: Arc<AtomicU64>,
+) {
     let mut state = State {
         cache: target.cache_path(),
+        project_writes,
         ..Default::default()
     };
     // The cache shows while the thread connects. It is read first, so it
@@ -874,6 +905,8 @@ struct State {
     flushing: Option<Pending>,
     /// LLM-625: the cache file each full load is saved to.
     cache: Option<PathBuf>,
+    /// The app's count of project writes. Each catalog read notes it.
+    project_writes: Arc<AtomicU64>,
 }
 
 /// A flush running on its own task. Dropping it stops the task.
@@ -1009,6 +1042,7 @@ async fn session(
             open,
             events,
             state.cache.as_deref(),
+            &state.project_writes,
         )
         .await
     };
@@ -1096,12 +1130,13 @@ async fn session(
                 state.flushing = Some(work.clone());
                 let (client, events, open) = (client.clone(), events.clone(), state.open);
                 let cache = state.cache.clone();
+                let writes = state.project_writes.clone();
                 #[cfg(test)]
                 let slow = target.slow_flush;
                 flushing = Some(FlushTask(tokio::spawn(async move {
                     #[cfg(test)]
                     tokio::time::sleep(slow).await;
-                    flush(&client, &mut work, open, &events, cache.as_deref()).await
+                    flush(&client, &mut work, open, &events, cache.as_deref(), &writes).await
                 })));
             }
         }
@@ -1350,16 +1385,21 @@ async fn handle(
             send(events, event);
         }
         Request::SetProjectOrder { moved, projects } => {
+            // The app skips catalog reads from before this write, so one
+            // read follows it, even when the write fails or changes nothing.
+            state.pending.catalog = true;
             match client.set_project_order(projects).await {
                 Ok(_) => {}
                 Err(e) if fatal(&e) => return Err(lost(e).into()),
-                Err(e) => send(
-                    events,
-                    Event::ProjectFailed {
-                        slug: moved,
-                        message: e.to_string(),
-                    },
-                ),
+                Err(e) => {
+                    send(
+                        events,
+                        Event::ProjectFailed {
+                            slug: moved,
+                            message: e.to_string(),
+                        },
+                    );
+                }
             }
         }
         Request::SetProjectColor { slug, color } => {
@@ -1367,16 +1407,20 @@ async fn handle(
                 color: Some(color.unwrap_or_default()),
                 ..Default::default()
             };
+            // See SetProjectOrder.
+            state.pending.catalog = true;
             match client.update_project(&slug, &update).await {
                 Ok(_) => {}
                 Err(e) if fatal(&e) => return Err(lost(e).into()),
-                Err(e) => send(
-                    events,
-                    Event::ProjectFailed {
-                        slug,
-                        message: e.to_string(),
-                    },
-                ),
+                Err(e) => {
+                    send(
+                        events,
+                        Event::ProjectFailed {
+                            slug,
+                            message: e.to_string(),
+                        },
+                    );
+                }
             }
         }
     }
@@ -1535,6 +1579,7 @@ async fn flush(
     open: Option<IssueId>,
     events: &Events,
     cache: Option<&std::path::Path>,
+    project_writes: &AtomicU64,
 ) -> Result<(), String> {
     if pending.reload {
         snapshot(client, events, cache).await?;
@@ -1547,7 +1592,7 @@ async fn flush(
         pending.children_of.clear();
     }
     if pending.catalog {
-        catalog(client, events).await?;
+        catalog(client, events, project_writes).await?;
         pending.catalog = false;
     }
     // An order change gives the parent's sub-issues new steps, depths and
@@ -1802,6 +1847,7 @@ async fn catalog_data(client: &Client) -> llmtodo_client::Result<CatalogData> {
         projects,
         views,
         documents,
+        project_writes: 0,
     })
 }
 
@@ -1830,8 +1876,14 @@ fn known_folder(client: &Client, slug: &str) -> Option<Option<String>> {
 }
 
 /// Sends the catalog alone. The app maps the issues it holds again.
-async fn catalog(client: &Client, events: &Events) -> Result<(), String> {
-    let data = catalog_data(client).await.map_err(|e| e.to_string())?;
+async fn catalog(
+    client: &Client,
+    events: &Events,
+    project_writes: &AtomicU64,
+) -> Result<(), String> {
+    let writes = project_writes.load(Ordering::SeqCst);
+    let mut data = catalog_data(client).await.map_err(|e| e.to_string())?;
+    data.project_writes = writes;
     send(events, Event::Catalog(Box::new(data)));
     Ok(())
 }

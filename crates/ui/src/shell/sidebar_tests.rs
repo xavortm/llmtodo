@@ -1163,6 +1163,65 @@ fn dragging_a_project_onto_another_reorders_them(cx: &mut TestAppContext) {
     cx.read(|cx| assert_eq!(view.read(cx).message(), "Moved Server"));
 }
 
+/// A catalog read that began before a project move lands after it, as on
+/// a slow database. It would put the project back until the move's own
+/// read arrived, so the app skips it.
+#[gpui_kit::test]
+fn a_catalog_read_from_before_a_move_does_not_undo_it(cx: &mut TestAppContext) {
+    use crate::model::backend::{Backend, CatalogData, Event};
+    let (_handle, view) = open(cx);
+    let (backend, _requests) = Backend::detached();
+    view.update(cx, |this, _| this.attach_backend(backend));
+    let project = |slug: &str, n: u32| -> llmtodo_client::types::Project {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("01a1c453-1260-7779-be1c-619faeb9d6{n:02}"),
+            "slug": slug, "name": slug, "description": "", "state": "started",
+            "teams": [], "repos": [], "position": n,
+            "created_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-01T10:00:00Z",
+            "deleted_at": null
+        }))
+        .unwrap()
+    };
+    let catalog = |order: [&str; 2], project_writes: u64| {
+        Event::Catalog(Box::new(CatalogData {
+            projects: order
+                .iter()
+                .enumerate()
+                .map(|(n, slug)| project(slug, n as u32))
+                .collect(),
+            project_writes,
+            ..Default::default()
+        }))
+    };
+    let order = |cx: &mut TestAppContext| -> Vec<String> {
+        cx.read(|cx| {
+            let store = view.read(cx).store().read(cx);
+            store
+                .catalog
+                .projects
+                .iter()
+                .map(|p| p.key.to_string())
+                .collect()
+        })
+    };
+    view.update(cx, |this, cx| {
+        this.move_project("server", "app", cx);
+    });
+    assert_eq!(order(cx), ["server", "app"]);
+
+    // The old read, with the old order, changes nothing.
+    view.update(cx, |this, cx| {
+        this.apply_event(catalog(["app", "server"], 0), cx)
+    });
+    assert_eq!(order(cx), ["server", "app"], "the move stays");
+
+    // A read from after the move goes in.
+    view.update(cx, |this, cx| {
+        this.apply_event(catalog(["app", "server"], 1), cx)
+    });
+    assert_eq!(order(cx), ["app", "server"], "a later read wins");
+}
+
 /// LLM-545: the chevron on a team row closes its group, without picking
 /// the team, and the group stays closed after a restart.
 #[gpui_kit::test]
