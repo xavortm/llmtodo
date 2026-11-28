@@ -55,8 +55,8 @@ pub const ORDER_REM: f32 = 1.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
-    /// The task's project: its icon and name. It shows only in All issues,
-    /// where tasks of many projects mix.
+    /// The task's project: its icon and name. It shows in every list that
+    /// mixes projects (`Scope::mixes_projects`), not in a project's own list.
     Project,
     /// The box that marks the task for a bulk action.
     Check,
