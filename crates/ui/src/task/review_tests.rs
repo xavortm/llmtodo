@@ -306,6 +306,47 @@ fn a_drag_on_the_bottom_edge_resizes_the_review_panel(cx: &mut TestAppContext) {
     assert_eq!(reset.size.height, before.size.height);
 }
 
+/// LLM-646: an edge that can be dragged shows a grip at rest, so it looks
+/// different from a plain border. The grip stays inside the panel, and it
+/// grows on hover. The task header's border has no grip.
+#[gpui_kit::test]
+fn a_draggable_edge_shows_a_grip_and_a_plain_border_does_not(cx: &mut TestAppContext) {
+    use crate::shell::drag_handle::grip;
+    use gpui_kit::base::ResizeHandleState;
+    let (handle, view, _) = open(cx);
+    in_review(handle, &view, SECTION, cx);
+    let handle_id = ("panel-resize-handle", 0usize);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let panel = window.find("review-panel").bounds();
+        let rest = window
+            .within(("panel-resize", 0usize))
+            .find("drag-handle-grip")
+            .bounds();
+        assert_eq!(rest.size.width, grip(ResizeHandleState::Idle).0);
+        assert!(
+            rest.bottom() <= panel.bottom() + gpui_kit::px(1.) && rest.top() >= panel.top(),
+            "the grip stays inside the panel: {rest:?} {panel:?}"
+        );
+        assert!(
+            window
+                .within("detail-head")
+                .try_find("drag-handle-grip")
+                .is_none(),
+            "the header's border is a plain line"
+        );
+
+        window.hover(handle_id, cx);
+        window.render_frame(cx);
+        let hovered = window
+            .within(("panel-resize", 0usize))
+            .find("drag-handle-grip")
+            .bounds();
+        assert_eq!(hovered.size.width, grip(ResizeHandleState::Hovered).0);
+    })
+    .unwrap();
+}
+
 /// The state of the Approve button in [`approve_draws_filled_in_every_state`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ButtonState {

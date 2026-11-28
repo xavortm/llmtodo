@@ -4,6 +4,7 @@
 pub mod app_icon;
 pub mod app_menus;
 pub mod backdrop;
+pub mod drag_handle;
 pub mod icons;
 pub mod issue_menu;
 pub mod layout;
